@@ -121,8 +121,10 @@ var Nav = (function () {
         current: function () { return current; },
         /* Called after a screen swaps its DOM, to land focus somewhere sane. */
         reset: function (selector) {
-            current = null;
             var el = selector ? document.querySelector(selector) : focusables()[0];
+            /* setFocus strips the ring off whatever held it. Nulling `current`
+             * first skipped that, and the tab bar is never re-rendered, so a
+             * tab kept its ring while a card gained one. */
             setFocus(el || focusables()[0]);
         },
         onBack: function (fn) { handlers.back = fn; },

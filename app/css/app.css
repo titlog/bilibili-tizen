@@ -293,3 +293,19 @@ body {
 #options::after {
     content: ""; display: block; height: 40px;
 }
+
+/* Between the button press and the first frame the screen was simply black,
+   which reads as a crash rather than as loading. */
+#player-loading {
+    position: absolute; left: 0; top: 0; width: 1920px; height: 1080px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 32px; background: #0f1419;
+}
+#loading-title { font-size: 30px; color: #9aa4ad; max-width: 1200px; text-align: center; }
+.spinner {
+    width: 72px; height: 72px; border-radius: 50%;
+    border: 6px solid rgba(255,255,255,0.18);
+    border-top-color: #ff6699;
+    animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

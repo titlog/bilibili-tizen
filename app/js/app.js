@@ -8,7 +8,7 @@
     "use strict";
 
     var screenEl, statusEl, toastEl;
-    var state = { screen: "popular", query: "", stack: [] };
+    var state = { screen: "rcmd", query: "", results: null };
     var playing = null;
 
     function el(id) { return document.getElementById(id); }
@@ -130,7 +130,7 @@
      * button, which costs a press and a focus jump, the next page is fetched as
      * the focus nears the end of what is already rendered. */
     function maybeLoadMore(focused) {
-        if (loadingMore) { return; }
+        if (loadingMore || playing || optionsOpen) { return; }
         var cache = feedCache[state.screen];
         if (!cache || cache.exhausted) { return; }
         if (!focused || !focused.getAttribute || focused.getAttribute("data-i") === null) { return; }
@@ -209,6 +209,7 @@
              * requests wins and paints its content under the other's heading. */
             if (req !== feedRequest) { return; }
             feedCache[kind] = { items: items, index: 0, scrollTop: 0, page: 1, exhausted: !items.length };
+            window.__stItems = items;   /* selftest addresses the same video */
             renderGrid(items);
             Nav.reset(".card");
         }, function (why) {
@@ -260,6 +261,12 @@
                 '</div></div><div id="suggests" class="suggests"></div>' +
                 '<div id="results"></div></div>';
         screenEl.innerHTML = html;
+
+        /* Coming back from a video used to land on an empty keyboard with the
+         * results thrown away, so finding one thing meant searching twice. */
+        if (state.results && state.results.length) {
+            paintResults(state.results);
+        }
 
         var keys = screenEl.querySelectorAll(".key");
         for (var i = 0; i < keys.length; i++) {
@@ -346,6 +353,24 @@
         }, 300);
     }
 
+    function paintResults(items) {
+        var results = el("results");
+        if (!results) { return null; }
+        var html = '<div class="grid">';
+        for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], i); }
+        results.innerHTML = html + "</div>";
+        /* Fold the keyboard away once there is something to look at, so the
+         * results are not buried under four rows of letters. */
+        var kb = screenEl.querySelector(".keyboard");
+        if (kb) { kb.className = "keyboard collapsed"; }
+        var cards = results.querySelectorAll(".card");
+        for (var j = 0; j < cards.length; j++) {
+            (function (card, v) { card.onselect = function () { playVideo(v); }; })(
+                cards[j], items[Number(cards[j].getAttribute("data-i"))]);
+        }
+        return cards[0];
+    }
+
     function runSearch() {
         if (!state.query.trim()) { toast("先输入关键词"); return; }
         var token = viewToken;
@@ -356,19 +381,9 @@
             results = el("results");
             if (!results) { return; }
             if (!items.length) { results.innerHTML = '<div class="empty">没有结果</div>'; return; }
-            var html = '<div class="grid">';
-            for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], i); }
-            results.innerHTML = html + "</div>";
-            /* Fold the keyboard away once there is something to look at, so the
-             * results are not buried under four rows of letters. */
-            var kb = screenEl.querySelector(".keyboard");
-            if (kb) { kb.className = "keyboard collapsed"; }
-            var cards = results.querySelectorAll(".card");
-            for (var j = 0; j < cards.length; j++) {
-                (function (card, v) { card.onselect = function () { playVideo(v); }; })(
-                    cards[j], items[Number(cards[j].getAttribute("data-i"))]);
-            }
-            Nav.focus(cards[0]);
+            state.results = items;
+            var first = paintResults(items);
+            Nav.focus(first);
         }, function (why) {
             if (!stillViewing(token)) { return; }
             results = el("results");
@@ -404,14 +419,12 @@
 
             el("btn-logout").onselect = function () {
                 Auth.logout();
-                PREFERRED_QN = Settings.get("qn", 80);
                 toast("已退出登录");
                 renderMine();
             };
             Nav.reset("#btn-logout");
 
             if (me.isLogin) {
-                PREFERRED_QN = Settings.get("qn", 80);
                 API.history(function (items) {
                     var h = el("hist");
                     if (!h) { return; }
@@ -476,29 +489,12 @@
         });
     }
 
-    /* ---------------- detail ---------------- */
+    /* ---------------- playback ---------------- */
 
-    function openDetail(v) {
-        rememberPosition();
-        state.stack.push(state.screen);
-        state.screen = "detail";
-        var token = newView();
-        screenEl.innerHTML = '<div class="empty">加载中…</div>';
-        API.view(v.bvid, function (d) {
-            if (!stillViewing(token)) { return; }
-            openDetailFrom(d);
-        }, function (why) {
-            if (!stillViewing(token)) { return; }
-            showError("加载失败：" + why, function () { openDetail(v); });
-        });
-    }
-
-    /* Selecting a video plays it. The old detail page is now the panel the down
-     * key pulls up over the video, which is where "what is this and what else is
-     * there" belongs on a television — one press from watching, and it never
-     * interrupts playback. */
-    function playVideo(v) {
-        rememberPosition();
+    /* Selecting a video plays it. What used to be a detail page is the panel the
+     * down key pulls up over the video. */
+    function playVideo(v, fromPanel) {
+        if (!fromPanel) { rememberPosition(); }
         if (v.pages) { play(v, v.cid); return; }
 
         /* 推荐, 热门 and 排行 already carry the cid, which is all playback needs.
@@ -513,13 +509,6 @@
                 desc: "", pages: []
             };
             play(provisional, v.cid);
-            API.view(v.bvid, function (d) {
-                if (playing && playing.detail === provisional) {
-                    d.related = provisional.related;
-                    playing.detail = d;
-                    refreshPartLabel();
-                }
-            }, function () {});
             return;
         }
 
@@ -549,61 +538,6 @@
         el("player-part").textContent = label;
     }
 
-    /* Kept for the panel, which needs the description and the related list. */
-    function openDetailFrom(d) {
-        state.screen = "detail";
-        markTab();
-        var token = newView();
-        var html = '<div class="detail">' +
-            '<div class="detail-head">' +
-            '<img class="detail-pic" src="' + esc(d.pic) + '" alt="">' +
-            '<div class="detail-info">' +
-            '<h2>' + esc(d.title) + '</h2>' +
-            '<div class="detail-meta">' + esc(d.author) + ' &middot; ' +
-                esc(d.duration) + ' &middot; ' + esc(d.play) + '次观看</div>' +
-            '<div class="detail-desc">' + esc((d.desc || "").slice(0, 220)) + '</div>' +
-            '<div class="actions">' +
-            '<div class="btn focusable" id="btn-play">播放</div>' +
-            '</div></div></div>';
-
-        if (d.pages.length > 1) {
-            html += '<div class="section">分P</div><div class="parts">';
-            for (var i = 0; i < d.pages.length && i < 30; i++) {
-                html += '<div class="part focusable" data-cid="' + d.pages[i].cid + '">' +
-                        (i + 1) + " " + esc(d.pages[i].part) + "</div>";
-            }
-            html += "</div>";
-        }
-        html += '<div class="section">相关推荐</div><div id="related"></div></div>';
-        screenEl.innerHTML = html;
-
-        el("btn-play").onselect = function () { play(d, d.cid); };
-        var parts = screenEl.querySelectorAll(".part");
-        for (var p = 0; p < parts.length; p++) {
-            (function (node) {
-                node.onselect = function () { play(d, Number(node.getAttribute("data-cid"))); };
-            })(parts[p]);
-        }
-        Nav.reset("#btn-play");
-
-        API.related(d.bvid, function (items) {
-            if (!stillViewing(token)) { return; }
-            d.related = items;
-            var r = el("related");
-            if (!r || !items.length) { return; }
-            var h = '<div class="grid">';
-            for (var i = 0; i < items.length && i < 12; i++) { h += cardHtml(items[i], i); }
-            r.innerHTML = h + "</div>";
-            var cards = r.querySelectorAll(".card");
-            for (var j = 0; j < cards.length; j++) {
-                (function (card, vv) { card.onselect = function () { playVideo(vv); }; })(
-                    cards[j], items[Number(cards[j].getAttribute("data-i"))]);
-            }
-        }, function () {});
-    }
-
-    /* ---------------- playback ---------------- */
-
     function fmt(ms) {
         var s = Math.floor((ms || 0) / 1000);
         var m = Math.floor(s / 60);
@@ -612,6 +546,13 @@
         return Math.floor(m / 60) + ":" + ("0" + (m % 60)).slice(-2) + ":" + ("0" + s).slice(-2);
     }
 
+    function setQualityBadge(text) {
+        var b = el("player-quality");
+        b.textContent = text || "";
+        b.className = text ? "" : "hidden";
+    }
+
+    var HINT = "确认键 播放/暂停 · 左右 快退/快进 · 下键 简介/相关 · 返回键 退出";
     var chromeTimer = null;
 
     /* A paused video should read as paused from the sofa, not just by a frozen
@@ -697,7 +638,12 @@
     function moveScrub(dir) {
         if (!playing) { return; }
         if (!scrub) { enterScrub(); }
-        if (!scrub) { return; }   /* duration not known yet */
+        if (!scrub) {
+            /* No duration means no bar to scrub along, but a relative jump still
+             * works — silently doing nothing made the key feel broken. */
+            Player.seekBy(dir * 10000);
+            return;
+        }
         scrub.presses++;
         var dur = Player.durationMs() || 0;
         scrub.target = Math.max(0, Math.min(dur ? dur - 2000 : Infinity,
@@ -752,16 +698,6 @@
         el("options").className = "scroll";
         el("options").scrollTop = 0;
 
-        var accept = (playing.accept && playing.accept.length)
-            ? playing.accept : [80, 64, 32, 16];
-        var html = "";
-        for (var i = 0; i < accept.length; i++) {
-            var q = accept[i];
-            html += '<div class="opt focusable' + (q === playing.quality ? " current" : "") +
-                    '" data-qn="' + q + '">' + esc(QUALITY_NAMES[q] || ("QN " + q)) + "</div>";
-        }
-        el("opt-quality").innerHTML = html;
-
         var d = playing.detail;
 
         el("panel-title").textContent = d.title || "";
@@ -796,23 +732,27 @@
             var rcards = el("opt-related").querySelectorAll(".card");
             for (var rc = 0; rc < rcards.length; rc++) {
                 (function (card, vv) {
-                    card.onselect = function () { closeOptions(); playVideo(vv); };
+                    card.onselect = function () {
+                        /* playVideo remembers the browse position, and it must
+                         * not see the panel's own cards as the feed's. */
+                        var fromPanel = true;
+                        closeOptions();
+                        playVideo(vv, fromPanel);
+                    };
                 })(rcards[rc], d.related[Number(rcards[rc].getAttribute("data-i"))]);
             }
         } else {
-            rg.className = "opt-group hidden";
-            el("opt-related").innerHTML = "";
+            rg.className = "opt-group";
+            el("opt-related").innerHTML = '<div class="empty">正在加载相关视频…</div>';
         }
 
         var opts = document.querySelectorAll("#options .opt");
         for (var k = 0; k < opts.length; k++) {
             (function (node) {
                 node.onselect = function () {
-                    var qn = node.getAttribute("data-qn");
                     var cid = node.getAttribute("data-cid");
                     closeOptions();
-                    if (qn) { switchQuality(Number(qn)); }
-                    else if (cid) { play(playing.detail, Number(cid)); }
+                    if (cid) { play(playing.detail, Number(cid)); }
                 };
             })(opts[k]);
         }
@@ -827,14 +767,6 @@
         if (!playing) { return; }
         el("playerui").className = "";
         showChrome();
-    }
-
-    function switchQuality(qn) {
-        if (!playing) { return; }
-        PREFERRED_QN = qn;
-        Settings.set("qn", qn);
-        toast("切换到 " + (QUALITY_NAMES[qn] || qn));
-        play(playing.detail, playing.cid);
     }
 
     var nextToken = 0;
@@ -937,8 +869,15 @@
     }
 
     function play(detail, cid) {
+        /* Every per-video piece of player state is cleared here. Leaving any of
+         * it behind is invisible until the exact moment it matters: the scrub
+         * head seeded from the last video would jump a fresh one straight to its
+         * own ending. */
+        closeOptions();
+        cancelScrub();
         playing = { detail: detail, cid: cid };
         var startMs = Resume.positionMs(detail.bvid, cid);
+        lastKnownPosition = startMs;
         if (startMs) { toast("从 " + fmt(startMs) + " 继续播放"); }
         el("player-title").textContent = detail.title;
         var partLabel = "";
@@ -952,19 +891,23 @@
             }
         }
         el("player-part").textContent = partLabel;
-        el("player-quality").textContent = "";
+        setQualityBadge("");
+        el("player-buffer").style.width = "0%";
+        el("pause-glyph").className = "hidden";
+        el("player-hint").textContent = HINT;
 
-        /* Fetched in the background: the panel wants it, and so does autoplay. */
-        if (!detail.related) {
-            API.related(detail.bvid, function (list) { detail.related = list; },
-                        function () {});
-        }
+        /* Deliberately not fetched here. Everything the panel wants is queued
+         * until the picture is up, so nothing competes with AVPlay for a
+         * connection while it is opening the stream. */
+        playing.needsMeta = true;
         el("pause-glyph").className = "hidden";
         cancelScrub();
         el("player-pos").textContent = "0:00";
         el("player-dur").textContent = detail.duration;
         el("player-fill").style.width = "0%";
         showPlayerUi(true);
+        el("loading-title").textContent = detail.title || "";
+        el("player-loading").className = "";
         status("");
 
         /* Progressive is the better route when it exists; DASH is the fallback
@@ -981,11 +924,10 @@
              * way to stop it — audio under the browse UI, deaf to the remote. */
             if (playing !== session) { return; }
             playing.quality = r.quality;
-            playing.accept = r.accept || [];
             playing.urls = r.urls || [r.url];
             playing.urlIdx = 0;
             playing.startMs = startMs;
-            el("player-quality").textContent = QUALITY_NAMES[r.quality] || ("QN " + r.quality);
+            setQualityBadge(QUALITY_NAMES[r.quality] || ("QN " + r.quality));
             Player.playProgressive(playing.urls[0], startMs);
         }, function (why) {
             if (playing !== session) { return; }
@@ -994,10 +936,13 @@
             report("player", "no durl (" + why + "), falling back to dash");
             API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
                 if (playing !== session) { return; }
-                var vrep = (dash.video || [])[0];
+                /* Ask the player which representation it will actually decode:
+                 * reading dash.video[0] named whatever came first in the list,
+                 * which is frequently an hev1 entry the player then skips. */
+                var vrep = Player.pickDashVideo(dash);
                 if (vrep && vrep.id) {
                     playing.quality = vrep.id;
-                    el("player-quality").textContent = QUALITY_NAMES[vrep.id] || ("QN " + vrep.id);
+                    setQualityBadge(QUALITY_NAMES[vrep.id] || ("QN " + vrep.id));
                 }
                 Player.playDash(dash, startMs);
             }, function (w2) {
@@ -1027,7 +972,32 @@
         });
     }
 
+    /* Runs once the stream is playing, so the description, parts and related
+     * list arrive without contending with the player for the network. */
+    function loadMetaForPlaying() {
+        if (!playing || !playing.needsMeta) { return; }
+        playing.needsMeta = false;
+        var session = playing, d = session.detail;
+
+        if (!d.pages || !d.pages.length) {
+            API.view(d.bvid, function (full) {
+                if (playing !== session) { return; }
+                full.related = session.detail.related;
+                session.detail = full;
+                refreshPartLabel();
+            }, function () {});
+        }
+        if (!d.related) {
+            API.related(d.bvid, function (list) {
+                if (playing !== session) { return; }
+                session.detail.related = list;
+                if (optionsOpen) { closeOptions(); openOptions(); }
+            }, function () {});
+        }
+    }
+
     function stopPlayback() {
+        el("player-loading").className = "hidden";
         var was = playing;
         Resume.flush();
         cancelScrub();
@@ -1039,7 +1009,7 @@
         playing = null;
         showPlayerUi(false);
         /* Back to the grid the viewer was browsing, at the card they picked. */
-        var home = state.screen === "detail" ? "rcmd" : state.screen;
+        var home = state.screen;
         if (home === "search") { renderSearch(); }
         else if (home === "mine") { renderMine(); }
         else { loadFeed(home, true); }
@@ -1062,9 +1032,11 @@
                 el("player-buffer").style.width =
                     Math.min(100, (buf / data.duration) * 100) + "%";
             }
+        } else if (kind === "playing") {
+            el("player-loading").className = "hidden";
+            loadMetaForPlaying();
         } else if (kind === "buffering") {
-            el("player-hint").textContent = data ? "缓冲中…"
-                : "确认键 播放/暂停 · 左右 快退/快进 · 返回键 退出";
+            el("player-hint").textContent = data ? "缓冲中…" : HINT;
         } else if (kind === "ended") {
             if (playing) { Resume.forget(playing.detail.bvid, playing.cid); }
             beginAutoNext();
@@ -1077,10 +1049,12 @@
              * the first is worth reporting or acting on. */
             if (!playing || playing.failed) { return; }
             playing.failed = true;
+            el("player-loading").className = "hidden";
             report("player", data);
             if (playing.urls && playing.urlIdx + 1 < playing.urls.length) {
                 playing.urlIdx++;
                 playing.failed = false;
+                el("player-loading").className = "";
                 report("player", "mirror " + playing.urlIdx + " after " + data);
                 Player.playProgressive(playing.urls[playing.urlIdx], playing.startMs || 0);
                 return;
@@ -1097,6 +1071,17 @@
         if (pendingNext) { return handleNextKeys(k); }
         if (optionsOpen) {
             if (k === Nav.KEY.RETURN) { closeOptions(); return true; }
+            /* Up from the first row leaves the panel, mirroring the down key
+             * that opened it — otherwise return is the only way out and there
+             * is nothing on screen that says so. */
+            if (k === Nav.KEY.UP && el("options").scrollTop <= 2) {
+                var cur = Nav.current();
+                var row = cur && cur.parentNode;
+                if (row && (row.id === "opt-parts" || row.id === "opt-related" ||
+                            (row.parentNode && row.parentNode.id === "opt-related"))) {
+                    closeOptions(); return true;
+                }
+            }
             if (k === Nav.KEY.EXIT) { return false; }
             return false;   /* let Nav move focus between the options */
         }
@@ -1129,24 +1114,6 @@
 
     Nav.onBack(function () {
         if (playing) { stopPlayback(); return; }
-        if (state.screen === "detail") {
-            var back = state.stack.pop();
-            if (back === "search") { renderSearch(); }
-            else if (back === "mine") { renderMine(); }
-            else if (back === "detail") {
-                /* Reached from a related video. Unwind to the nearest real
-                 * screen rather than asking loadFeed for a "detail" feed, which
-                 * silently fell through to 热门 under the wrong heading. */
-                while (state.stack.length && state.stack[state.stack.length - 1] === "detail") {
-                    state.stack.pop();
-                }
-                var under = state.stack.pop() || "rcmd";
-                if (under === "search") { renderSearch(); }
-                else if (under === "mine") { renderMine(); }
-                else { loadFeed(under, true); }
-            } else { loadFeed(back || "rcmd", true); }
-            return;
-        }
         Auth.cancelQrLogin();
         if (state.screen !== "rcmd") { loadFeed("rcmd"); return; }
         try { tizen.application.getCurrentApplication().exit(); } catch (e) {}
@@ -1161,6 +1128,8 @@
 
         Nav.registerKeys();
         Nav.onFocus(maybeLoadMore);
+        /* Settings were only consulted from inside 我的, so a quality picked in
+         * the panel was forgotten on the next launch. */
 
         var tabs = document.querySelectorAll("#tabs .tab");
         for (var i = 0; i < tabs.length; i++) {
@@ -1180,5 +1149,8 @@
         }
 
         loadFeed("rcmd");
+        if (typeof SELFTEST !== "undefined" && SELFTEST && typeof SelfTest !== "undefined") {
+            SelfTest.run();
+        }
     };
 })();

@@ -290,6 +290,8 @@ var API = (function () {
                         list[i].baseUrl = list[i].urls[0];
                     }
                 }
+                /* Carry the tier list across: the panel had to guess it. */
+                d.dash.acceptQuality = d.accept_quality || [];
                 onOk(d.dash);
             }, onFail);
         }

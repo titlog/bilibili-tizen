@@ -6,6 +6,12 @@ set -e
 ROOT="${0:A:h:h}"
 APP="$ROOT/app"
 
+# --selftest ships a build that walks the whole flow on the device and reports
+# each step, because the set blocks dlog, the inspector, and unattended remote
+# control. Never leave it on in a build meant for watching.
+SELFTEST=false
+[ "$1" = "--selftest" ] && SELFTEST=true
+
 export PATH="$HOME/tizen-studio/tools:$HOME/tizen-studio/tools/ide/bin:$PATH"
 
 CERT_DIR="$HOME/tizen-studio-data/SamsungCertificate/BiliSpike"
@@ -27,14 +33,16 @@ APP_ID="BiLiSpiKe0.BiliSpike"
 # any more; only the dev reporting address is injected.
 echo "== pointing reporting at this machine =="
 HOST_IP=$(ipconfig getifaddr en0)
-APP="$APP" HOST_IP="$HOST_IP" python3 - <<'PY'
+APP="$APP" HOST_IP="$HOST_IP" SELFTEST="$SELFTEST" python3 - <<'PY'
 import os, re
 p = os.path.join(os.environ["APP"], "js", "config.js")
 src = open(p).read()
 src = re.sub(r'var REPORT_TO = "[^"]*";',
              'var REPORT_TO = "http://%s:8099/report";' % os.environ["HOST_IP"], src, count=1)
+src = re.sub(r'var SELFTEST = [a-z]+;',
+             'var SELFTEST = %s;' % os.environ.get("SELFTEST", "false"), src)
 open(p, "w").write(src)
-print("  report ->", os.environ["HOST_IP"])
+print("  report -> %s, selftest=%s" % (os.environ["HOST_IP"], os.environ.get("SELFTEST")))
 PY
 
 echo "== signing profile =="
@@ -57,6 +65,13 @@ else
   echo "  profile $PROFILE already present"
 fi
 tizen cli-config "profiles.path=$PROFILES" >/dev/null
+
+# node --check only proves each file parses. It happily ships code that calls a
+# function deleted from another file, which is exactly how a build went out where
+# pressing OK on the home screen did nothing.
+echo "== checking =="
+for f in "$APP"/js/*.js; do node --check "$f" >/dev/null || { echo "  syntax error in $f"; exit 1; }; done
+node "$ROOT/tools/lint.mjs" || { echo "  refuse to deploy"; exit 1; }
 
 echo "== packaging =="
 cd "$APP"

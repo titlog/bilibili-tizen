@@ -5,12 +5,15 @@
  * stream. */
 var USER_AGENT = "Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/7.0 TV Safari/537.36";
 
-/* 80 is 1080p and is what a signed-in account reliably gets on a plain host.
- * Asking for 127 was worse in practice: the tiers above 1080p come back on
- * restricted CDN nodes far more often, and every refusal costs a retry cycle
- * of black screen. Higher tiers are still one press away in the panel. */
+/* 1080P 高清. The tiers above it are 大会员 only, so asking for them buys
+ * nothing but restricted CDN nodes and retry cycles. Fixed rather than
+ * adjustable: on a television nobody goes looking for a quality menu. */
 var PREFERRED_QN = 80;
 
 /* Dev only: the app posts errors here so a run can be read from the terminal
  * instead of off the screen. Empty disables it. */
 var REPORT_TO = "http://192.168.1.10:8099/report";
+
+/* Set by tools/deploy.sh --selftest: walks the whole flow on the device and
+ * reports each step to the collector. Never on in a normal build. */
+var SELFTEST = false;

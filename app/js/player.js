@@ -110,11 +110,15 @@ var Player = (function () {
         try { webapis.avplay.setDisplayMethod("PLAYER_DISPLAY_MODE_LETTER_BOX"); } catch (e) {}
         webapis.avplay.setDisplayRect(0, 0, 1920, 1080);
         try { webapis.avplay.setStreamingProperty("USER_AGENT", USER_AGENT); } catch (e) {}
-        /* COOKIE is one of the two streaming properties AVPlay actually exposes,
-         * and it is what unlocks the 1080p stream once a session exists. Must be
-         * set while IDLE, i.e. after open() and before prepareAsync(). */
-        if (typeof Auth !== "undefined" && Auth.isLoggedIn()) {
-            try { webapis.avplay.setStreamingProperty("COOKIE", Auth.cookieHeader()); } catch (e) {}
+        /* Only when there is an actual cookie to send. A jar-only session has
+         * no readable SESSDATA, so this was handing AVPlay an empty COOKIE
+         * property — which it turns into a malformed Cookie header and the CDN
+         * refuses the request. It looked exactly like a broken stream, and it
+         * only started once the viewer signed in. */
+        var cookie = (typeof Auth !== "undefined" && Auth.isLoggedIn())
+            ? Auth.cookieHeader() : "";
+        if (cookie) {
+            try { webapis.avplay.setStreamingProperty("COOKIE", cookie); } catch (e) {}
         }
 
         /* setListener registers on the avplay singleton and close() does not
@@ -169,15 +173,21 @@ var Player = (function () {
     /* Fragmented MP4 is a run of moof+mdat boxes after the init segment, so
      * sequential byte ranges can be appended as-is — no sidx parsing needed to
      * get playback going, and memory stays bounded on long videos. */
+    /* The single source of truth for which video representation is played, so
+     * the quality badge cannot name a different one. */
+    function pickDashVideo(dash) {
+        return (dash.video || []).filter(function (s) {
+            return s.codecs && s.codecs.indexOf("avc1") === 0;
+        })[0] || (dash.video || [])[0];
+    }
+
     function playMse(dash, startMs) {
         mode = "mse";
         /* Minted here rather than inside sourceopen: a late-opening MediaSource
          * would otherwise bump the counter after a newer session had captured
          * it, killing the live pump and reviving the dead one. */
         var gen = ++mseGeneration;
-        var video = (dash.video || []).filter(function (s) {
-            return s.codecs.indexOf("avc1") === 0;
-        })[0] || (dash.video || [])[0];
+        var video = pickDashVideo(dash);
         var audio = (dash.audio || [])[0];
         if (!video || !audio) { emit("error", "no usable dash pair"); return; }
 
@@ -390,6 +400,7 @@ var Player = (function () {
         },
 
         durationMs: function () { return duration; },
+        pickDashVideo: pickDashVideo,
         stop: reset,
         mode: function () { return mode; }
     };
