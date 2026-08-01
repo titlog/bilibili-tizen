@@ -107,11 +107,16 @@ var Auth = (function () {
 
                 var pollUrl = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=" + key;
                 var lastInner = null;
-                pollTimer = setInterval(function () {
+                /* Each poller clears its own handle. Sharing the module variable
+                 * meant an orphaned poller could later stop the live one and
+                 * announce "expired" over a perfectly good code. */
+                var mine;
+                mine = pollTimer = setInterval(function () {
                     getJson(pollUrl, function (p) {
                         var d = p.data || {};
                         if (d.code === 0) {
-                            clearInterval(pollTimer); pollTimer = null;
+                            clearInterval(mine);
+                            if (pollTimer === mine) { pollTimer = null; }
                             var s = parseSessionUrl(d.url || "");
                             if (s) { save(s); onState({ kind: "done" }); return; }
 
@@ -126,6 +131,14 @@ var Auth = (function () {
                             try { hop.withCredentials = true; } catch (e) {}
                             hop.onreadystatechange = function () {
                                 if (hop.readyState !== 4) { return; }
+                                /* Storing a session for a hop that failed left
+                                 * isLoggedIn permanently true with no cookies
+                                 * behind it, which then suppressed the "please
+                                 * sign in" paths everywhere else. */
+                                if (hop.status < 200 || hop.status >= 400) {
+                                    onState({ kind: "error", why: "换取凭证失败 HTTP " + hop.status });
+                                    return;
+                                }
                                 save({ viaCookieJar: true, savedAt: new Date().getTime() });
                                 onState({ kind: "done" });
                             };
@@ -134,7 +147,8 @@ var Auth = (function () {
                             };
                             hop.send();
                         } else if (d.code === 86038) {
-                            clearInterval(pollTimer); pollTimer = null;
+                            clearInterval(mine);
+                            if (pollTimer === mine) { pollTimer = null; }
                             onState({ kind: "expired" });
                         } else if (d.code === 86090 && lastInner !== 86090) {
                             lastInner = 86090;

@@ -15,6 +15,11 @@ var Resume = (function () {
     var map = null;
     var dirty = false;
 
+    /* Turning the television off is the normal way to stop watching, and it
+     * gives no unload event worth trusting, so writes are flushed on a timer
+     * rather than only when playback ends. */
+    setInterval(function () { if (dirty) { flushNow(); } }, 10000);
+
     function load() {
         if (map) { return map; }
         try { map = JSON.parse(localStorage.getItem(KEY) || "{}"); }
@@ -22,7 +27,9 @@ var Resume = (function () {
         return map;
     }
 
-    function flush() {
+    function flush() { flushNow(); }
+
+    function flushNow() {
         if (!dirty) { return; }
         dirty = false;
         var m = load();
@@ -61,11 +68,20 @@ var Resume = (function () {
             return e ? e.pos * 1000 : 0;
         },
 
-        /* 0..1 for the sliver drawn across a card's thumbnail. */
-        fraction: function (bvid, cid) {
-            var e = load()[id(bvid, cid)];
-            if (!e || !e.dur) { return 0; }
-            return Math.min(1, e.pos / e.dur);
+        /* 0..1 for the sliver drawn across a card's thumbnail.
+         * Feeds carry no cid — search, 动态 and history never have one — so the
+         * marker matches on the video and takes its furthest part. Keying on
+         * bvid:cid meant the sliver silently never appeared on exactly the
+         * screens where "where did I get to" matters most. */
+        fraction: function (bvid) {
+            var m = load(), best = 0;
+            for (var k in m) {
+                if (!m.hasOwnProperty(k)) { continue; }
+                if (k.indexOf(bvid + ":") !== 0) { continue; }
+                var e = m[k];
+                if (e.dur) { best = Math.max(best, Math.min(1, e.pos / e.dur)); }
+            }
+            return best;
         },
 
         forget: function (bvid, cid) {

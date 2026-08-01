@@ -92,8 +92,9 @@ run dies before anything reports, such as a syntax error at load.
 ## Certificates
 
 Live in `~/tizen-studio-data/SamsungCertificate/BiliSpike/`, deliberately outside
-this repo since they include private keys. The signing profile is `SamsungBili`;
-password `CHANGEME`. **The distributor certificate expires around 2027-08.**
+this repo since they include private keys. The signing profile is `SamsungBili`
+and its password is read from `~/.bilibili-tizen-cert-password`, also outside the
+repo. **The distributor certificate expires around 2027-08.**
 
 To reissue, `node tools/samsung-cert.mjs` opens a Samsung account login, captures
 the OAuth callback and posts CSRs to `svdca.samsungqbe.com`. It needs no Eclipse,

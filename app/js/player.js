@@ -22,6 +22,7 @@ var Player = (function () {
     var duration = 0;
     var lastTime = 0;
     var mseGeneration = 0;   /* invalidates in-flight appends after a reset */
+    var avGeneration = 0;    /* same, for the avplay singleton's listener */
     var mseSeek = null;      /* set while an MSE session is live */
 
     function el(id) { return document.getElementById(id); }
@@ -79,6 +80,7 @@ var Player = (function () {
 
     function reset() {
         mseGeneration++;
+        avGeneration++;
         mseSeek = null;
         try { webapis.avplay.stop(); } catch (e) {}
         try { webapis.avplay.close(); } catch (e) {}
@@ -99,6 +101,7 @@ var Player = (function () {
 
     function playAvplay(url, startMs) {
         mode = "avplay";
+        var gen = ++avGeneration;
         ensureObject();
         try { webapis.avplay.close(); } catch (e) {}
         try { webapis.avplay.open(url); }
@@ -114,24 +117,32 @@ var Player = (function () {
             try { webapis.avplay.setStreamingProperty("COOKIE", Auth.cookieHeader()); } catch (e) {}
         }
 
+        /* setListener registers on the avplay singleton and close() does not
+         * detach it, so a torn-down session's onerror or onstreamcompleted lands
+         * in whatever is playing now — ending or erroring a video that is
+         * perfectly fine. The spike learned this; the client had forgotten it. */
+        function live() { return gen === avGeneration && mode === "avplay"; }
+
         webapis.avplay.setListener({
-            onbufferingstart: function () { emit("buffering", true); },
-            onbufferingcomplete: function () { emit("buffering", false); },
+            onbufferingstart: function () { if (live()) { emit("buffering", true); } },
+            onbufferingcomplete: function () { if (live()) { emit("buffering", false); } },
             oncurrentplaytime: function (ms2) {
+                if (!live()) { return; }
                 lastTime = ms2;
                 emit("time", { position: ms2, duration: duration });
             },
-            onstreamcompleted: function () { emit("ended"); },
-            onerror: function (err) { emit("error", String(err)); }
+            onstreamcompleted: function () { if (live()) { emit("ended"); } },
+            onerror: function (err) { if (live()) { emit("error", String(err)); } }
         });
 
         webapis.avplay.prepareAsync(function () {
+            if (!live()) { return; }
             try { duration = webapis.avplay.getDuration(); } catch (e) { duration = 0; }
             if (startMs) { try { webapis.avplay.seekTo(startMs); } catch (e) {} }
             webapis.avplay.play();
             emit("playing", { duration: duration });
         }, function (err) {
-            emit("error", "prepare failed: " + err);
+            if (live()) { emit("error", "prepare failed: " + err); }
         });
     }
 
@@ -145,6 +156,9 @@ var Player = (function () {
         xhr.timeout = 30000;
         xhr.onload = function () {
             if (xhr.status === 200 || xhr.status === 206) { onOk(xhr.response); }
+            /* Reading sequentially, the range past the last byte answers 416.
+             * That is the end of the file, not a failure. */
+            else if (xhr.status === 416) { onOk(null); }
             else { onFail("HTTP " + xhr.status); }
         };
         xhr.onerror = function () { onFail("network error"); };
@@ -157,6 +171,10 @@ var Player = (function () {
      * get playback going, and memory stays bounded on long videos. */
     function playMse(dash, startMs) {
         mode = "mse";
+        /* Minted here rather than inside sourceopen: a late-opening MediaSource
+         * would otherwise bump the counter after a newer session had captured
+         * it, killing the live pump and reviving the dead one. */
+        var gen = ++mseGeneration;
         var video = (dash.video || []).filter(function (s) {
             return s.codecs.indexOf("avc1") === 0;
         })[0] || (dash.video || [])[0];
@@ -190,16 +208,16 @@ var Player = (function () {
                 { rep: video, sb: vb, at: 0, done: false, inflight: false, host: 0 },
                 { rep: audio, sb: ab, at: 0, done: false, inflight: false, host: 0 }
             ];
-            var gen = ++mseGeneration;
-
             /* Waiting for QuotaExceededError is too late on a feature-length
              * video; drop what is well behind the playhead as we go. */
             function evict(s) {
+                if (gen !== mseGeneration || !ms) { return; }
                 if (s.sb.updating || ms.readyState !== "open") { return; }
-                var keepFrom = (v.currentTime || 0) - 30;
+                /* Deep enough that the usual short rewinds stay seekable. */
+                var keepFrom = (v.currentTime || 0) - 120;
                 if (keepFrom <= 0) { return; }
                 try {
-                    if (s.sb.buffered.length && s.sb.buffered.start(0) < keepFrom - 10) {
+                    if (s.sb.buffered.length && s.sb.buffered.start(0) < keepFrom - 30) {
                         s.sb.remove(0, keepFrom);
                     }
                 } catch (e) {}
@@ -210,7 +228,7 @@ var Player = (function () {
                  * several ticks of the timer, and without this the same range is
                  * requested again and again and appended on top of itself. */
                 if (s.done || s.inflight || s.sb.updating) { return; }
-                if (gen !== mseGeneration || ms.readyState !== "open") { return; }
+                if (gen !== mseGeneration || !ms || ms.readyState !== "open") { return; }
                 /* Stay a couple of chunks ahead of the playhead, no further. */
                 var buffered = 0;
                 try {
@@ -225,7 +243,7 @@ var Player = (function () {
                 var urls = s.rep.urls || [s.rep.baseUrl];
                 fetchRange(urls[s.host || 0], s.at, to, function (buf) {
                     s.inflight = false;
-                    if (gen !== mseGeneration || ms.readyState !== "open") { return; }
+                    if (gen !== mseGeneration || !ms || ms.readyState !== "open") { return; }
                     if (!buf || buf.byteLength === 0) { s.done = true; return; }
                     try { s.sb.appendBuffer(buf); } catch (e) {
                         /* Back-pressure, not a failure: drop the chunk and let
@@ -243,44 +261,47 @@ var Player = (function () {
                         return;
                     }
                     s.at += buf.byteLength;
+                    s.misses = 0;   /* this mirror is working again */
                     if (buf.byteLength < CHUNK) { s.done = true; }
                 }, function (why) {
                     s.inflight = false;
                     if (gen !== mseGeneration) { return; }
                     /* A refusing host is not a broken video: step to the next
                      * mirror and carry on from the same byte offset. */
-                    var next = (s.host || 0) + 1;
-                    if (next < urls.length) {
-                        s.host = next;
-                        log("mirror " + next + " for " + (s.rep.codecs || "stream") + " after " + why);
+                    /* Rotate on repeated failure, not on the first hiccup, and
+                     * wrap around: a single timeout forty minutes in should not
+                     * exhaust the mirror list and end the video. */
+                    s.misses = (s.misses || 0) + 1;
+                    if (s.misses < 3) { return; }
+                    s.misses = 0;
+                    s.rotations = (s.rotations || 0) + 1;
+                    if (s.rotations > urls.length * 2) {
+                        emit("error", "fetch: " + why + "（镜像全部无响应）");
                         return;
                     }
-                    emit("error", "fetch: " + why + "（已试完 " + urls.length + " 个镜像）");
+                    s.host = ((s.host || 0) + 1) % urls.length;
+                    log("mirror " + s.host + " for " + (s.rep.codecs || "stream") + " after " + why);
                 });
             }
 
-            /* Seeking past what has been fetched needs the byte cursor moved
-             * too, otherwise the pump keeps feeding the old position and the
-             * picture sits frozen. Byte offset is estimated from the average
-             * bitrate, which is close enough for a fragmented file. */
+            /* Seeking is limited to what is already buffered. Estimating a byte
+             * offset from the average bitrate lands mid-box, and appending
+             * there hands the parser a malformed stream — the picture dies and
+             * the whole video restarts in a lower quality. Refusing the jump is
+             * the lesser evil until the sidx is parsed properly. */
             mseSeek = function (seconds) {
                 for (var i = 0; i < streams.length; i++) {
-                    var s2 = streams[i];
-                    var buffered = false;
+                    var sb = streams[i].sb;
+                    var inside = false;
                     try {
-                        for (var b = 0; b < s2.sb.buffered.length; b++) {
-                            if (seconds >= s2.sb.buffered.start(b) - 1 &&
-                                seconds <= s2.sb.buffered.end(b)) { buffered = true; }
+                        for (var b = 0; b < sb.buffered.length; b++) {
+                            if (seconds >= sb.buffered.start(b) &&
+                                seconds <= sb.buffered.end(b)) { inside = true; }
                         }
                     } catch (e) {}
-                    if (buffered) { continue; }
-                    var bytesPerSecond = (s2.rep.bandwidth || 800000) / 8;
-                    s2.at = Math.max(0, Math.floor(seconds * bytesPerSecond));
-                    s2.done = false;
-                    try {
-                        if (!s2.sb.updating) { s2.sb.abort(); }
-                    } catch (e) {}
+                    if (!inside) { return false; }
                 }
+                return true;
             };
 
             var timer = setInterval(function () {
@@ -328,7 +349,10 @@ var Player = (function () {
             if (duration) { target = Math.min(target, duration - 2000); }
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
             else if (mode === "mse") {
-                if (mseSeek) { mseSeek(target / 1000); }
+                if (mseSeek && !mseSeek(target / 1000)) {
+                    emit("seek-refused");
+                    return;
+                }
                 el("html5-video").currentTime = target / 1000;
             }
             lastTime = target;

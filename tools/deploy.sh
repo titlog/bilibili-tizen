@@ -11,7 +11,12 @@ export PATH="$HOME/tizen-studio/tools:$HOME/tizen-studio/tools/ide/bin:$PATH"
 CERT_DIR="$HOME/tizen-studio-data/SamsungCertificate/BiliSpike"
 CA_DIR="$HOME/tizen-studio-data/samsung-ca"
 PROFILES="$HOME/tizen-studio-data/profile/profiles.xml"
-PW="CHANGEME"
+# The certificate password lives outside the repo. The p12 files it protects are
+# not in version control either, but a password in a git history is a habit worth
+# not forming.
+PW_FILE="$HOME/.bilibili-tizen-cert-password"
+[ -f "$PW_FILE" ] || { echo "missing $PW_FILE — see CLAUDE.md"; exit 1; }
+PW=$(cat "$PW_FILE")
 PROFILE="SamsungBili"
 TV_IP="192.168.1.100"
 TV="$TV_IP:26101"

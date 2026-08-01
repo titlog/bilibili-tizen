@@ -12,6 +12,12 @@ var API = (function () {
 
     function getJson(url, onOk, onFail) {
         var xhr = new XMLHttpRequest();
+        var settled = false;
+        /* A dropped request reaches readyState 4 with status 0 AND fires
+         * onerror, so an unguarded pair of handlers reports the same failure
+         * twice — and callers that retry on failure then retry twice. */
+        function fail(why) { if (!settled) { settled = true; onFail(why); } }
+        function ok(data) { if (!settled) { settled = true; onOk(data); } }
         xhr.open("GET", url, true);
 
         /* Two routes for the session, because which one works is a property of
@@ -28,16 +34,16 @@ var API = (function () {
         xhr.timeout = 20000;
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) { return; }
-            if (xhr.status !== 200) { onFail("HTTP " + xhr.status); return; }
+            if (xhr.status !== 200) { fail("HTTP " + xhr.status); return; }
             var j;
             try { j = JSON.parse(xhr.responseText); }
-            catch (e) { onFail("bad JSON"); return; }
-            if (j.code !== 0) { onFail(j.message || ("code " + j.code)); return; }
+            catch (e) { fail("bad JSON"); return; }
+            if (j.code !== 0) { fail(j.message || ("code " + j.code)); return; }
             /* Most endpoints answer under data; search suggestions use result. */
-            onOk(j.data !== undefined ? j.data : j.result);
+            ok(j.data !== undefined ? j.data : j.result);
         };
-        xhr.ontimeout = function () { onFail("timeout"); };
-        xhr.onerror = function () { onFail("network error"); };
+        xhr.ontimeout = function () { fail("timeout"); };
+        xhr.onerror = function () { fail("network error"); };
         xhr.send();
     }
 
@@ -74,6 +80,8 @@ var API = (function () {
         return {
             bvid: v.bvid,
             aid: v.aid,
+            /* Kept when the feed supplies it, but most do not — Resume therefore
+             * keys on bvid alone for the card marker. */
             cid: v.cid || null,
             title: stripEm(v.title),
             pic: thumb(v.pic),

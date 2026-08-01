@@ -29,8 +29,12 @@
         report("js error", msg + " @" + String(src).split("/").pop() + ":" + line);
         return false;
     };
+    /* Quotes matter: several call sites interpolate into attributes, and search
+     * suggestions are text bilibili supplies, not ours. */
     function esc(s) {
-        return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return String(s || "")
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     }
 
     function status(text) { statusEl.textContent = text || ""; }
@@ -43,18 +47,34 @@
         toastTimer = setTimeout(function () { toastEl.className = "hidden"; }, 4000);
     }
 
+    /* Errors used to be terminal: the only escape from "加载失败" was to switch
+     * tab and come back. */
+    function showError(message, retry) {
+        screenEl.innerHTML = '<div class="empty">' + esc(message) +
+            '<div class="actions" style="justify-content:center;margin-top:32px">' +
+            '<div class="btn focusable" id="btn-retry">重试</div></div></div>';
+        var b = el("btn-retry");
+        if (b) { b.onselect = retry; }
+        Nav.reset("#btn-retry");
+    }
+
     function markTab() {
         var tabs = document.querySelectorAll("#tabs .tab");
+        var focused = Nav.current();
         for (var i = 0; i < tabs.length; i++) {
             var on = tabs[i].getAttribute("data-screen") === state.screen;
-            tabs[i].className = "tab focusable" + (on ? " active" : "");
+            /* Rebuilding className used to strip "focused" from the tab the user
+             * was standing on, so the ring vanished for as long as the feed took
+             * to load. */
+            tabs[i].className = "tab focusable" + (on ? " active" : "") +
+                                (tabs[i] === focused ? " focused" : "");
         }
     }
 
     /* ---------------- grid of videos ---------------- */
 
     function cardHtml(v, i) {
-        var seen = Resume.fraction(v.bvid, v.cid);
+        var seen = Resume.fraction(v.bvid);
         return '<div class="card focusable" data-i="' + i + '">' +
                '<div class="thumb"><img src="' + esc(v.pic) + '" alt="">' +
                '<span class="dur">' + esc(v.duration) + '</span>' +
@@ -88,6 +108,15 @@
 
     var feedRequest = 0;
     var loadingMore = false;
+
+    /* Bumped whenever the user changes what they are looking at. Any callback
+     * that would paint the screen checks it first: a slow response arriving
+     * after the viewer has moved on used to redraw the old screen over the new
+     * one, and — worse — hand focus to an element no longer in the document,
+     * which leaves the remote apparently dead. */
+    var viewToken = 0;
+    function newView() { return ++viewToken; }
+    function stillViewing(token) { return token === viewToken; }
 
     /* ranking answers with its full 100 in one go and has no second page. */
     function fetchPage(kind, page, onOk, onFail) {
@@ -157,6 +186,7 @@
         state.screen = kind;
         markTab();
         var req = ++feedRequest;
+        newView();
 
         var cached = feedCache[kind];
         if (restore && cached) {
@@ -183,8 +213,7 @@
             Nav.reset(".card");
         }, function (why) {
             if (req !== feedRequest) { return; }
-            screenEl.innerHTML = '<div class="empty">加载失败：' + esc(why) + '</div>';
-            Nav.reset(".tab");
+            showError("加载失败：" + why, function () { loadFeed(kind); });
         });
     }
 
@@ -207,6 +236,7 @@
     function renderSearch() {
         state.screen = "search";
         markTab();
+        newView();
         var html = '<div class="search-wrap">' +
             '<div class="search-box" id="qbox">' + esc(state.query || "输入关键词") + '</div>' +
             '<div class="keyboard">';
@@ -312,9 +342,13 @@
 
     function runSearch() {
         if (!state.query.trim()) { toast("先输入关键词"); return; }
+        var token = viewToken;
         var results = el("results");
         results.innerHTML = '<div class="empty">搜索中…</div>';
         API.search(state.query.trim(), function (items) {
+            if (!stillViewing(token)) { return; }
+            results = el("results");
+            if (!results) { return; }
             if (!items.length) { results.innerHTML = '<div class="empty">没有结果</div>'; return; }
             var html = '<div class="grid">';
             for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], i); }
@@ -326,7 +360,9 @@
             }
             Nav.focus(cards[0]);
         }, function (why) {
-            results.innerHTML = '<div class="empty">搜索失败：' + esc(why) + '</div>';
+            if (!stillViewing(token)) { return; }
+            results = el("results");
+            if (results) { results.innerHTML = '<div class="empty">搜索失败：' + esc(why) + '</div>'; }
         });
     }
 
@@ -335,6 +371,7 @@
     function renderMine() {
         state.screen = "mine";
         markTab();
+        newView();
         Auth.cancelQrLogin();
 
         if (!Auth.isLoggedIn()) {
@@ -435,12 +472,14 @@
         rememberPosition();
         state.stack.push(state.screen);
         state.screen = "detail";
+        var token = newView();
         screenEl.innerHTML = '<div class="empty">加载中…</div>';
         API.view(v.bvid, function (d) {
+            if (!stillViewing(token)) { return; }
             openDetailFrom(d);
         }, function (why) {
-            screenEl.innerHTML = '<div class="empty">加载失败：' + esc(why) + '</div>';
-            Nav.reset(".tab");
+            if (!stillViewing(token)) { return; }
+            showError("加载失败：" + why, function () { openDetail(v); });
         });
     }
 
@@ -449,6 +488,7 @@
     function openDetailFrom(d) {
         state.screen = "detail";
         markTab();
+        var token = newView();
         var html = '<div class="detail">' +
             '<div class="detail-head">' +
             '<img class="detail-pic" src="' + esc(d.pic) + '" alt="">' +
@@ -482,6 +522,8 @@
         Nav.reset("#btn-play");
 
         API.related(d.bvid, function (items) {
+            if (!stillViewing(token)) { return; }
+            d.related = items;
             var r = el("related");
             if (!r || !items.length) { return; }
             var h = '<div class="grid">';
@@ -506,6 +548,101 @@
     }
 
     var chromeTimer = null;
+    var pendingNext = null;     /* {detail, cid, title} awaiting the countdown */
+    var nextTimer = null;
+    var playedInChain = {};     /* stops a chain of autoplays circling back */
+
+    /* What follows the video that just finished. A multi-part upload continues
+     * with its own next part — jumping to an unrelated recommendation halfway
+     * through a tutorial series is not what anyone means by "next". Otherwise
+     * take the first related video not already seen in this chain. */
+    function nextUp(cb) {
+        if (!playing) { cb(null); return; }
+        var d = playing.detail, cid = playing.cid;
+
+        if (d.pages && d.pages.length > 1) {
+            for (var i = 0; i < d.pages.length - 1; i++) {
+                if (d.pages[i].cid === cid) {
+                    cb({ detail: d, cid: d.pages[i + 1].cid,
+                         title: "P" + (i + 2) + "  " + d.pages[i + 1].part });
+                    return;
+                }
+            }
+        }
+
+        function fromList(list) {
+            for (var i = 0; i < (list || []).length; i++) {
+                if (playedInChain[list[i].bvid]) { continue; }
+                var pick = list[i];
+                API.view(pick.bvid, function (nd) {
+                    cb({ detail: nd, cid: nd.cid, title: nd.title });
+                }, function () { cb(null); });
+                return;
+            }
+            cb(null);
+        }
+
+        if (d.related) { fromList(d.related); }
+        else { API.related(d.bvid, function (list) { d.related = list; fromList(list); },
+                           function () { cb(null); }); }
+    }
+
+    var nextToken = 0;
+
+    function cancelNext() {
+        nextToken++;   /* an in-flight nextUp lookup must not surface later */
+        if (nextTimer) { clearInterval(nextTimer); nextTimer = null; }
+        pendingNext = null;
+        el("nextup").className = "hidden";
+    }
+
+    function beginAutoNext() {
+        var was = playing;
+        Player.stop();
+        playing = null;
+        if (!was) { showPlayerUi(false); return; }
+        playedInChain[was.detail.bvid] = 1;
+        playing = was;   /* nextUp reads it, and the keys still belong to the player */
+
+        var token = ++nextToken;
+        nextUp(function (next) {
+            /* Two round trips happen before the countdown appears; pressing 返回
+             * in that window used to leave the lookup running, so a video would
+             * start by itself on top of whatever the viewer had navigated to. */
+            if (token !== nextToken) { return; }
+            var finished = playing;
+            playing = null;
+            if (!next) {
+                /* Nothing to continue with: fall back to the page it came from. */
+                showPlayerUi(false);
+                if (finished && finished.detail) { openDetailFrom(finished.detail); }
+                return;
+            }
+            /* Remember what just finished: cancelling the countdown should land
+             * on the video the viewer was watching, not the one queued up. */
+            next.from = finished && finished.detail;
+            pendingNext = next;
+            el("playerui").className = "hidden";
+            el("nextup").className = "";
+            el("nextup-title").textContent = next.title;
+
+            var left = 5;
+            el("nextup-count").textContent = left;
+            nextTimer = setInterval(function () {
+                left--;
+                el("nextup-count").textContent = left;
+                if (left <= 0) { playNext(); }
+            }, 1000);
+        });
+    }
+
+    function playNext() {
+        var next = pendingNext;
+        cancelNext();
+        if (!next) { return; }
+        playedInChain[next.detail.bvid] = 1;
+        play(next.detail, next.cid);
+    }
 
     /* The overlay is for orientation, not decoration: show it on any input and
      * take it away again so the picture is unobstructed while watching. */
@@ -521,6 +658,7 @@
     function showPlayerUi(on) {
         el("shell").className = on ? "hidden" : "";
         el("playerui").className = on ? "" : "hidden";
+        if (!on) { el("nextup").className = "hidden"; }
         if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
         if (on) { showChrome(); }
     }
@@ -544,16 +682,24 @@
          * MSE instead was a mistake: it bought nothing and gave up native
          * buffering, seeking and hardware decode. */
         playing.canDowngrade = true;
+        var session = playing;
         API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
+            /* Backing out while the url resolves used to start playback with no
+             * way to stop it — audio under the browse UI, deaf to the remote. */
+            if (playing !== session) { return; }
             playing.quality = r.quality;
+            playing.accept = r.accept || [];
             Player.playProgressive(r.url, startMs);
         }, function (why) {
+            if (playing !== session) { return; }
             /* No single-file stream for this video: DASH through MSE is the
              * only remaining route. */
             report("player", "no durl (" + why + "), falling back to dash");
             API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
+                if (playing !== session) { return; }
                 Player.playDash(dash, startMs);
             }, function (w2) {
+                if (playing !== session) { return; }
                 toast("播放失败：" + w2);
                 stopPlayback();
             });
@@ -568,10 +714,12 @@
         playing.downgraded = true;
         playing.failed = false;
         toast(why + "，改用标清");
-        var d = playing.detail, cid = playing.cid;
+        var d = playing.detail, cid = playing.cid, session = playing;
         API.playurlProgressive(d.bvid, cid, 64, function (r) {
+            if (playing !== session) { return; }
             Player.playProgressive(r.url, Resume.positionMs(d.bvid, cid));
         }, function (w2) {
+            if (playing !== session) { return; }
             toast("播放失败：" + w2);
             stopPlayback();
         });
@@ -580,6 +728,8 @@
     function stopPlayback() {
         var was = playing;
         Resume.flush();
+        cancelNext();
+        playedInChain = {};
         Player.stop();
         playing = null;
         showPlayerUi(false);
@@ -606,7 +756,9 @@
                 : "确认键 播放/暂停 · 左右 快退/快进 · 返回键 退出";
         } else if (kind === "ended") {
             if (playing) { Resume.forget(playing.detail.bvid, playing.cid); }
-            stopPlayback();
+            beginAutoNext();
+        } else if (kind === "seek-refused") {
+            toast("该片段尚未缓冲，无法跳转");
         } else if (kind === "log") {
             report("player", data);
         } else if (kind === "error") {
@@ -624,6 +776,19 @@
     /* ---------------- keys ---------------- */
 
     Nav.onKey(function (k) {
+        if (pendingNext) {
+            if (k === Nav.KEY.ENTER || k === Nav.KEY.PLAY_PAUSE) { playNext(); return true; }
+            if (k === Nav.KEY.RETURN) {
+                var back = pendingNext.from || pendingNext.detail;
+                cancelNext();
+                showPlayerUi(false);
+                playedInChain = {};
+                openDetailFrom(back);
+                return true;
+            }
+            if (k === Nav.KEY.EXIT) { return false; }
+            return true;
+        }
         if (!playing) { return false; }
         showChrome();
         /* While playing, the remote drives the player rather than the focus. */
