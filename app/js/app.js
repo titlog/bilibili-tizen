@@ -54,9 +54,12 @@
     /* ---------------- grid of videos ---------------- */
 
     function cardHtml(v, i) {
+        var seen = Resume.fraction(v.bvid, v.cid);
         return '<div class="card focusable" data-i="' + i + '">' +
                '<div class="thumb"><img src="' + esc(v.pic) + '" alt="">' +
-               '<span class="dur">' + esc(v.duration) + '</span></div>' +
+               '<span class="dur">' + esc(v.duration) + '</span>' +
+               (seen ? '<span class="seen" style="width:' + Math.round(seen * 100) + '%"></span>' : "") +
+               '</div>' +
                '<div class="card-title">' + esc(v.title) + '</div>' +
                '<div class="card-meta">' + esc(v.author) + ' &middot; ' + esc(v.play) + '次观看</div>' +
                '</div>';
@@ -79,18 +82,120 @@
         }
     }
 
-    function loadFeed(kind) {
+    /* Feeds are cached so that coming back from a video lands where the user
+     * left off instead of refetching and dumping focus on the first card. */
+    var feedCache = {};
+
+    var feedRequest = 0;
+    var loadingMore = false;
+
+    /* ranking answers with its full 100 in one go and has no second page. */
+    function fetchPage(kind, page, onOk, onFail) {
+        if (kind === "ranking") { return page === 1 ? API.ranking(onOk, onFail) : onOk([]); }
+        if (kind === "rcmd") { return API.recommended(page, onOk, onFail); }
+        if (kind === "dynamic") { return API.dynamic(page, onOk, onFail); }
+        return API.popular(page, onOk, onFail);
+    }
+
+    /* Feeds used to stop dead after one screenful. Rather than a "load more"
+     * button, which costs a press and a focus jump, the next page is fetched as
+     * the focus nears the end of what is already rendered. */
+    function maybeLoadMore(focused) {
+        if (loadingMore) { return; }
+        var cache = feedCache[state.screen];
+        if (!cache || cache.exhausted) { return; }
+        if (!focused || !focused.getAttribute || focused.getAttribute("data-i") === null) { return; }
+        if (!/(^|\s)card(\s|$)/.test(focused.className)) { return; }
+
+        var idx = Number(focused.getAttribute("data-i"));
+        if (idx < cache.items.length - 8) { return; }
+
+        loadingMore = true;
+        var kind = state.screen, next = (cache.page || 1) + 1;
+        fetchPage(kind, next, function (more) {
+            loadingMore = false;
+            var c = feedCache[kind];
+            if (!c || state.screen !== kind) { return; }
+
+            /* rcmd can repeat items across batches; dropping duplicates keeps
+             * the grid from filling with the same handful of videos. */
+            var seen = {};
+            for (var i = 0; i < c.items.length; i++) { seen[c.items[i].bvid] = 1; }
+            var fresh = [];
+            for (var j = 0; j < more.length; j++) {
+                if (more[j].bvid && !seen[more[j].bvid]) { fresh.push(more[j]); seen[more[j].bvid] = 1; }
+            }
+
+            c.page = next;
+            if (!fresh.length) { c.exhausted = true; return; }
+            c.items = c.items.concat(fresh);
+            appendCards(fresh, c.items.length - fresh.length);
+        }, function () {
+            loadingMore = false;
+            var c = feedCache[kind];
+            if (c) { c.exhausted = true; }
+        });
+    }
+
+    function appendCards(items, offset) {
+        var grid = screenEl.querySelector(".grid");
+        if (!grid) { return; }
+        var html = "";
+        for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], offset + i); }
+        var holder = document.createElement("div");
+        holder.innerHTML = html;
+        while (holder.firstChild) {
+            var node = holder.firstChild;
+            holder.removeChild(node);
+            grid.appendChild(node);
+            (function (card, v) { card.onselect = function () { openDetail(v); }; })(
+                node, items[Number(node.getAttribute("data-i")) - offset]);
+        }
+    }
+
+    function loadFeed(kind, restore) {
         state.screen = kind;
         markTab();
+        var req = ++feedRequest;
+
+        var cached = feedCache[kind];
+        if (restore && cached) {
+            renderGrid(cached.items);
+            var cards = screenEl.querySelectorAll(".card");
+            var target = cards[Math.min(cached.index || 0, cards.length - 1)];
+            Nav.focus(target || cards[0]);
+            screenEl.scrollTop = cached.scrollTop || 0;
+            return;
+        }
+
         screenEl.innerHTML = '<div class="empty">加载中…</div>';
-        var fn = kind === "ranking" ? API.ranking : function (ok, fail) { API.popular(1, ok, fail); };
-        fn(function (items) {
+        if (kind === "dynamic" && !Auth.isLoggedIn()) {
+            screenEl.innerHTML = '<div class="empty">动态需要登录，先去「我的」扫码</div>';
+            Nav.reset(".tab");
+            return;
+        }
+        fetchPage(kind, 1, function (items) {
+            /* Tab presses outrun the network: without this the slower of two
+             * requests wins and paints its content under the other's heading. */
+            if (req !== feedRequest) { return; }
+            feedCache[kind] = { items: items, index: 0, scrollTop: 0, page: 1, exhausted: !items.length };
             renderGrid(items);
             Nav.reset(".card");
         }, function (why) {
+            if (req !== feedRequest) { return; }
             screenEl.innerHTML = '<div class="empty">加载失败：' + esc(why) + '</div>';
             Nav.reset(".tab");
         });
+    }
+
+    function rememberPosition() {
+        var c = feedCache[state.screen];
+        if (!c) { return; }
+        var cur = Nav.current();
+        if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null) {
+            c.index = Number(cur.getAttribute("data-i"));
+        }
+        c.scrollTop = screenEl.scrollTop;
     }
 
     /* ---------------- search ---------------- */
@@ -114,10 +219,12 @@
             html += "</div>";
         }
         html += '<div class="krow">' +
+                '<div class="key wide focusable" data-act="ime">中文输入</div>' +
                 '<div class="key wide focusable" data-act="space">空格</div>' +
                 '<div class="key wide focusable" data-act="del">删除</div>' +
                 '<div class="key wide go focusable" data-act="go">搜索</div>' +
-                '</div></div><div id="results"></div></div>';
+                '</div></div><div id="suggests" class="suggests"></div>' +
+                '<div id="results"></div></div>';
         screenEl.innerHTML = html;
 
         var keys = screenEl.querySelectorAll(".key");
@@ -130,11 +237,77 @@
                     else if (act === "space") { state.query += " "; }
                     else if (act === "del") { state.query = state.query.slice(0, -1); }
                     else if (act === "go") { runSearch(); return; }
+                    else if (act === "ime") { openIme(); return; }
                     el("qbox").textContent = state.query || "输入关键词";
+                    loadSuggestions();
                 };
             })(keys[i]);
         }
         Nav.reset(".key");
+    }
+
+    /* The on-screen letter grid cannot type Chinese. Focusing a real input
+     * hands over to the television's own IME, which can — and which also gives
+     * the user their usual keyboard rather than one invented here. */
+    function openIme() {
+        var input = el("ime");
+        input.value = state.query;
+        input.onchange = input.onblur = function () {
+            state.query = input.value || "";
+            var box = el("qbox");
+            if (box) { box.textContent = state.query || "输入关键词"; }
+            loadSuggestions();
+        };
+        input.onkeydown = function (e) {
+            if (e.keyCode === 13) {          /* enter closes the IME and searches */
+                state.query = input.value || "";
+                input.blur();
+                var box = el("qbox");
+                if (box) { box.textContent = state.query || "输入关键词"; }
+                runSearch();
+            } else if (e.keyCode === 10009) { /* return key backs out of the IME */
+                input.blur();
+                Nav.reset(".key");
+            }
+            e.stopPropagation();
+        };
+        input.focus();
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch (e) {}
+    }
+
+    var suggestTimer = null;
+
+    /* Suggestions are worth a lot on a remote, where every character is several
+     * button presses — one press on a suggestion beats ten on the grid. */
+    function loadSuggestions() {
+        if (suggestTimer) { clearTimeout(suggestTimer); }
+        var term = state.query.trim();
+        var box = el("suggests");
+        if (!box) { return; }
+        if (term.length < 1) { box.innerHTML = ""; return; }
+
+        suggestTimer = setTimeout(function () {
+            API.suggest(term, function (list) {
+                var b = el("suggests");
+                if (!b || state.query.trim() !== term) { return; }
+                var html = "";
+                for (var i = 0; i < list.length && i < 8; i++) {
+                    html += '<div class="suggest focusable" data-s="' + esc(list[i]) + '">' +
+                            esc(list[i]) + "</div>";
+                }
+                b.innerHTML = html;
+                var nodes = b.querySelectorAll(".suggest");
+                for (var j = 0; j < nodes.length; j++) {
+                    (function (node) {
+                        node.onselect = function () {
+                            state.query = node.getAttribute("data-s");
+                            el("qbox").textContent = state.query;
+                            runSearch();
+                        };
+                    })(nodes[j]);
+                }
+            }, function () { /* suggestions are a nicety; stay quiet on failure */ });
+        }, 300);
     }
 
     function runSearch() {
@@ -259,58 +432,67 @@
     /* ---------------- detail ---------------- */
 
     function openDetail(v) {
+        rememberPosition();
         state.stack.push(state.screen);
         state.screen = "detail";
         screenEl.innerHTML = '<div class="empty">加载中…</div>';
         API.view(v.bvid, function (d) {
-            var html = '<div class="detail">' +
-                '<div class="detail-head">' +
-                '<img class="detail-pic" src="' + esc(d.pic) + '" alt="">' +
-                '<div class="detail-info">' +
-                '<h2>' + esc(d.title) + '</h2>' +
-                '<div class="detail-meta">' + esc(d.author) + ' &middot; ' +
-                    esc(d.duration) + ' &middot; ' + esc(d.play) + '次观看</div>' +
-                '<div class="detail-desc">' + esc((d.desc || "").slice(0, 220)) + '</div>' +
-                '<div class="actions">' +
-                '<div class="btn focusable" id="btn-play">播放</div>' +
-                '</div></div></div>';
-
-            if (d.pages.length > 1) {
-                html += '<div class="section">分P</div><div class="parts">';
-                for (var i = 0; i < d.pages.length && i < 30; i++) {
-                    html += '<div class="part focusable" data-cid="' + d.pages[i].cid + '">' +
-                            (i + 1) + " " + esc(d.pages[i].part) + "</div>";
-                }
-                html += "</div>";
-            }
-            html += '<div class="section">相关推荐</div><div id="related"></div></div>';
-            screenEl.innerHTML = html;
-
-            el("btn-play").onselect = function () { play(d, d.cid); };
-            var parts = screenEl.querySelectorAll(".part");
-            for (var p = 0; p < parts.length; p++) {
-                (function (node) {
-                    node.onselect = function () { play(d, Number(node.getAttribute("data-cid"))); };
-                })(parts[p]);
-            }
-            Nav.reset("#btn-play");
-
-            API.related(d.bvid, function (items) {
-                var r = el("related");
-                if (!r || !items.length) { return; }
-                var h = '<div class="grid">';
-                for (var i = 0; i < items.length && i < 12; i++) { h += cardHtml(items[i], i); }
-                r.innerHTML = h + "</div>";
-                var cards = r.querySelectorAll(".card");
-                for (var j = 0; j < cards.length; j++) {
-                    (function (card, vv) { card.onselect = function () { openDetail(vv); }; })(
-                        cards[j], items[Number(cards[j].getAttribute("data-i"))]);
-                }
-            }, function () {});
+            openDetailFrom(d);
         }, function (why) {
             screenEl.innerHTML = '<div class="empty">加载失败：' + esc(why) + '</div>';
             Nav.reset(".tab");
         });
+    }
+
+    /* Split out so leaving the player can rebuild the page it came from without
+     * another round trip. */
+    function openDetailFrom(d) {
+        state.screen = "detail";
+        markTab();
+        var html = '<div class="detail">' +
+            '<div class="detail-head">' +
+            '<img class="detail-pic" src="' + esc(d.pic) + '" alt="">' +
+            '<div class="detail-info">' +
+            '<h2>' + esc(d.title) + '</h2>' +
+            '<div class="detail-meta">' + esc(d.author) + ' &middot; ' +
+                esc(d.duration) + ' &middot; ' + esc(d.play) + '次观看</div>' +
+            '<div class="detail-desc">' + esc((d.desc || "").slice(0, 220)) + '</div>' +
+            '<div class="actions">' +
+            '<div class="btn focusable" id="btn-play">播放</div>' +
+            '</div></div></div>';
+
+        if (d.pages.length > 1) {
+            html += '<div class="section">分P</div><div class="parts">';
+            for (var i = 0; i < d.pages.length && i < 30; i++) {
+                html += '<div class="part focusable" data-cid="' + d.pages[i].cid + '">' +
+                        (i + 1) + " " + esc(d.pages[i].part) + "</div>";
+            }
+            html += "</div>";
+        }
+        html += '<div class="section">相关推荐</div><div id="related"></div></div>';
+        screenEl.innerHTML = html;
+
+        el("btn-play").onselect = function () { play(d, d.cid); };
+        var parts = screenEl.querySelectorAll(".part");
+        for (var p = 0; p < parts.length; p++) {
+            (function (node) {
+                node.onselect = function () { play(d, Number(node.getAttribute("data-cid"))); };
+            })(parts[p]);
+        }
+        Nav.reset("#btn-play");
+
+        API.related(d.bvid, function (items) {
+            var r = el("related");
+            if (!r || !items.length) { return; }
+            var h = '<div class="grid">';
+            for (var i = 0; i < items.length && i < 12; i++) { h += cardHtml(items[i], i); }
+            r.innerHTML = h + "</div>";
+            var cards = r.querySelectorAll(".card");
+            for (var j = 0; j < cards.length; j++) {
+                (function (card, vv) { card.onselect = function () { openDetail(vv); }; })(
+                    cards[j], items[Number(cards[j].getAttribute("data-i"))]);
+            }
+        }, function () {});
     }
 
     /* ---------------- playback ---------------- */
@@ -323,13 +505,30 @@
         return Math.floor(m / 60) + ":" + ("0" + (m % 60)).slice(-2) + ":" + ("0" + s).slice(-2);
     }
 
+    var chromeTimer = null;
+
+    /* The overlay is for orientation, not decoration: show it on any input and
+     * take it away again so the picture is unobstructed while watching. */
+    function showChrome() {
+        if (!playing) { return; }
+        el("playerui").className = "";
+        if (chromeTimer) { clearTimeout(chromeTimer); }
+        chromeTimer = setTimeout(function () {
+            if (playing && !Player.isPaused()) { el("playerui").className = "hidden"; }
+        }, 4000);
+    }
+
     function showPlayerUi(on) {
         el("shell").className = on ? "hidden" : "";
         el("playerui").className = on ? "" : "hidden";
+        if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
+        if (on) { showChrome(); }
     }
 
     function play(detail, cid) {
         playing = { detail: detail, cid: cid };
+        var startMs = Resume.positionMs(detail.bvid, cid);
+        if (startMs) { toast("从 " + fmt(startMs) + " 继续播放"); }
         el("player-title").textContent = detail.title;
         el("player-pos").textContent = "0:00";
         el("player-dur").textContent = detail.duration;
@@ -339,42 +538,63 @@
 
         /* Progressive is the better route when it exists; DASH is the fallback
          * for videos bilibili no longer offers as a single file. */
-        /* AVPlay has no access to the engine's cookie jar, so a jar-only
-         * session has to play through MSE or it silently drops to 720p. */
-        if (Auth.needsJar() && PREFERRED_QN > 64) {
-            API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
-                Player.playDash(dash, 0);
-            }, function (why) {
-                toast("高清流获取失败，改用标清：" + why);
-                API.playurlProgressive(detail.bvid, cid, 64, function (r) {
-                    Player.playProgressive(r.url, 0);
-                }, function (w2) { toast("播放失败：" + w2); stopPlayback(); });
-            });
-            return;
-        }
-
+        /* Progressive first, always. The stream url is pre-signed, so AVPlay
+         * needs no session to fetch it — only the playurl call does, and that
+         * goes over XHR with the cookie jar. Routing signed-in playback through
+         * MSE instead was a mistake: it bought nothing and gave up native
+         * buffering, seeking and hardware decode. */
+        playing.canDowngrade = true;
         API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
-            Player.playProgressive(r.url, 0);
-        }, function () {
-            toast("无渐进式流，改用 DASH");
+            playing.quality = r.quality;
+            Player.playProgressive(r.url, startMs);
+        }, function (why) {
+            /* No single-file stream for this video: DASH through MSE is the
+             * only remaining route. */
+            report("player", "no durl (" + why + "), falling back to dash");
             API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
-                Player.playDash(dash, 0);
-            }, function (why) {
-                toast("播放失败：" + why);
+                Player.playDash(dash, startMs);
+            }, function (w2) {
+                toast("播放失败：" + w2);
                 stopPlayback();
             });
         });
     }
 
+    /* Every CDN mirror refused, or DASH would not start. Rather than dead-end
+     * on an error, drop to the progressive stream, which is served from the
+     * plain hosts and has always worked here. */
+    function downgrade(why) {
+        if (!playing || playing.downgraded) { stopPlayback(); return; }
+        playing.downgraded = true;
+        playing.failed = false;
+        toast(why + "，改用标清");
+        var d = playing.detail, cid = playing.cid;
+        API.playurlProgressive(d.bvid, cid, 64, function (r) {
+            Player.playProgressive(r.url, Resume.positionMs(d.bvid, cid));
+        }, function (w2) {
+            toast("播放失败：" + w2);
+            stopPlayback();
+        });
+    }
+
     function stopPlayback() {
+        var was = playing;
+        Resume.flush();
         Player.stop();
         playing = null;
         showPlayerUi(false);
-        Nav.reset(".card");
+        /* Back out to the page the video was started from. Dropping to a feed
+         * and re-focusing its first card is disorienting after a 50 minute
+         * video. */
+        if (was && was.detail) { openDetailFrom(was.detail); }
+        else { loadFeed(state.screen === "detail" ? "rcmd" : state.screen, true); }
     }
 
     Player.on(function (kind, data) {
         if (kind === "time") {
+            if (playing) {
+                Resume.record(playing.detail.bvid, playing.cid, data.position, data.duration);
+            }
             el("player-pos").textContent = fmt(data.position);
             if (data.duration) {
                 el("player-dur").textContent = fmt(data.duration);
@@ -385,13 +605,17 @@
             el("player-hint").textContent = data ? "缓冲中…"
                 : "确认键 播放/暂停 · 左右 快退/快进 · 返回键 退出";
         } else if (kind === "ended") {
+            if (playing) { Resume.forget(playing.detail.bvid, playing.cid); }
             stopPlayback();
+        } else if (kind === "log") {
+            report("player", data);
         } else if (kind === "error") {
             /* One failure can cascade into a burst as queued work unwinds; only
              * the first is worth reporting or acting on. */
             if (!playing || playing.failed) { return; }
             playing.failed = true;
             report("player", data);
+            if (playing.canDowngrade && !playing.downgraded) { downgrade(String(data)); return; }
             toast("播放错误：" + data);
             stopPlayback();
         }
@@ -401,11 +625,13 @@
 
     Nav.onKey(function (k) {
         if (!playing) { return false; }
+        showChrome();
         /* While playing, the remote drives the player rather than the focus. */
         switch (k) {
             case Nav.KEY.ENTER:
             case Nav.KEY.PLAY_PAUSE:
-                if (Player.isPaused()) { Player.resume(); } else { Player.pause(); }
+                if (Player.isPaused()) { Player.resume(); showChrome(); }
+                else { Player.pause(); el("playerui").className = ""; if (chromeTimer) { clearTimeout(chromeTimer); } }
                 return true;
             case Nav.KEY.LEFT:
             case Nav.KEY.REW:
@@ -415,6 +641,8 @@
                 Player.seekBy(10000); return true;
             case Nav.KEY.RETURN:
                 stopPlayback(); return true;
+            case Nav.KEY.EXIT:
+                return false;   /* let Nav close the app */
             default:
                 return true;
         }
@@ -423,13 +651,25 @@
     Nav.onBack(function () {
         if (playing) { stopPlayback(); return; }
         if (state.screen === "detail") {
-            var back = state.stack.pop() || "popular";
+            var back = state.stack.pop();
             if (back === "search") { renderSearch(); }
             else if (back === "mine") { renderMine(); }
-            else { loadFeed(back); }
+            else if (back === "detail") {
+                /* Reached from a related video. Unwind to the nearest real
+                 * screen rather than asking loadFeed for a "detail" feed, which
+                 * silently fell through to 热门 under the wrong heading. */
+                while (state.stack.length && state.stack[state.stack.length - 1] === "detail") {
+                    state.stack.pop();
+                }
+                var under = state.stack.pop() || "rcmd";
+                if (under === "search") { renderSearch(); }
+                else if (under === "mine") { renderMine(); }
+                else { loadFeed(under, true); }
+            } else { loadFeed(back || "rcmd", true); }
             return;
         }
-        if (state.screen !== "popular") { loadFeed("popular"); return; }
+        Auth.cancelQrLogin();
+        if (state.screen !== "rcmd") { loadFeed("rcmd"); return; }
         try { tizen.application.getCurrentApplication().exit(); } catch (e) {}
     });
 
@@ -441,6 +681,7 @@
         toastEl = el("toast");
 
         Nav.registerKeys();
+        Nav.onFocus(maybeLoadMore);
 
         var tabs = document.querySelectorAll("#tabs .tab");
         for (var i = 0; i < tabs.length; i++) {
@@ -455,6 +696,6 @@
             })(tabs[i]);
         }
 
-        loadFeed("popular");
+        loadFeed("rcmd");
     };
 })();

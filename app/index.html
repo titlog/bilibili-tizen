@@ -21,8 +21,10 @@
     <header id="topbar">
         <div class="brand">bilibili</div>
         <nav id="tabs">
+            <div class="tab focusable" data-screen="rcmd">推荐</div>
             <div class="tab focusable" data-screen="popular">热门</div>
             <div class="tab focusable" data-screen="ranking">排行</div>
+            <div class="tab focusable" data-screen="dynamic">动态</div>
             <div class="tab focusable" data-screen="search">搜索</div>
             <div class="tab focusable" data-screen="mine">我的</div>
         </nav>
@@ -43,11 +45,14 @@
     <div id="player-hint">确认键 播放/暂停 &middot; 左右 快退/快进 &middot; 返回键 退出</div>
 </div>
 
+<input id="ime" type="text" autocomplete="off">
+
 <div id="toast" class="hidden"></div>
 
 <script src="js/config.js"></script>
 <script src="js/qr.js"></script>
 <script src="js/auth.js"></script>
+<script src="js/resume.js"></script>
 <script src="js/api.js"></script>
 <script src="js/nav.js"></script>
 <script src="js/player.js"></script>

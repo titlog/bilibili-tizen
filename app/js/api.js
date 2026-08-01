@@ -33,7 +33,8 @@ var API = (function () {
             try { j = JSON.parse(xhr.responseText); }
             catch (e) { onFail("bad JSON"); return; }
             if (j.code !== 0) { onFail(j.message || ("code " + j.code)); return; }
-            onOk(j.data);
+            /* Most endpoints answer under data; search suggestions use result. */
+            onOk(j.data !== undefined ? j.data : j.result);
         };
         xhr.ontimeout = function () { onFail("timeout"); };
         xhr.onerror = function () { onFail("network error"); };
@@ -83,6 +84,20 @@ var API = (function () {
     }
 
     return {
+        /* The web home page's feed. Personalised once the session cookies are
+         * in play, generic before that — same endpoint either way. */
+        recommended: function (page, onOk, onFail) {
+            /* This endpoint has no page cursor; fresh_idx asks it for a new
+             * batch, which is how the web home page loads more. */
+            getJson(BASE + "/x/web-interface/index/top/feed/rcmd?ps=24&fresh_type=4&fresh_idx=" +
+                    (page || 1) + "&fresh_idx_1h=" + (page || 1), function (d) {
+                var items = (d.item || []).filter(function (v) {
+                    return v.goto === "av" && v.bvid;
+                });
+                onOk(items.map(normalise));
+            }, onFail);
+        },
+
         popular: function (page, onOk, onFail) {
             getJson(BASE + "/x/web-interface/popular?ps=24&pn=" + (page || 1), function (d) {
                 onOk((d.list || []).map(normalise));
@@ -134,6 +149,45 @@ var API = (function () {
             xhr.ontimeout = function () { onFail("timeout"); };
             xhr.onerror = function () { onFail("network error"); };
             xhr.send();
+        },
+
+        /* Video posts from followed accounts. Login only — signed out this
+         * answers -101 rather than an empty list. */
+        dynamic: function (page, onOk, onFail) {
+            getJson(BASE + "/x/polymer/web-dynamic/v1/feed/all?type=video&page=" + (page || 1), function (d) {
+                var items = d.items || [];
+                var out = [];
+                for (var i = 0; i < items.length; i++) {
+                    var m = items[i].modules || {};
+                    var arch = (m.module_dynamic || {}).major;
+                    arch = arch && arch.archive;
+                    if (!arch || !arch.bvid) { continue; }
+                    out.push({
+                        bvid: arch.bvid,
+                        aid: arch.aid,
+                        cid: null,
+                        title: stripEm(arch.title),
+                        pic: thumb(arch.cover),
+                        author: ((m.module_author || {}).name) || "",
+                        duration: arch.duration_text || "",
+                        play: (arch.stat || {}).play || ""
+                    });
+                }
+                onOk(out);
+            }, onFail);
+        },
+
+        /* Search-as-you-type suggestions. Handy on a TV, where every extra
+         * character costs several button presses. */
+        suggest: function (term, onOk, onFail) {
+            var url = "https://s.search.bilibili.com/main/suggest?term=" +
+                      encodeURIComponent(term) + "&main_ver=v1";
+            getJson(url, function (d) {
+                /* The list sits under result.tag, not at the top level. */
+                var tags = ((d && d.tag) || []);
+                onOk(tags.map(function (t) { return stripEm(t.value || t.name || ""); })
+                         .filter(function (x) { return !!x; }));
+            }, onFail);
         },
 
         history: function (onOk, onFail) {
@@ -193,6 +247,33 @@ var API = (function () {
                       "&qn=" + (qn || 64) + "&fnval=16&fnver=0&fourk=1";
             getJson(url, function (d) {
                 if (!d.dash) { onFail("no dash streams"); return; }
+
+                /* Signed in, bilibili often hands out a PCDN node as the primary
+                 * host, and those answer 403 to a plain range request. Every
+                 * representation ships alternatives, so carry them all and let
+                 * the player work down the list. Deprioritise the mcdn hosts
+                 * rather than dropping them: sometimes they are all there is. */
+                function candidates(rep) {
+                    var all = [rep.baseUrl || rep.base_url]
+                        .concat(rep.backupUrl || rep.backup_url || [])
+                        .filter(function (u) { return !!u; });
+                    var good = [], iffy = [];
+                    for (var i = 0; i < all.length; i++) {
+                        var host = String(all[i]).split("/")[2] || "";
+                        if (host.indexOf("mcdn") >= 0 || host.indexOf("szbdyd") >= 0) {
+                            iffy.push(all[i]);
+                        } else { good.push(all[i]); }
+                    }
+                    return good.concat(iffy);
+                }
+                var kinds = ["video", "audio"];
+                for (var k = 0; k < kinds.length; k++) {
+                    var list = d.dash[kinds[k]] || [];
+                    for (var i = 0; i < list.length; i++) {
+                        list[i].urls = candidates(list[i]);
+                        list[i].baseUrl = list[i].urls[0];
+                    }
+                }
                 onOk(d.dash);
             }, onFail);
         }

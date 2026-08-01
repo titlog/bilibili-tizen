@@ -39,6 +39,7 @@ var Nav = (function () {
         current = el;
         if (el.className.indexOf("focused") < 0) { el.className += " focused"; }
         scrollIntoView(el);
+        if (handlers.focus) { handlers.focus(el); }
     }
 
     /* The TV browser's own scrollIntoView jumps; easing by hand keeps the
@@ -118,6 +119,7 @@ var Nav = (function () {
             setFocus(el || focusables()[0]);
         },
         onBack: function (fn) { handlers.back = fn; },
+        onFocus: function (fn) { handlers.focus = fn; },
         onKey: function (fn) { handlers.key = fn; },
         registerKeys: function () {
             try {
