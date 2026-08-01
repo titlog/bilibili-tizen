@@ -241,11 +241,21 @@ body {
     box-shadow: 0 4px 24px rgba(0,0,0,0.6);
 }
 
+/* Pulled up from the bottom over the still-playing video, the way a television
+   player shows "what else" without leaving the video. Scrolls, because related
+   videos are the point of it. */
 #options {
-    position: absolute; left: 0; bottom: 0; width: 1920px;
-    padding: 56px 64px 48px;
-    background: linear-gradient(to top, rgba(0,0,0,0.96), rgba(0,0,0,0.4));
+    position: absolute; left: 0; top: 46%; width: 1920px; height: 54%;
+    padding: 44px 64px 56px;
+    overflow-y: auto; overflow-x: hidden;
+    background: linear-gradient(to top, rgba(0,0,0,0.97) 30%, rgba(0,0,0,0.55));
 }
+#options::-webkit-scrollbar { display: none; }
+
+#panel-head { margin-bottom: 32px; }
+#panel-title { font-size: 38px; line-height: 1.3; margin-bottom: 10px; }
+#panel-meta { font-size: 23px; color: #8b959e; margin-bottom: 14px; }
+#panel-desc { font-size: 22px; color: #a8b2bb; line-height: 1.6; max-width: 1500px; }
 .opt-group { margin-bottom: 32px; }
 .opt-label { font-size: 24px; color: #8b959e; margin-bottom: 16px; letter-spacing: 2px; }
 .opt-row { display: flex; flex-wrap: wrap; gap: 16px; }
@@ -260,4 +270,26 @@ body {
 #player-quality {
     font-size: 22px; color: #0f1419; background: #cbd3da;
     padding: 4px 14px; border-radius: 6px; margin-left: 8px;
+}
+
+/* Titles were clipped mid-line with a hard edge, which reads as a rendering
+   fault rather than as truncation. */
+.card-title {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    text-overflow: ellipsis;
+}
+
+/* Once results exist the keyboard steps aside rather than pushing them off
+   the bottom of the screen. */
+.keyboard.collapsed { display: none; }
+
+.nextup-body { display: flex; gap: 28px; align-items: center; margin-bottom: 20px; }
+#nextup-thumb { width: 320px; height: 180px; object-fit: cover; border-radius: 10px; background: #1c2530; }
+.nextup-title { margin-bottom: 0; }
+
+/* A hint that the panel continues below the fold. */
+#options::after {
+    content: ""; display: block; height: 40px;
 }

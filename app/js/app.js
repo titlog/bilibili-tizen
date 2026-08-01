@@ -97,7 +97,7 @@
         var cards = screenEl.querySelectorAll(".card");
         for (var j = 0; j < cards.length; j++) {
             (function (card, v) {
-                card.onselect = function () { openDetail(v); };
+                card.onselect = function () { playVideo(v); };
             })(cards[j], items[Number(cards[j].getAttribute("data-i"))]);
         }
     }
@@ -177,7 +177,7 @@
             var node = holder.firstChild;
             holder.removeChild(node);
             grid.appendChild(node);
-            (function (card, v) { card.onselect = function () { openDetail(v); }; })(
+            (function (card, v) { card.onselect = function () { playVideo(v); }; })(
                 node, items[Number(node.getAttribute("data-i")) - offset]);
         }
     }
@@ -220,6 +220,10 @@
     function rememberPosition() {
         var c = feedCache[state.screen];
         if (!c) { return; }
+        /* Related videos in the player panel carry data-i too, so without this
+         * picking one wrote its index over the feed's and returning landed on
+         * an unrelated card. */
+        if (optionsOpen) { return; }
         var cur = Nav.current();
         if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null) {
             c.index = Number(cur.getAttribute("data-i"));
@@ -268,6 +272,8 @@
                     else if (act === "del") { state.query = state.query.slice(0, -1); }
                     else if (act === "go") { runSearch(); return; }
                     else if (act === "ime") { openIme(); return; }
+                    var kbd = screenEl.querySelector(".keyboard");
+                    if (kbd) { kbd.className = "keyboard"; }
                     el("qbox").textContent = state.query || "输入关键词";
                     loadSuggestions();
                 };
@@ -353,9 +359,13 @@
             var html = '<div class="grid">';
             for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], i); }
             results.innerHTML = html + "</div>";
+            /* Fold the keyboard away once there is something to look at, so the
+             * results are not buried under four rows of letters. */
+            var kb = screenEl.querySelector(".keyboard");
+            if (kb) { kb.className = "keyboard collapsed"; }
             var cards = results.querySelectorAll(".card");
             for (var j = 0; j < cards.length; j++) {
-                (function (card, v) { card.onselect = function () { openDetail(v); }; })(
+                (function (card, v) { card.onselect = function () { playVideo(v); }; })(
                     cards[j], items[Number(cards[j].getAttribute("data-i"))]);
             }
             Nav.focus(cards[0]);
@@ -394,14 +404,14 @@
 
             el("btn-logout").onselect = function () {
                 Auth.logout();
-                PREFERRED_QN = Settings.get("qn", 127);
+                PREFERRED_QN = Settings.get("qn", 80);
                 toast("已退出登录");
                 renderMine();
             };
             Nav.reset("#btn-logout");
 
             if (me.isLogin) {
-                PREFERRED_QN = Settings.get("qn", 127);
+                PREFERRED_QN = Settings.get("qn", 80);
                 API.history(function (items) {
                     var h = el("hist");
                     if (!h) { return; }
@@ -411,7 +421,7 @@
                     h.innerHTML = g + "</div>";
                     var cards = h.querySelectorAll(".card");
                     for (var j = 0; j < cards.length; j++) {
-                        (function (card, v) { card.onselect = function () { openDetail(v); }; })(
+                        (function (card, v) { card.onselect = function () { playVideo(v); }; })(
                             cards[j], items[Number(cards[j].getAttribute("data-i"))]);
                     }
                 }, function (why) {
@@ -483,8 +493,63 @@
         });
     }
 
-    /* Split out so leaving the player can rebuild the page it came from without
-     * another round trip. */
+    /* Selecting a video plays it. The old detail page is now the panel the down
+     * key pulls up over the video, which is where "what is this and what else is
+     * there" belongs on a television — one press from watching, and it never
+     * interrupts playback. */
+    function playVideo(v) {
+        rememberPosition();
+        if (v.pages) { play(v, v.cid); return; }
+
+        /* 推荐, 热门 and 排行 already carry the cid, which is all playback needs.
+         * Waiting on a view() round trip just to learn something we were handed
+         * put seconds of black screen between the button and the picture. Start
+         * immediately and fill in the description, parts and related list behind
+         * the video, since only the panel wants them. */
+        if (v.cid) {
+            var provisional = {
+                bvid: v.bvid, cid: v.cid, title: v.title, pic: v.pic,
+                author: v.author, duration: v.duration, play: v.play,
+                desc: "", pages: []
+            };
+            play(provisional, v.cid);
+            API.view(v.bvid, function (d) {
+                if (playing && playing.detail === provisional) {
+                    d.related = provisional.related;
+                    playing.detail = d;
+                    refreshPartLabel();
+                }
+            }, function () {});
+            return;
+        }
+
+        var token = newView();
+        toast("正在打开…");
+        API.view(v.bvid, function (d) {
+            if (!stillViewing(token)) { return; }
+            play(d, d.cid);
+        }, function (why) {
+            if (!stillViewing(token)) { return; }
+            toast("打开失败：" + why);
+        });
+    }
+
+    /* The part label can only be drawn once the page list has arrived. */
+    function refreshPartLabel() {
+        if (!playing) { return; }
+        var d = playing.detail, cid = playing.cid, label = "";
+        if (d.pages && d.pages.length > 1) {
+            for (var i = 0; i < d.pages.length; i++) {
+                if (d.pages[i].cid === cid) {
+                    label = "P" + (i + 1) + " / " + d.pages.length + "  " + d.pages[i].part;
+                    break;
+                }
+            }
+        }
+        el("player-part").textContent = label;
+    }
+
+    /* Kept for the panel, which needs the description and the related list. */
     function openDetailFrom(d) {
         state.screen = "detail";
         markTab();
@@ -531,7 +596,7 @@
             r.innerHTML = h + "</div>";
             var cards = r.querySelectorAll(".card");
             for (var j = 0; j < cards.length; j++) {
-                (function (card, vv) { card.onselect = function () { openDetail(vv); }; })(
+                (function (card, vv) { card.onselect = function () { playVideo(vv); }; })(
                     cards[j], items[Number(cards[j].getAttribute("data-i"))]);
             }
         }, function () {});
@@ -622,7 +687,8 @@
 
     function enterScrub() {
         if (scrub) { return; }
-        scrub = { target: Player.durationMs() ? lastKnownPosition : 0, presses: 0, timer: null };
+        if (!Player.durationMs()) { return; }
+        scrub = { target: lastKnownPosition, presses: 0, timer: null };
         el("playerui").className = "scrubbing";
         el("player-scrub").className = "";
         if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
@@ -631,6 +697,7 @@
     function moveScrub(dir) {
         if (!playing) { return; }
         if (!scrub) { enterScrub(); }
+        if (!scrub) { return; }   /* duration not known yet */
         scrub.presses++;
         var dur = Player.durationMs() || 0;
         scrub.target = Math.max(0, Math.min(dur ? dur - 2000 : Infinity,
@@ -679,9 +746,11 @@
 
     function openOptions() {
         if (!playing || optionsOpen) { return; }
+        cancelScrub();
         optionsOpen = true;
         el("playerui").className = "hidden";
-        el("options").className = "";
+        el("options").className = "scroll";
+        el("options").scrollTop = 0;
 
         var accept = (playing.accept && playing.accept.length)
             ? playing.accept : [80, 64, 32, 16];
@@ -694,6 +763,12 @@
         el("opt-quality").innerHTML = html;
 
         var d = playing.detail;
+
+        el("panel-title").textContent = d.title || "";
+        el("panel-meta").textContent = [d.author, d.duration, (d.play || "") + "次观看"]
+            .filter(function (x) { return !!x; }).join("  ·  ");
+        el("panel-desc").textContent = (d.desc || "").slice(0, 400);
+
         var group = el("opt-parts-group");
         if (d.pages && d.pages.length > 1) {
             group.className = "opt-group";
@@ -706,6 +781,27 @@
         } else {
             group.className = "opt-group hidden";
             el("opt-parts").innerHTML = "";
+        }
+
+        /* Related videos live in the panel now, so "what else" never costs the
+         * viewer their place in the video. */
+        var rg = el("opt-related-group");
+        if (d.related && d.related.length) {
+            rg.className = "opt-group";
+            var rh = '<div class="grid">';
+            for (var r = 0; r < d.related.length && r < 16; r++) {
+                rh += cardHtml(d.related[r], r);
+            }
+            el("opt-related").innerHTML = rh + "</div>";
+            var rcards = el("opt-related").querySelectorAll(".card");
+            for (var rc = 0; rc < rcards.length; rc++) {
+                (function (card, vv) {
+                    card.onselect = function () { closeOptions(); playVideo(vv); };
+                })(rcards[rc], d.related[Number(rcards[rc].getAttribute("data-i"))]);
+            }
+        } else {
+            rg.className = "opt-group hidden";
+            el("opt-related").innerHTML = "";
         }
 
         var opts = document.querySelectorAll("#options .opt");
@@ -725,8 +821,10 @@
     }
 
     function closeOptions() {
+        if (!optionsOpen) { return; }
         optionsOpen = false;
-        el("options").className = "hidden";
+        el("options").className = "hidden scroll";
+        if (!playing) { return; }
         el("playerui").className = "";
         showChrome();
     }
@@ -749,6 +847,11 @@
     }
 
     function beginAutoNext() {
+        /* The panel belongs to the video that just ended; leaving it up meant
+         * the countdown ran underneath it and the next video started with a
+         * stale quality list on screen. */
+        closeOptions();
+        cancelScrub();
         var was = playing;
         Player.stop();
         playing = null;
@@ -765,9 +868,9 @@
             var finished = playing;
             playing = null;
             if (!next) {
-                /* Nothing to continue with: fall back to the page it came from. */
-                showPlayerUi(false);
-                if (finished && finished.detail) { openDetailFrom(finished.detail); }
+                /* Nothing to continue with: back to where the viewer was. */
+                playing = finished;
+                stopPlayback();
                 return;
             }
             /* Remember what just finished: cancelling the countdown should land
@@ -777,8 +880,13 @@
             el("playerui").className = "hidden";
             el("nextup").className = "";
             el("nextup-title").textContent = next.title;
+            var thumb = el("nextup-thumb");
+            if (next.detail && next.detail.pic) {
+                thumb.src = next.detail.pic;
+                thumb.className = "";
+            } else { thumb.className = "hidden"; }
 
-            var left = 5;
+            var left = 8;
             el("nextup-count").textContent = left;
             nextTimer = setInterval(function () {
                 left--;
@@ -786,6 +894,19 @@
                 if (left <= 0) { playNext(); }
             }, 1000);
         });
+    }
+
+    function handleNextKeys(k) {
+        if (k === Nav.KEY.ENTER || k === Nav.KEY.PLAY_PAUSE) { playNext(); return true; }
+        if (k === Nav.KEY.RETURN) {
+            var finished = pendingNext.from;
+            cancelNext();
+            playing = finished ? { detail: finished, cid: finished.cid } : null;
+            stopPlayback();
+            return true;
+        }
+        if (k === Nav.KEY.EXIT) { return false; }
+        return true;
     }
 
     function playNext() {
@@ -831,6 +952,13 @@
             }
         }
         el("player-part").textContent = partLabel;
+        el("player-quality").textContent = "";
+
+        /* Fetched in the background: the panel wants it, and so does autoplay. */
+        if (!detail.related) {
+            API.related(detail.bvid, function (list) { detail.related = list; },
+                        function () {});
+        }
         el("pause-glyph").className = "hidden";
         cancelScrub();
         el("player-pos").textContent = "0:00";
@@ -854,8 +982,11 @@
             if (playing !== session) { return; }
             playing.quality = r.quality;
             playing.accept = r.accept || [];
+            playing.urls = r.urls || [r.url];
+            playing.urlIdx = 0;
+            playing.startMs = startMs;
             el("player-quality").textContent = QUALITY_NAMES[r.quality] || ("QN " + r.quality);
-            Player.playProgressive(r.url, startMs);
+            Player.playProgressive(playing.urls[0], startMs);
         }, function (why) {
             if (playing !== session) { return; }
             /* No single-file stream for this video: DASH through MSE is the
@@ -863,6 +994,11 @@
             report("player", "no durl (" + why + "), falling back to dash");
             API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
                 if (playing !== session) { return; }
+                var vrep = (dash.video || [])[0];
+                if (vrep && vrep.id) {
+                    playing.quality = vrep.id;
+                    el("player-quality").textContent = QUALITY_NAMES[vrep.id] || ("QN " + vrep.id);
+                }
                 Player.playDash(dash, startMs);
             }, function (w2) {
                 if (playing !== session) { return; }
@@ -902,11 +1038,11 @@
         Player.stop();
         playing = null;
         showPlayerUi(false);
-        /* Back out to the page the video was started from. Dropping to a feed
-         * and re-focusing its first card is disorienting after a 50 minute
-         * video. */
-        if (was && was.detail) { openDetailFrom(was.detail); }
-        else { loadFeed(state.screen === "detail" ? "rcmd" : state.screen, true); }
+        /* Back to the grid the viewer was browsing, at the card they picked. */
+        var home = state.screen === "detail" ? "rcmd" : state.screen;
+        if (home === "search") { renderSearch(); }
+        else if (home === "mine") { renderMine(); }
+        else { loadFeed(home, true); }
     }
 
     Player.on(function (kind, data) {
@@ -942,6 +1078,13 @@
             if (!playing || playing.failed) { return; }
             playing.failed = true;
             report("player", data);
+            if (playing.urls && playing.urlIdx + 1 < playing.urls.length) {
+                playing.urlIdx++;
+                playing.failed = false;
+                report("player", "mirror " + playing.urlIdx + " after " + data);
+                Player.playProgressive(playing.urls[playing.urlIdx], playing.startMs || 0);
+                return;
+            }
             if (playing.canDowngrade && !playing.downgraded) { downgrade(String(data)); return; }
             toast("播放错误：" + data);
             stopPlayback();
@@ -951,19 +1094,7 @@
     /* ---------------- keys ---------------- */
 
     Nav.onKey(function (k) {
-        if (pendingNext) {
-            if (k === Nav.KEY.ENTER || k === Nav.KEY.PLAY_PAUSE) { playNext(); return true; }
-            if (k === Nav.KEY.RETURN) {
-                var back = pendingNext.from || pendingNext.detail;
-                cancelNext();
-                showPlayerUi(false);
-                playedInChain = {};
-                openDetailFrom(back);
-                return true;
-            }
-            if (k === Nav.KEY.EXIT) { return false; }
-            return true;
-        }
+        if (pendingNext) { return handleNextKeys(k); }
         if (optionsOpen) {
             if (k === Nav.KEY.RETURN) { closeOptions(); return true; }
             if (k === Nav.KEY.EXIT) { return false; }
@@ -1039,7 +1170,11 @@
                     Auth.cancelQrLogin();
                     if (s === "search") { renderSearch(); }
                     else if (s === "mine") { renderMine(); }
-                    else { loadFeed(s); }
+                    /* Pressing the tab you are already on reloads it; coming
+                     * back to a tab restores where you were, which is what a
+                     * television expects — refetching and jumping to the first
+                     * card loses your place every time you glance elsewhere. */
+                    else { loadFeed(s, state.screen !== s); }
                 };
             })(tabs[i]);
         }

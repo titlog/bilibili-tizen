@@ -50,10 +50,15 @@
         <span id="player-dur">0:00</span>
         <span id="player-quality"></span>
     </div>
-    <div id="player-hint">确认键 播放/暂停 &middot; 左右 快退/快进 &middot; 下键 清晰度 &middot; 返回键 退出</div>
+    <div id="player-hint">确认键 播放/暂停 &middot; 左右 快退/快进 &middot; 下键 简介/相关 &middot; 返回键 退出</div>
 </div>
 
-<div id="options" class="hidden">
+<div id="options" class="hidden scroll">
+    <div id="panel-head">
+        <div id="panel-title"></div>
+        <div id="panel-meta"></div>
+        <div id="panel-desc"></div>
+    </div>
     <div class="opt-group">
         <div class="opt-label">清晰度</div>
         <div class="opt-row" id="opt-quality"></div>
@@ -62,11 +67,18 @@
         <div class="opt-label">分P</div>
         <div class="opt-row" id="opt-parts"></div>
     </div>
+    <div class="opt-group" id="opt-related-group">
+        <div class="opt-label">相关推荐</div>
+        <div id="opt-related"></div>
+    </div>
 </div>
 
 <div id="nextup" class="hidden">
     <div class="nextup-label">即将播放</div>
-    <div class="nextup-title" id="nextup-title"></div>
+    <div class="nextup-body">
+        <img id="nextup-thumb" class="hidden" alt="">
+        <div class="nextup-title" id="nextup-title"></div>
+    </div>
     <div class="nextup-hint"><span id="nextup-count">5</span> 秒后开始 &middot; 确认键 立即播放 &middot; 返回键 取消</div>
 </div>
 

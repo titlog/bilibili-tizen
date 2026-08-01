@@ -43,11 +43,18 @@ var Nav = (function () {
     }
 
     /* The TV browser's own scrollIntoView jumps; easing by hand keeps the
-     * selected row roughly centred, which is what makes a grid feel right. */
+     * selected row roughly centred, which is what makes a grid feel right.
+     *
+     * The container is found by the "scroll" class, so any code that rewrites a
+     * scroller's className must keep it — losing it does not fail loudly, it
+     * just quietly stops the panel moving when focus reaches the bottom. As a
+     * backstop, an element that actually overflows counts too. */
     function scrollIntoView(el) {
         var scroller = el;
-        while (scroller && scroller !== document.body &&
-               !(scroller.className && scroller.className.indexOf("scroll") >= 0)) {
+        while (scroller && scroller !== document.body) {
+            var marked = scroller.className && scroller.className.indexOf("scroll") >= 0;
+            var overflows = scroller.scrollHeight > scroller.clientHeight + 4;
+            if (marked || overflows) { break; }
             scroller = scroller.parentNode;
         }
         if (!scroller || scroller === document.body) { return; }

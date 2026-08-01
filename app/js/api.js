@@ -76,6 +76,21 @@ var API = (function () {
         return String(n || 0);
     }
 
+    /* Signed in, bilibili often puts a PCDN node first, and those refuse plain
+     * fetches — in AVPlay that surfaces as PLAYER_ERROR_CONNECTION_FAILED, which
+     * reads like a broken video rather than a picky host. Keep them last rather
+     * than dropping them: sometimes they are the only option offered. */
+    function mirrors(primary, backups) {
+        var all = [primary].concat(backups || []).filter(function (u) { return !!u; });
+        var good = [], iffy = [];
+        for (var i = 0; i < all.length; i++) {
+            var host = String(all[i]).split("/")[2] || "";
+            if (host.indexOf("mcdn") >= 0 || host.indexOf("szbdyd") >= 0) { iffy.push(all[i]); }
+            else { good.push(all[i]); }
+        }
+        return good.concat(iffy);
+    }
+
     function normalise(v) {
         return {
             bvid: v.bvid,
@@ -246,7 +261,9 @@ var API = (function () {
                       "&qn=" + (qn || 64) + "&fnval=1";
             getJson(url, function (d) {
                 if (!d.durl || !d.durl.length) { onFail("no progressive stream"); return; }
-                onOk({ url: d.durl[0].url, quality: d.quality, accept: d.accept_quality || [] });
+                var urls = mirrors(d.durl[0].url, d.durl[0].backup_url);
+                onOk({ url: urls[0], urls: urls,
+                       quality: d.quality, accept: d.accept_quality || [] });
             }, onFail);
         },
 
@@ -262,17 +279,8 @@ var API = (function () {
                  * the player work down the list. Deprioritise the mcdn hosts
                  * rather than dropping them: sometimes they are all there is. */
                 function candidates(rep) {
-                    var all = [rep.baseUrl || rep.base_url]
-                        .concat(rep.backupUrl || rep.backup_url || [])
-                        .filter(function (u) { return !!u; });
-                    var good = [], iffy = [];
-                    for (var i = 0; i < all.length; i++) {
-                        var host = String(all[i]).split("/")[2] || "";
-                        if (host.indexOf("mcdn") >= 0 || host.indexOf("szbdyd") >= 0) {
-                            iffy.push(all[i]);
-                        } else { good.push(all[i]); }
-                    }
-                    return good.concat(iffy);
+                    return mirrors(rep.baseUrl || rep.base_url,
+                                   rep.backupUrl || rep.backup_url);
                 }
                 var kinds = ["video", "audio"];
                 for (var k = 0; k < kinds.length; k++) {
