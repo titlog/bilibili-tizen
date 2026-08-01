@@ -27,6 +27,11 @@
     <tizen:privilege name="http://tizen.org/privilege/internet"/>
     <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
     <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+    <!-- bilibili ships DASH representations but no manifest, so one is built at
+         runtime and written to wgt-private for AVPlay to open. Without these two
+         tizen.filesystem.resolve throws Permission denied, synchronously. -->
+    <tizen:privilege name="http://tizen.org/privilege/filesystem.read"/>
+    <tizen:privilege name="http://tizen.org/privilege/filesystem.write"/>
 
     <tizen:profile name="tv-samsung"/>
 

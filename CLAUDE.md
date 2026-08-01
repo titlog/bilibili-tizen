@@ -46,6 +46,29 @@ HTTP header for progressive playback — arbitrary headers exist only on the DRM
 license path via `setDrm()`. Any design that needs a request header other than
 those two has to change shape.
 
+**Playback routes, all measured on device.** In descending order of usefulness:
+
+| route | works | notes |
+|---|---|---|
+| MSE in the `<video>` element | yes | **the one to build on** — muxed audio+video, no server |
+| AVPlay, progressive `durl` | yes | simplest; `qn=64` gives 720p with no login |
+| AVPlay, MPD served over HTTP | yes | proves the generated manifest is valid |
+| AVPlay, MPD as `data:` URI | no | `PLAYER_ERROR_INVALID_URI` |
+| AVPlay, MPD as `file://` | no | `PLAYER_ERROR_NOT_SUPPORTED_FILE` |
+| AVPlay, bare `.m4s` | yes | decodes, but video only — no audio track |
+
+So AVPlay does DASH correctly, it just insists the manifest arrive over HTTP, and
+a widget cannot listen on a socket. MSE closes that gap: fetch the DASH
+representations with XHR and append them to two `SourceBuffer`s. `avc1` and
+`mp4a.40.2` both pass `MediaSource.isTypeSupported` here.
+
+> Anything that drives AVPlay repeatedly must guard its callbacks. `setListener`
+> registers on the avplay singleton and swapping the `<object>` element does not
+> detach it, so a stale `onerror` from a previous attempt fires into the current
+> one. `main.js` uses a generation counter for this; without it an experiment
+> that tries several sources in sequence produces results in the wrong order and
+> reads as "everything failed". That happened, and inverted a conclusion.
+
 ## Deploying
 
 ```bash
@@ -109,13 +132,15 @@ no pointer.
 
 ## Where this is going
 
-Spikes 01 and 02 are done: the CDN, the API and AVPlay all work from the device
-with no infrastructure. Open questions in rough order:
+Spikes 01 and 02 are **done and all five tests pass**. The CDN, the API and both
+playback paths work from the device with no infrastructure of any kind. There is
+no known platform blocker left.
 
-1. **DASH** — bilibili ships representations but no manifest, so `main.js` builds
-   an MPD and writes it to `wgt-private` for AVPlay. Prefers `avc1` over `hvc1`
-   for cross-model safety. Result of the first on-device run still pending.
-2. **Login** — QR-code flow plus WBI request signing. Needed for 720p/1080p,
-   which `accept_quality` gates behind an account.
-3. **The client proper** — browse, search, history, playback. No platform
-   unknowns left here; it is API work against a known-good foundation.
+1. **Login** — QR-code flow plus WBI request signing. `qn=80` silently falls back
+   to 64 without an account, so 1080p is the payoff. Needs the user's own
+   session; nothing here can be tested without them.
+2. **The client proper** — browse, search, history, playback. Build the player on
+   MSE, with progressive `durl` as the fallback for anything that has no DASH.
+   This is ordinary API work now, against a foundation that is known-good.
+3. **Wits hot reload** — optional. A deploy cycle is about 15 s, which has been
+   fast enough so far.

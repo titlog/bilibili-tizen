@@ -38,6 +38,7 @@
         if (lines.length > 6) { lines.shift(); }
         logEl.innerHTML = lines.join("");
         if (window.console) { console.log("[spike] " + msg); }
+        report("log", { msg: msg });
     }
 
     /* ---------------- status painting ---------------- */
@@ -476,36 +477,97 @@
     /* AVPlay takes a URL, not a string, so the manifest has to land on disk
      * first. wgt-private is the app's own writable directory. */
     function writeMpd(mpd, onOk, onFail) {
+        log("05 resolving wgt-private");
         if (typeof tizen === "undefined" || !tizen.filesystem) {
             onFail("tizen.filesystem unavailable"); return;
         }
-        tizen.filesystem.resolve("wgt-private", function (dir) {
-            var name = "stream.mpd", file = null;
-            try { file = dir.resolve(name); } catch (e) { file = null; }
-            if (file) { try { dir.deleteFile(file.fullPath); } catch (e) {} }
-            try { file = dir.createFile(name); }
-            catch (e) { onFail("createFile: " + e.message); return; }
-            file.openStream("w", function (fs) {
-                try {
-                    fs.write(mpd);
-                    fs.close();
-                    onOk(file.toURI());
-                } catch (e) { onFail("write: " + e.message); }
-            }, function (e) { onFail("openStream: " + e.message); }, "UTF-8");
-        }, function (e) { onFail("resolve: " + e.message); }, "rw");
+        var settled = false;
+        function ok(u) { if (!settled) { settled = true; onOk(u); } }
+        function fail(w) { if (!settled) { settled = true; onFail(w); } }
+
+        /* Neither callback is guaranteed to fire on every firmware, so the step
+         * gets its own deadline rather than hanging the whole run. */
+        setTimeout(function () { fail("filesystem call never came back"); }, 12000);
+
+        try {
+            tizen.filesystem.resolve("wgt-private", function (dir) {
+                log("05 resolved, writing manifest");
+                var name = "stream.mpd", file = null;
+                try { file = dir.resolve(name); } catch (e) { file = null; }
+                if (file) { try { dir.deleteFile(file.fullPath); } catch (e) {} }
+                try { file = dir.createFile(name); }
+                catch (e) { fail("createFile: " + e.message); return; }
+                file.openStream("w", function (fs) {
+                    try {
+                        fs.write(mpd);
+                        fs.close();
+                        log("05 manifest written");
+                        ok(file.toURI());
+                    } catch (e) { fail("write: " + e.message); }
+                }, function (e) { fail("openStream: " + e.message); }, "UTF-8");
+            }, function (e) { fail("resolve: " + e.message); }, "rw");
+        } catch (e) {
+            fail("resolve threw synchronously: " + e.message);
+        }
     }
 
-    function playDash(uri) {
-        log("05 manifest at " + uri);
+    /* AVPlay refuses a file:// manifest with PLAYER_ERROR_NOT_SUPPORTED_FILE, so
+     * the delivery method is itself the thing under test. Each candidate is
+     * tried in turn and the first that prepares wins. A data: URI is the only
+     * one of these that a shipped app could actually use. */
+    var deliveries = [], deliveryIdx = -1, generation = 0;
+    var mseResult = null;
+
+    /* setListener registers on the avplay singleton, and swapping the <object>
+     * does not detach it. Without a generation token a stale onerror from the
+     * previous attempt knocks over the next one, and the attempts race. */
+    function nextDelivery(why, gen) {
+        if (arguments.length > 1 && gen !== generation) { return; }
+        generation++;
+        if (deliveryIdx >= 0) {
+            log("05 " + deliveries[deliveryIdx].name + " rejected: " + why, "err");
+        }
+        deliveryIdx++;
+        if (deliveryIdx >= deliveries.length) {
+            /* Every AVPlay route is out; MSE is the remaining way to get audio
+             * and video together without a server. */
+            stopAvplay();
+            results[5] = false;
+            setStatus(5, "fail", "NO ROUTE",
+                      "MSE failed (" + (mseResult ? mseResult.why : "not run") +
+                      ") and AVPlay refused every manifest delivery. " +
+                      "Progressive playback still works.");
+            busy = false;
+            judge();
+            return;
+        }
+        var d = deliveries[deliveryIdx];
+        /* A failed prepareAsync leaves AVPlay in a state where the next open()
+         * reports INVALID_URI whatever the URI is, so each attempt gets a fresh
+         * player object. Without this the second and third results are noise. */
+        resetPlayer(function () {
+            log("05 trying manifest as " + d.name);
+            playDash(d.uri, d.name);
+        });
+    }
+
+    function resetPlayer(cb) {
+        try { webapis.avplay.stop(); } catch (e) {}
+        try { webapis.avplay.close(); } catch (e) {}
+        if (avplayObj && avplayObj.parentNode) {
+            avplayObj.parentNode.removeChild(avplayObj);
+        }
+        avplayObj = null;
+        setTimeout(cb, 900);
+    }
+
+    function playDash(uri, method) {
+        var gen = generation;
+        log("05 manifest via " + method + ", " + uri.slice(0, 60));
         ensureAvplayObject();
         try { webapis.avplay.close(); } catch (e) {}
         try { webapis.avplay.open(uri); }
-        catch (e) {
-            results[5] = false;
-            setStatus(5, "fail", "OPEN FAIL", "open() threw: " + e.message);
-            log("05 open threw: " + e.message, "err");
-            busy = false; judge(); return;
-        }
+        catch (e) { nextDelivery("open() threw: " + e.message, gen); return; }
         webapis.avplay.setDisplayRect(0, 0, 1920, 1080);
         if (USER_AGENT) {
             try { webapis.avplay.setStreamingProperty("USER_AGENT", USER_AGENT); }
@@ -516,10 +578,7 @@
             onbufferingcomplete: function () { log("05 buffering complete", "ok"); },
             onstreamcompleted: function () { stopAvplay(); },
             onerror: function (err) {
-                results[5] = false;
-                setStatus(5, "fail", "ERROR", "AVPlay error on DASH: " + err);
-                log("05 avplay error: " + err, "err");
-                stopAvplay(); judge();
+                if (results[5] !== true) { nextDelivery("avplay error " + err, gen); }
             },
             oncurrentplaytime: function (ms) {
                 if (ms > 0 && results[5] !== true) {
@@ -545,17 +604,106 @@
                 } catch (e) {}
                 stopAvplay();
                 if (results[5] !== true) { results[5] = false; }
+                var d = deliveries[deliveryIdx];
+                if (results[5] === true && d && d.partial) {
+                    /* Decodes, but video only — keep going so MSE still gets
+                     * its turn, since a client needs sound too. */
+                    log("05 " + method + " decodes, but has no audio; continuing", "ok");
+                    results[5] = null;
+                    nextDelivery("video only", gen);
+                    return;
+                }
                 setStatus(5, results[5] ? "pass" : "fail",
-                          results[5] ? "PLAYING" : "NO FRAMES", info);
+                          results[5] ? "PLAYING via " + method : "NO FRAMES", info);
                 log("05 finished", results[5] ? "ok" : "err");
                 judge();
             }, PLAY_SECONDS * 1000);
         }, function (err) {
-            results[5] = false;
-            setStatus(5, "fail", "PREPARE FAIL", "prepareAsync on the MPD failed: " + err);
-            log("05 prepare failed: " + err, "err");
-            stopAvplay(); judge();
+            nextDelivery("prepareAsync: " + err, gen);
         });
+    }
+
+    /* ---------------- MSE route ----------------
+     * AVPlay will not take a manifest this app can generate, so the other way to
+     * get muxed DASH is to feed WebKit the two streams through Media Source
+     * Extensions. Whole-file appends here — a real client would append by range. */
+
+    function fetchBuf(url, onOk, onFail) {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", url, true);
+        xhr.responseType = "arraybuffer";
+        xhr.timeout = 30000;
+        xhr.onload = function () {
+            if (xhr.status === 200 || xhr.status === 206) { onOk(xhr.response); }
+            else { onFail("HTTP " + xhr.status); }
+        };
+        xhr.onerror = function () { onFail("transport error"); };
+        xhr.ontimeout = function () { onFail("timeout"); };
+        xhr.send();
+    }
+
+    function tryMse(dash, onResult) {
+        if (!window.MediaSource) { onResult(false, "MediaSource is not available"); return; }
+        var v = (dash.video || []).filter(function (s) {
+            return s.codecs.indexOf("avc1") === 0;
+        })[0];
+        var a = (dash.audio || [])[0];
+        if (!v || !a) { onResult(false, "no avc1 + audio pair"); return; }
+
+        var vType = 'video/mp4; codecs="' + v.codecs + '"';
+        var aType = 'audio/mp4; codecs="' + a.codecs + '"';
+        if (!MediaSource.isTypeSupported(vType)) { onResult(false, "unsupported: " + vType); return; }
+        if (!MediaSource.isTypeSupported(aType)) { onResult(false, "unsupported: " + aType); return; }
+        log("05 MSE supports both codecs, fetching streams");
+
+        var el = document.getElementById("html5");
+        var ms = new MediaSource();
+        var settled = false;
+        function done(ok, why) {
+            if (settled) { return; }
+            settled = true;
+            try { el.pause(); el.removeAttribute("src"); el.load(); } catch (e) {}
+            el.className = "hidden";
+            onResult(ok, why);
+        }
+
+        el.className = "";
+        el.src = URL.createObjectURL(ms);
+
+        ms.addEventListener("sourceopen", function () {
+            var vb, ab;
+            try {
+                vb = ms.addSourceBuffer(vType);
+                ab = ms.addSourceBuffer(aType);
+            } catch (e) { done(false, "addSourceBuffer: " + e.message); return; }
+
+            var pending = 2;
+            function appended() {
+                if (--pending > 0) { return; }
+                log("05 MSE buffers filled, playing");
+                el.play().catch(function (e) { done(false, "play(): " + e.message); });
+            }
+            function feed(sb, url, label) {
+                fetchBuf(url, function (buf) {
+                    sb.addEventListener("updateend", function once() {
+                        sb.removeEventListener("updateend", once);
+                        appended();
+                    });
+                    try { sb.appendBuffer(buf); }
+                    catch (e) { done(false, "appendBuffer " + label + ": " + e.message); }
+                }, function (why) { done(false, "fetch " + label + ": " + why); });
+            }
+            feed(vb, v.baseUrl, "video");
+            feed(ab, a.baseUrl, "audio");
+        });
+
+        el.addEventListener("playing", function () {
+            done(true, "MSE plays muxed video+audio");
+        });
+        el.addEventListener("error", function () {
+            done(false, "video element error " + (el.error ? el.error.code : "?"));
+        });
+        setTimeout(function () { done(false, "no playback within 40s"); }, 40000);
     }
 
     function testDash() {
@@ -567,6 +715,19 @@
         }
         busy = true;
         setStatus(5, "running", "RUNNING", "&mdash;");
+        log("05 starting dash test");
+
+        /* Backstop for the whole test: AVPlay can also go quiet without ever
+         * calling back, and a silent hang reports nothing at all. */
+        setTimeout(function () {
+            if (results[5] === null) {
+                results[5] = false;
+                setStatus(5, "fail", "TIMED OUT", "No callback within 45s — see the log for the last step reached.");
+                log("05 timed out", "err");
+                stopAvplay();
+                judge();
+            }
+        }, 90000);
 
         function go(dash) {
             var mpd = buildMpd(dash);
@@ -577,11 +738,78 @@
                 busy = false; judge(); return;
             }
             log("05 manifest built, " + mpd.length + " chars");
-            writeMpd(mpd, playDash, function (why) {
-                results[5] = false;
-                setStatus(5, "fail", "WRITE FAIL", "Could not write the manifest: " + why);
-                log("05 " + why, "err");
-                busy = false; judge();
+
+            /* MSE goes first now. AVPlay is known to play this manifest, but only
+             * when it is served over HTTP, and a widget cannot listen on a
+             * socket — so MSE is the only route that could ship without a
+             * backend. Its answer is the one that decides the architecture. */
+            tryMse(dash, function (mseOk, mseWhy) {
+                mseResult = { ok: mseOk, why: mseWhy };
+                log("05 mse: " + mseWhy, mseOk ? "ok" : "err");
+                if (mseOk) {
+                    results[5] = true;
+                    setStatus(5, "pass", "PLAYING via MSE",
+                              mseWhy + ". DASH ships client-side, no backend needed.");
+                    busy = false;
+                    judge();
+                    return;
+                }
+                startAvplayRoutes(dash, mpd);
+            });
+        }
+
+        function startAvplayRoutes(dash, mpd) {
+            deliveries = [];
+            /* Only this one would work in a shipped app — no disk, no server. */
+            try {
+                deliveries.push({
+                    name: "data URI",
+                    uri: "data:application/dash+xml;base64," +
+                         btoa(unescape(encodeURIComponent(mpd)))
+                });
+            } catch (e) { log("05 data uri unavailable: " + e.message, "err"); }
+
+            /* Diagnostic only: proves whether AVPlay can do DASH at all when the
+             * manifest arrives over HTTP. Needs the dev collector running. */
+            if (REPORT_TO) {
+                var base = REPORT_TO.replace(/\/report$/, "");
+                try {
+                    var up = new XMLHttpRequest();
+                    up.open("POST", base + "/mpd", false);
+                    up.setRequestHeader("Content-Type", "text/plain");
+                    up.send(mpd);
+                    deliveries.push({ name: "http (dev collector)", uri: base + "/stream.mpd" });
+                } catch (e) { log("05 could not upload manifest: " + e.message, "err"); }
+            }
+
+            /* Last resort, and a useful negative: if AVPlay plays a bare .m4s as
+             * a progressive stream then fragmented MP4 is fine and only the
+             * manifest is the problem. Video only, so no audio is expected. */
+            var vRep = (dash.video || []).filter(function (s) {
+                return s.codecs.indexOf("avc1") === 0;
+            })[0];
+            if (vRep) {
+                deliveries.push({
+                    name: "bare .m4s, video only",
+                    uri: vRep.baseUrl,
+                    partial: true   /* proves the container decodes; no audio */
+                });
+            }
+
+            writeMpd(mpd, function (uri) {
+                deliveries.splice(deliveries.length - (vRep ? 1 : 0), 0,
+                                  { name: "file:// on device", uri: uri });
+                deliveryIdx = -1;
+                nextDelivery();
+            }, function (why) {
+                log("05 write failed: " + why, "err");
+                deliveryIdx = -1;
+                if (deliveries.length) { nextDelivery(); }
+                else {
+                    results[5] = false;
+                    setStatus(5, "fail", "WRITE FAIL", "Could not write the manifest: " + why);
+                    busy = false; judge();
+                }
             });
         }
 
@@ -697,7 +925,7 @@
             log("edit js/config.js first", "err");
         } else {
             log("url length " + VIDEO_URL.length + " chars");
-            setVerdict("idle", "Select Run all three and press the centre button");
+            setVerdict("idle", "Select Run all five and press the centre button");
         }
     };
 })();

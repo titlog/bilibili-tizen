@@ -21,12 +21,35 @@ function stamp() {
   return new Date().toTimeString().slice(0, 8);
 }
 
+let lastMpd = null;
+
 const server = http.createServer((req, res) => {
   /* The widget is a null origin, so answer the preflight permissively. */
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   if (req.method === "OPTIONS") { res.writeHead(204).end(); return; }
+
+  /* The app uploads its generated manifest here and then asks AVPlay to open
+   * /stream.mpd, to tell "AVPlay cannot do DASH" apart from "AVPlay will not
+   * take a file:// manifest". Diagnostic only — a shipped app has no server. */
+  if (req.method === "POST" && req.url.startsWith("/mpd")) {
+    let mpd = "";
+    req.on("data", (c) => { mpd += c; });
+    req.on("end", () => {
+      lastMpd = mpd;
+      console.log(`${stamp()}    ·     manifest uploaded (${mpd.length} chars)`);
+      res.writeHead(200).end("ok");
+    });
+    return;
+  }
+  if (req.method === "GET" && req.url.startsWith("/stream.mpd")) {
+    if (!lastMpd) { res.writeHead(404).end("no manifest yet"); return; }
+    res.writeHead(200, { "Content-Type": "application/dash+xml" }).end(lastMpd);
+    console.log(`${stamp()}    ·     manifest served over http`);
+    return;
+  }
+
   if (req.method !== "POST") { res.writeHead(200).end("collector up"); return; }
 
   let body = "";
@@ -43,6 +66,11 @@ const server = http.createServer((req, res) => {
         .join("  ");
       console.log(`\n${stamp()}  VERDICT  ${msg.detail}`);
       console.log(`${" ".repeat(10)}${line}\n`);
+      return;
+    }
+
+    if (msg.event === "log") {
+      console.log(`${stamp()}    ·     ${(msg.detail && msg.detail.msg) || ""}`);
       return;
     }
 
