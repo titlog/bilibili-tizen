@@ -1,0 +1,224 @@
+/* Read from a couch three metres away: nothing below 22px, high contrast,
+   and status carried by colour AND text so it survives a dim room. */
+
+:root {
+    --bg:      #0B0E14;
+    --panel:   #151A24;
+    --edge:    #232B3A;
+    --ink:     #E6EAF2;
+    --dim:     #6B7686;
+    --pass:    #4ADE80;
+    --fail:    #FF5C5C;
+    --run:     #FB7299;  /* bilibili pink, used only for in-flight state */
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+    width: 1920px;
+    height: 1080px;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Consolas", "DejaVu Sans Mono", monospace;
+}
+
+#stage {
+    position: absolute;
+    top: 0; left: 0;
+    width: 1920px; height: 1080px;
+    background: #000;
+}
+
+#ui {
+    position: absolute;
+    top: 0; left: 0;
+    width: 1920px; height: 1080px;
+    padding: 64px 96px;
+    background: var(--bg);
+}
+
+#ui.playing { display: none; }
+
+/* ---- header ---- */
+
+.eyebrow {
+    font-size: 22px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--run);
+    margin-bottom: 18px;
+}
+
+h1 {
+    font-size: 58px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin-bottom: 24px;
+}
+
+.verdict {
+    display: inline-block;
+    font-size: 26px;
+    padding: 12px 26px;
+    border: 2px solid var(--edge);
+    border-radius: 4px;
+    color: var(--dim);
+}
+
+.verdict.idle    { border-color: var(--edge); color: var(--dim); }
+.verdict.running { border-color: var(--run);  color: var(--run); }
+.verdict.good    { border-color: var(--pass); color: var(--pass); }
+.verdict.bad     { border-color: var(--fail); color: var(--fail); }
+
+/* ---- tests ---- */
+
+#tests {
+    list-style: none;
+    margin: 46px 0 0;
+}
+
+.test {
+    display: flex;
+    align-items: flex-start;
+    gap: 28px;
+    background: var(--panel);
+    border: 2px solid var(--edge);
+    border-left-width: 8px;
+    border-radius: 4px;
+    padding: 26px 30px;
+    margin-bottom: 16px;
+}
+
+.test.running { border-left-color: var(--run); }
+.test.pass    { border-left-color: var(--pass); }
+.test.fail    { border-left-color: var(--fail); }
+
+.num {
+    font-size: 34px;
+    font-weight: 700;
+    color: var(--dim);
+    min-width: 56px;
+}
+
+.body { flex: 1; }
+
+.title { font-size: 30px; font-weight: 700; margin-bottom: 8px; }
+
+.sub {
+    font-size: 22px;
+    line-height: 1.45;
+    color: var(--dim);
+    max-width: 1020px;
+}
+
+.detail {
+    font-size: 22px;
+    margin-top: 12px;
+    color: var(--ink);
+    word-break: break-all;
+}
+
+.chip {
+    font-size: 22px;
+    letter-spacing: 0.1em;
+    padding: 8px 18px;
+    border-radius: 3px;
+    background: var(--edge);
+    color: var(--dim);
+    min-width: 130px;
+    text-align: center;
+}
+
+.chip.running { background: var(--run);  color: #17070D; }
+.chip.pass    { background: var(--pass); color: #052B14; }
+.chip.fail    { background: var(--fail); color: #2B0505; }
+
+
+/* ---- run all + D-pad focus ---- */
+
+.runall {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-top: 40px;
+    padding: 24px 30px;
+    background: var(--panel);
+    border: 2px solid var(--edge);
+    border-left: 8px solid var(--edge);
+    border-radius: 4px;
+    font-size: 30px;
+    font-weight: 700;
+}
+
+.runall .play { color: var(--run); font-size: 26px; }
+
+/* Focus has to read from three metres away, so it moves the whole row
+   rather than drawing a thin ring around it. */
+.focused {
+    border-color: var(--run) !important;
+    background: #1E2533;
+    box-shadow: 0 0 0 4px rgba(251, 114, 153, 0.28);
+}
+
+#tests { margin-top: 16px; }
+
+/* ---- console ---- */
+
+#console {
+    position: absolute;
+    left: 96px; right: 96px; bottom: 56px;
+    height: 232px;
+    background: var(--panel);
+    border: 2px solid var(--edge);
+    border-radius: 4px;
+}
+
+.console-head {
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 22px;
+    border-bottom: 2px solid var(--edge);
+    font-size: 20px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--dim);
+}
+
+.hint { letter-spacing: 0.08em; text-transform: none; }
+
+#log {
+    height: 168px;
+    overflow: hidden;
+    padding: 14px 22px;
+    font-size: 21px;
+    line-height: 1.5;
+}
+
+#log .t { color: var(--dim); margin-right: 14px; }
+#log .err  { color: var(--fail); }
+#log .ok   { color: var(--pass); }
+
+/* ---- misc ---- */
+
+.nourl {
+    position: absolute;
+    left: 96px; right: 96px; bottom: 312px;
+    background: #3A2410;
+    border: 2px solid #7A4A18;
+    border-radius: 4px;
+    padding: 20px 26px;
+    font-size: 23px;
+    line-height: 1.5;
+}
+
+.nourl code { color: #FACC15; }
+
+.hidden { display: none; }
+
+#html5 {
+    position: absolute;
+    top: 0; left: 0;
+    width: 1920px; height: 1080px;
+    background: #000;
+}

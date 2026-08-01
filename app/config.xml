@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:tizen="http://tizen.org/ns/widgets"
+        id="http://example.com/BiliSpike"
+        version="1.0.0"
+        viewmodes="maximized">
+
+    <!-- The 10-char prefix must match the package attribute below.
+         If Tizen Studio assigns you a different ID on import, let it win. -->
+    <tizen:application id="BiLiSpiKe0.BiliSpike"
+                       package="BiLiSpiKe0"
+                       required_version="6.0"/>
+
+    <!-- Wildcard network access. On Tizen this widget access policy replaces
+         the browser CORS model, so XHR to bilivideo.com returns real status
+         codes instead of opaque CORS errors. This is what makes test 01 work. -->
+    <access origin="*" subdomains="true"/>
+
+    <content src="index.html"/>
+
+    <feature name="http://tizen.org/feature/screen.size.normal.1080.1920"/>
+
+    <icon src="icon.png"/>
+    <name>BiliSpike</name>
+    <description>Referer / AVPlay diagnostic harness</description>
+
+    <tizen:privilege name="http://tizen.org/privilege/internet"/>
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+    <tizen:privilege name="http://tizen.org/privilege/application.launch"/>
+
+    <tizen:profile name="tv-samsung"/>
+
+    <tizen:setting screen-orientation="landscape"
+                   context-menu="disable"
+                   background-support="disable"
+                   encryption="disable"
+                   install-location="auto"
+                   hwkey-event="enable"/>
+</widget>
