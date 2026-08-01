@@ -84,13 +84,30 @@ WGT=$(ls -1 ./*.wgt 2>/dev/null | head -1)
 [ -n "$WGT" ] || { echo "packaging produced no wgt"; exit 1; }
 echo "  built $WGT"
 
+# The set only accepts sdb from the address registered in Developer Mode. When
+# DHCP moves this machine, the failure is a silent timeout, so say plainly what
+# happened rather than leaving it to be rediscovered.
+EXPECTED_HOST="192.168.1.10"
+if [ "$HOST_IP" != "$EXPECTED_HOST" ]; then
+  echo "!! this machine is now $HOST_IP, but the TV is set to allow $EXPECTED_HOST"
+  echo "   sdb will time out until they match. Either:"
+  echo "     - TV: Apps > press 12345 > set Host PC IP to $HOST_IP, then full power cycle"
+  echo "     - or give this machine a DHCP reservation for $EXPECTED_HOST on the router"
+  echo "   and update EXPECTED_HOST in this script if you settle on a new address."
+fi
+
 echo "== connecting =="
 for i in $(seq 1 40); do
   sdb connect "$TV" >/dev/null 2>&1 || true
   if sdb devices 2>/dev/null | grep -q "$TV_IP.*device"; then echo "  connected"; break; fi
   sleep 5
 done
-sdb devices | grep -q "$TV_IP" || { echo "TV not reachable"; exit 1; }
+sdb devices | grep -q "$TV_IP" || {
+  echo "TV not reachable at $TV_IP."
+  echo "  - is it awake? the set drops sdb in standby"
+  echo "  - does Developer Mode still list $HOST_IP as the host PC?"
+  exit 1
+}
 
 echo "== installing =="
 tizen install -n "$(basename "$WGT")" -t "$TARGET" 2>&1 \
