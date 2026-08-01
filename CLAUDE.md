@@ -73,9 +73,14 @@ representations with XHR and append them to two `SourceBuffer`s. `avc1` and
 ## Deploying
 
 ```bash
-zsh tools/deploy.sh          # refresh playurl, sign, install, launch (~15 s)
-node tools/collect.mjs       # in another terminal, before pressing play
+node tools/collect.mjs          # terminal 1, leave running
+zsh tools/deploy.sh             # terminal 2: check, sign, install, launch (~15 s)
+zsh tools/deploy.sh --selftest  # same, but the build walks the flow and reports
 ```
+
+`deploy.sh` runs `node --check` over every file and then `tools/lint.mjs`, and
+**refuses to install if either fails** — the parse check alone once let a build
+ship in which selecting a video did nothing at all.
 
 `deploy.sh` rewrites `REPORT_TO` in `app/js/config.js` so the TV knows where to
 send diagnostics. It also derives the package filename from the build rather than
@@ -117,11 +122,15 @@ app/          the client
   js/qr.js       QR encoder, verified by tools/qr-verify.mjs
   js/nav.js      geometric D-pad focus
   js/player.js   AVPlay and MSE playback
+  js/resume.js   where each video was left off
+  js/settings.js preferences that outlive a session
   js/app.js      screens and routing
+  js/selftest.js on-device walkthrough, off unless --selftest
 spike/        the harness that established the platform facts; not deployed
 tools/
   deploy.sh        one-command build + install + launch
   collect.mjs      diagnostics collector on :8099
+  lint.mjs         catches calls to things that do not exist; gates deploys
   samsung-cert.mjs headless Samsung certificate issuance
   qr-verify.mjs    round-trips qr.js through a real decoder
   probe-gating.py  re-check the CDN/API gating rules from the dev machine
@@ -141,32 +150,89 @@ goes back. Focus is geometric — `nav.js` picks whichever `.focusable` lies in 
 pressed direction and is nearest — so ragged grids work without anyone declaring
 a column count. Anything added has to be reachable that way; there is no pointer.
 
+## How to debug anything on this television
+
+Everything convenient is closed on a retail set, and finding that out takes
+longer than working around it:
+
+| route | state |
+|---|---|
+| `dlog` / `sdb shell dlogutil` | returns nothing at all |
+| Web Inspector via `tizen debug` | hangs; no port ever opens |
+| Samsung remote WebSocket (`:8002`) | works, but the first connection needs someone in front of the set to accept a dialog |
+
+So the app reports on itself. `report()` in `app.js` and `window.onerror` POST to
+`tools/collect.mjs` on port 8099, which `deploy.sh` wires up automatically. Run
+the collector in one terminal before deploying and every error arrives as text.
+
+For anything more than an error message, `zsh tools/deploy.sh --selftest` ships a
+build that walks the entire flow by dispatching the same key events the remote
+sends — grid, play, panel, scroll, scrub, pause, resume, exit — and reports each
+step. That is the only way to exercise a build unattended, and it is also how a
+regression gets caught before it reaches the sofa. Add a step whenever a bug
+turns out to be reachable by pressing buttons in order.
+
 ## Traps this codebase has already fallen into
 
-Three separate times a wrong premise was treated as a constraint and designed
-around, and each cost hours. The pattern is the same every time: an assumption
-about *why* something failed, never isolated, hardened into architecture.
+Read this before diagnosing anything. Every entry below cost at least an hour,
+and most of them cost several — always for the same reason.
 
-- *"The CDN needs a Referer, so we need a proxy."* It was `curl`'s default
-  User-Agent being blocklisted. Always vary one thing at a time.
+**A plausible cause is not a diagnosis.** Four separate times an error was
+explained by the first mechanism that fit, designed around, and shipped:
+
+- *"The CDN needs a Referer, so we need a LAN proxy."* It was `curl`'s default
+  User-Agent being blocklisted. Nearly abandoned the project as too expensive.
 - *"AVPlay cannot see the cookie jar, so a signed-in session must play through
   MSE."* Stream urls are pre-signed; AVPlay needs no session at all. Only the
-  playurl call does, and that goes over XHR. Hand-rolling MSE gave up native
-  buffering, seeking and hardware decode for nothing.
+  playurl call does, and that already goes over XHR. Hand-rolling MSE gave up
+  native buffering, seeking and hardware decode for nothing.
 - *"Every manifest delivery route fails, so AVPlay cannot do DASH."* Stale
-  listeners on the avplay singleton were knocking over each attempt before it
-  ran. With a generation guard, HTTP delivery worked on the first try.
+  listeners were knocking over each attempt before it ran. With a generation
+  guard, HTTP delivery worked on the first try — the opposite conclusion.
+- *"`PLAYER_ERROR_CONNECTION_FAILED` means the CDN refused us."* Twice: first
+  blamed on restricted PCDN nodes, then on an empty `COOKIE` property. It was
+  neither.
 
-That last one has a corollary worth stating on its own, because it has now bitten
-twice: **anything that drives AVPlay must guard its callbacks with a generation
-counter.** `setListener` registers on a singleton and `close()` does not detach
-it, so a torn-down session's `onerror` or `onstreamcompleted` fires into whatever
-is playing now. `player.js` and `spike/main.js` both do this; new code must too.
+**The move that actually works is a discriminating test** — one experiment whose
+two outcomes point at different causes. For that last one: hand the very url
+AVPlay rejects to a plain `XMLHttpRequest`. It returned `206`, which rules out
+the url and the network and leaves only how AVPlay is asking. The real cause was
+that selecting a video fired the playurl call, `view()`, `related()` and AVPlay's
+own stream connection in the same instant, and AVPlay intermittently lost that
+race. Metadata is now queued until the picture is up.
 
-The same shape applies to every async callback that paints: a response that
-arrives after the viewer has moved on must check a token before touching the DOM,
-or it repaints a dead screen and — worse — hands focus to a detached node, which
-reads to the user as the remote having stopped working.
+**One error code can mean several things.** `CONNECTION_FAILED` covers "refused",
+"no route" and "could not get a socket"; `InvalidAccessError` accompanies all of
+them. Never reason from the code alone — find something that separates the cases.
+
+**`node --check` proves nothing about whether the app works.** A block delete
+removed `playVideo` along with the dead detail screen beside it. Every file
+parsed, the build shipped, and the only symptom was that pressing OK on the home
+screen did nothing whatsoever. `tools/lint.mjs` now catches calls to things that
+do not exist and `deploy.sh` refuses to ship when it fails. Run it after any
+deletion that spans more than a few lines.
+
+**Silent no-ops are the expensive failures.** Nothing in this app throws when
+focus lands on a detached node, when a scroll container loses the class `nav.js`
+identifies it by, or when a callback repaints a screen the viewer already left.
+The user sees a remote that stopped working and there is nothing in any log.
+When a symptom is "it does nothing", suspect state rather than errors.
+
+**Guard every AVPlay callback with a generation counter.** `setListener`
+registers on a singleton and `close()` does not detach it, so a torn-down
+session's `onerror` or `onstreamcompleted` fires into whatever is playing now.
+This has bitten twice. `player.js` and `spike/main.js` both guard; new code must.
+
+**Guard every async callback that paints with a view token.** A response that
+lands after the viewer has moved on will repaint a dead screen and hand focus to
+a node that is no longer in the document. `app.js` uses `newView()` and
+`stillViewing()`; `loadFeed` additionally has its own request counter.
+
+**Clear per-video player state in `play()`, not on teardown.** The scrub head was
+seeded from `lastKnownPosition`, which nothing reset, so the first press of
+fast-forward on a new video jumped it to the previous video's timestamp — usually
+straight to its own ending. Anything that describes "the video playing now"
+belongs in the reset at the top of `play()`.
 
 ## Where this is going
 
