@@ -21,8 +21,8 @@
     <feature name="http://tizen.org/feature/screen.size.normal.1080.1920"/>
 
     <icon src="icon.png"/>
-    <name>BiliSpike</name>
-    <description>Referer / AVPlay diagnostic harness</description>
+    <name>bilibili</name>
+    <description>bilibili client for Samsung TV</description>
 
     <tizen:privilege name="http://tizen.org/privilege/internet"/>
     <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>

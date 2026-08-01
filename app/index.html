@@ -2,107 +2,52 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <!-- The CDN 403s a Referer it does not recognise but is happy with none at
-         all, and WebKit would otherwise attach the app's own file:// origin. -->
+    <!-- bilibili 403s a Referer it does not recognise but accepts none at all,
+         and WebKit would otherwise attach the widget's own file:// origin. -->
     <meta name="referrer" content="no-referrer">
     <meta name="viewport" content="width=1920, height=1080">
-    <title>BiliSpike</title>
-    <link rel="stylesheet" href="css/style.css">
+    <title>bilibili</title>
+    <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
 
-<!-- AVPlay renders below the DOM in a hardware plane, so the whole UI sits
-     in a layer above it and gets hidden while test 02 runs. -->
-<div id="stage"></div>
+<!-- AVPlay draws in a hardware plane underneath the DOM, so everything else
+     lives in a layer above it and is hidden while playing. -->
+<div id="video-stage"></div>
+<video id="html5-video" class="hidden" width="1920" height="1080"></video>
 
-<div id="ui">
+<div id="shell">
 
-    <header id="head">
-        <div class="eyebrow">SPIKE 01+02 &middot; bilibili on Tizen</div>
-        <h1>Can this TV be a bilibili client?</h1>
-        <div id="verdict" class="verdict idle">Waiting for a run</div>
+    <header id="topbar">
+        <div class="brand">bilibili</div>
+        <nav id="tabs">
+            <div class="tab focusable" data-screen="popular">热门</div>
+            <div class="tab focusable" data-screen="ranking">排行</div>
+            <div class="tab focusable" data-screen="search">搜索</div>
+        </nav>
+        <div id="status"></div>
     </header>
 
-    <div id="runall" class="runall focused">
-        <span class="play">&#9654;</span>
-        <span>Run all five</span>
-    </div>
-
-    <ol id="tests">
-        <li class="test" id="test-1">
-            <span class="num">01</span>
-            <div class="body">
-                <div class="title">Raw range request</div>
-                <div class="sub">XHR to the CDN, no player involved. 206 means the
-                    URL is reachable without a Referer at all.</div>
-                <div class="detail" id="detail-1">&mdash;</div>
-            </div>
-            <span class="chip" id="chip-1">IDLE</span>
-        </li>
-
-        <li class="test" id="test-2">
-            <span class="num">02</span>
-            <div class="body">
-                <div class="title">AVPlay playback</div>
-                <div class="sub">The native Samsung player. This is the path a real
-                    client would use. Video appears for 12 seconds, then returns.</div>
-                <div class="detail" id="detail-2">&mdash;</div>
-            </div>
-            <span class="chip" id="chip-2">IDLE</span>
-        </li>
-
-        <li class="test" id="test-3">
-            <span class="num">03</span>
-            <div class="body">
-                <div class="title">HTML5 video element</div>
-                <div class="sub">WebKit's own media stack, which sends its own
-                    Referer. If 02 passes and 03 fails, the hypothesis is confirmed.</div>
-                <div class="detail" id="detail-3">&mdash;</div>
-            </div>
-            <span class="chip" id="chip-3">IDLE</span>
-        </li>
-
-        <li class="test" id="test-4">
-            <span class="num">04</span>
-            <div class="body">
-                <div class="title">bilibili API from the TV</div>
-                <div class="sub">Calls playurl straight from the device. If this works
-                    the client needs no backend of its own.</div>
-                <div class="detail" id="detail-4">&mdash;</div>
-            </div>
-            <span class="chip" id="chip-4">IDLE</span>
-        </li>
-
-        <li class="test" id="test-5">
-            <span class="num">05</span>
-            <div class="body">
-                <div class="title">DASH playback</div>
-                <div class="sub">Separate video and audio streams, stitched into an MPD
-                    written on device. This is what a real client plays.</div>
-                <div class="detail" id="detail-5">&mdash;</div>
-            </div>
-            <span class="chip" id="chip-5">IDLE</span>
-        </li>
-    </ol>
-
-    <div id="console">
-        <div class="console-head">
-            <span>Log</span>
-            <span class="hint">Up / Down to select &middot; Centre to run &middot; Return to exit</span>
-        </div>
-        <div id="log"></div>
-    </div>
-
-    <div id="nourl" class="nourl hidden">
-        Open <code>js/config.js</code> and paste a playurl into <code>VIDEO_URL</code>,
-        then rebuild. The README has the two API calls that produce one.
-    </div>
+    <main id="screen" class="scroll"></main>
 
 </div>
 
-<video id="html5" class="hidden" width="1920" height="1080"></video>
+<div id="playerui" class="hidden">
+    <div id="player-title"></div>
+    <div id="player-bar">
+        <span id="player-pos">0:00</span>
+        <div id="player-track"><div id="player-fill"></div></div>
+        <span id="player-dur">0:00</span>
+    </div>
+    <div id="player-hint">确认键 播放/暂停 &middot; 左右 快退/快进 &middot; 返回键 退出</div>
+</div>
+
+<div id="toast" class="hidden"></div>
 
 <script src="js/config.js"></script>
-<script src="js/main.js"></script>
+<script src="js/api.js"></script>
+<script src="js/nav.js"></script>
+<script src="js/player.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>
