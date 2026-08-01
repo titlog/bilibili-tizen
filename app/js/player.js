@@ -21,6 +21,7 @@ var Player = (function () {
     var onEvent = function () {};
     var duration = 0;
     var lastTime = 0;
+    var mseGeneration = 0;   /* invalidates in-flight appends after a reset */
 
     function el(id) { return document.getElementById(id); }
 
@@ -44,6 +45,7 @@ var Player = (function () {
     }
 
     function reset() {
+        mseGeneration++;
         try { webapis.avplay.stop(); } catch (e) {}
         try { webapis.avplay.close(); } catch (e) {}
         if (obj && obj.parentNode) { obj.parentNode.removeChild(obj); }
@@ -69,6 +71,12 @@ var Player = (function () {
         try { webapis.avplay.setDisplayMethod("PLAYER_DISPLAY_MODE_LETTER_BOX"); } catch (e) {}
         webapis.avplay.setDisplayRect(0, 0, 1920, 1080);
         try { webapis.avplay.setStreamingProperty("USER_AGENT", USER_AGENT); } catch (e) {}
+        /* COOKIE is one of the two streaming properties AVPlay actually exposes,
+         * and it is what unlocks the 1080p stream once a session exists. Must be
+         * set while IDLE, i.e. after open() and before prepareAsync(). */
+        if (typeof Auth !== "undefined" && Auth.isLoggedIn()) {
+            try { webapis.avplay.setStreamingProperty("COOKIE", Auth.cookieHeader()); } catch (e) {}
+        }
 
         webapis.avplay.setListener({
             onbufferingstart: function () { emit("buffering", true); },
@@ -142,12 +150,17 @@ var Player = (function () {
 
             var CHUNK = 4 * 1024 * 1024;
             var streams = [
-                { rep: video, sb: vb, at: 0, done: false },
-                { rep: audio, sb: ab, at: 0, done: false }
+                { rep: video, sb: vb, at: 0, done: false, inflight: false },
+                { rep: audio, sb: ab, at: 0, done: false, inflight: false }
             ];
+            var gen = ++mseGeneration;
 
             function pump(s) {
-                if (s.done || s.sb.updating) { return; }
+                /* inflight matters as much as updating: a 4 MB fetch outlives
+                 * several ticks of the timer, and without this the same range is
+                 * requested again and again and appended on top of itself. */
+                if (s.done || s.inflight || s.sb.updating) { return; }
+                if (gen !== mseGeneration || ms.readyState !== "open") { return; }
                 /* Stay a couple of chunks ahead of the playhead, no further. */
                 var buffered = 0;
                 try {
@@ -158,22 +171,39 @@ var Player = (function () {
                 if (buffered - (v.currentTime || 0) > 60) { return; }
 
                 var to = s.at + CHUNK - 1;
+                s.inflight = true;
                 fetchRange(s.rep.baseUrl, s.at, to, function (buf) {
+                    s.inflight = false;
+                    if (gen !== mseGeneration || ms.readyState !== "open") { return; }
                     if (!buf || buf.byteLength === 0) { s.done = true; return; }
                     try { s.sb.appendBuffer(buf); } catch (e) {
-                        if (e.name === "QuotaExceededError") { return; }
+                        /* Back-pressure, not a failure: drop the chunk and let
+                         * the next tick retry once playback has drained. */
+                        if (e.name === "QuotaExceededError") {
+                            /* Evict what has already been played; a feature
+                             * length video will otherwise exhaust the buffer. */
+                            try {
+                                var keepFrom = Math.max(0, (v.currentTime || 0) - 20);
+                                if (keepFrom > 0 && !s.sb.updating) { s.sb.remove(0, keepFrom); }
+                            } catch (e2) {}
+                            return;
+                        }
                         emit("error", "append: " + e.message);
                         return;
                     }
                     s.at += buf.byteLength;
                     if (buf.byteLength < CHUNK) { s.done = true; }
-                }, function (why) { emit("error", "fetch: " + why); });
+                }, function (why) {
+                    s.inflight = false;
+                    if (gen === mseGeneration) { emit("error", "fetch: " + why); }
+                });
             }
 
             var timer = setInterval(function () {
-                if (mode !== "mse") { clearInterval(timer); return; }
+                if (mode !== "mse" || gen !== mseGeneration) { clearInterval(timer); return; }
                 for (var i = 0; i < streams.length; i++) { pump(streams[i]); }
                 if (streams[0].done && streams[1].done &&
+                    !streams[0].inflight && !streams[1].inflight &&
                     !streams[0].sb.updating && !streams[1].sb.updating) {
                     try { if (ms.readyState === "open") { ms.endOfStream(); } } catch (e) {}
                     clearInterval(timer);

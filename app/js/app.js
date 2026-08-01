@@ -157,6 +157,105 @@
         });
     }
 
+    /* ---------------- mine / login ---------------- */
+
+    function renderMine() {
+        state.screen = "mine";
+        markTab();
+        Auth.cancelQrLogin();
+
+        if (!Auth.isLoggedIn()) {
+            renderLogin();
+            return;
+        }
+        screenEl.innerHTML = '<div class="mine"><div class="empty">检查登录状态…</div></div>';
+        API.nav(function (me) {
+            var html = '<div class="mine">' +
+                '<div class="me">' +
+                '<div class="me-name">' + esc(me.isLogin ? me.uname : "会话已失效") + '</div>' +
+                '<div class="me-sub">' + (me.isLogin
+                    ? "已登录，等级 " + esc(me.level) + " · 1080P 可用"
+                    : "服务器不认这个会话，需要重新扫码") + '</div>' +
+                '<div class="actions">' +
+                '<div class="btn focusable" id="btn-logout">退出登录</div>' +
+                '</div></div>';
+            html += '<div class="section">观看历史</div><div id="hist"></div></div>';
+            screenEl.innerHTML = html;
+
+            el("btn-logout").onselect = function () {
+                Auth.logout();
+                PREFERRED_QN = 64;
+                toast("已退出登录");
+                renderMine();
+            };
+            Nav.reset("#btn-logout");
+
+            if (me.isLogin) {
+                PREFERRED_QN = 80;
+                API.history(function (items) {
+                    var h = el("hist");
+                    if (!h) { return; }
+                    if (!items.length) { h.innerHTML = '<div class="empty">没有历史记录</div>'; return; }
+                    var g = '<div class="grid">';
+                    for (var i = 0; i < items.length; i++) { g += cardHtml(items[i], i); }
+                    h.innerHTML = g + "</div>";
+                    var cards = h.querySelectorAll(".card");
+                    for (var j = 0; j < cards.length; j++) {
+                        (function (card, v) { card.onselect = function () { openDetail(v); }; })(
+                            cards[j], items[Number(cards[j].getAttribute("data-i"))]);
+                    }
+                }, function (why) {
+                    var h = el("hist");
+                    if (h) { h.innerHTML = '<div class="empty">历史读取失败：' + esc(why) + '</div>'; }
+                });
+            }
+        }, function (why) {
+            screenEl.innerHTML = '<div class="empty">无法检查登录状态：' + esc(why) + '</div>';
+            Nav.reset(".tab");
+        });
+    }
+
+    function renderLogin() {
+        screenEl.innerHTML = '<div class="login">' +
+            '<div class="login-left">' +
+            '<h2>用 bilibili App 扫码登录</h2>' +
+            '<div class="login-step" id="login-step">正在获取二维码…</div>' +
+            '<div class="login-note">登录后可用 1080P，并能看到自己的观看历史。<br>' +
+            '二维码只在这台电视上生成，不会经过任何第三方。</div>' +
+            '<div class="actions"><div class="btn focusable" id="btn-refresh">重新获取</div></div>' +
+            '</div>' +
+            '<div class="login-right" id="qrbox"></div></div>';
+
+        el("btn-refresh").onselect = function () { renderLogin(); };
+        Nav.reset("#btn-refresh");
+
+        Auth.startQrLogin(function (s) {
+            var step = el("login-step"), box = el("qrbox");
+            if (!step || !box) { return; }
+            if (s.kind === "qr") {
+                try {
+                    box.innerHTML = QR.toHtml(s.url, 8);
+                    step.textContent = "等待扫码…";
+                } catch (e) {
+                    step.textContent = "二维码生成失败：" + e.message;
+                    report("qr", e.message);
+                }
+            } else if (s.kind === "scanned") {
+                step.textContent = "已扫码，请在手机上确认";
+            } else if (s.kind === "finishing") {
+                step.textContent = "正在换取登录凭证…";
+            } else if (s.kind === "done") {
+                toast("登录成功");
+                renderMine();
+            } else if (s.kind === "expired") {
+                step.textContent = "二维码已过期，选「重新获取」";
+            } else if (s.kind === "error") {
+                step.textContent = "登录失败：" + s.why;
+                report("login", s.why);
+            }
+        });
+    }
+
     /* ---------------- detail ---------------- */
 
     function openDetail(v) {
@@ -240,6 +339,20 @@
 
         /* Progressive is the better route when it exists; DASH is the fallback
          * for videos bilibili no longer offers as a single file. */
+        /* AVPlay has no access to the engine's cookie jar, so a jar-only
+         * session has to play through MSE or it silently drops to 720p. */
+        if (Auth.needsJar() && PREFERRED_QN > 64) {
+            API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
+                Player.playDash(dash, 0);
+            }, function (why) {
+                toast("高清流获取失败，改用标清：" + why);
+                API.playurlProgressive(detail.bvid, cid, 64, function (r) {
+                    Player.playProgressive(r.url, 0);
+                }, function (w2) { toast("播放失败：" + w2); stopPlayback(); });
+            });
+            return;
+        }
+
         API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
             Player.playProgressive(r.url, 0);
         }, function () {
@@ -274,6 +387,10 @@
         } else if (kind === "ended") {
             stopPlayback();
         } else if (kind === "error") {
+            /* One failure can cascade into a burst as queued work unwinds; only
+             * the first is worth reporting or acting on. */
+            if (!playing || playing.failed) { return; }
+            playing.failed = true;
             report("player", data);
             toast("播放错误：" + data);
             stopPlayback();
@@ -307,7 +424,9 @@
         if (playing) { stopPlayback(); return; }
         if (state.screen === "detail") {
             var back = state.stack.pop() || "popular";
-            if (back === "search") { renderSearch(); } else { loadFeed(back); }
+            if (back === "search") { renderSearch(); }
+            else if (back === "mine") { renderMine(); }
+            else { loadFeed(back); }
             return;
         }
         if (state.screen !== "popular") { loadFeed("popular"); return; }
@@ -328,7 +447,10 @@
             (function (tab) {
                 tab.onselect = function () {
                     var s = tab.getAttribute("data-screen");
-                    if (s === "search") { renderSearch(); } else { loadFeed(s); }
+                    Auth.cancelQrLogin();
+                    if (s === "search") { renderSearch(); }
+                    else if (s === "mine") { renderMine(); }
+                    else { loadFeed(s); }
                 };
             })(tabs[i]);
         }

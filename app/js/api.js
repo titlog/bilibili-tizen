@@ -13,6 +13,18 @@ var API = (function () {
     function getJson(url, onOk, onFail) {
         var xhr = new XMLHttpRequest();
         xhr.open("GET", url, true);
+
+        /* Two routes for the session, because which one works is a property of
+         * the firmware, not of the spec. Cookie is a forbidden header name in a
+         * normal browser, but a Tizen widget runs under its own <access> policy
+         * rather than CORS and this build already lets Referer through. If the
+         * header is refused, withCredentials still lets the jar populated by the
+         * login poll do the job. */
+        if (typeof Auth !== "undefined" && Auth.isLoggedIn()) {
+            try { xhr.setRequestHeader("Cookie", Auth.cookieHeader()); } catch (e) {}
+            try { xhr.withCredentials = true; } catch (e) {}
+        }
+
         xhr.timeout = 20000;
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) { return; }
@@ -97,6 +109,46 @@ var API = (function () {
                     }
                 }
                 onOk(out);
+            }, onFail);
+        },
+
+        /* Doubles as the proof that the stored session actually reaches the
+         * server: isLogin true here means the cookies are being applied. */
+        nav: function (onOk, onFail) {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", BASE + "/x/web-interface/nav", true);
+            if (typeof Auth !== "undefined" && Auth.isLoggedIn()) {
+                try { xhr.setRequestHeader("Cookie", Auth.cookieHeader()); } catch (e) {}
+                try { xhr.withCredentials = true; } catch (e) {}
+            }
+            xhr.timeout = 20000;
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState !== 4) { return; }
+                var j;
+                try { j = JSON.parse(xhr.responseText); }
+                catch (e) { onFail("bad JSON"); return; }
+                /* code -101 is "not logged in", which is an answer, not a fault. */
+                var d = j.data || {};
+                onOk({ isLogin: !!d.isLogin, uname: d.uname || "", level: (d.level_info || {}).current_level });
+            };
+            xhr.ontimeout = function () { onFail("timeout"); };
+            xhr.onerror = function () { onFail("network error"); };
+            xhr.send();
+        },
+
+        history: function (onOk, onFail) {
+            getJson(BASE + "/x/web-interface/history/cursor?ps=24", function (d) {
+                onOk((d.list || []).filter(function (x) { return x.history && x.history.bvid; })
+                    .map(function (x) {
+                        return {
+                            bvid: x.history.bvid,
+                            title: x.title,
+                            pic: thumb(x.cover || x.pic),
+                            author: x.author_name || "",
+                            duration: duration(x.duration),
+                            play: ""
+                        };
+                    }));
             }, onFail);
         },
 

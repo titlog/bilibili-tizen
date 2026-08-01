@@ -158,3 +158,17 @@ body {
     font-size: 26px; padding: 18px 40px; border-radius: 10px;
     max-width: 1200px;
 }
+
+/* ---------------- login / mine ---------------- */
+
+.login { display: flex; gap: 72px; align-items: center; padding-top: 40px; }
+.login-left { flex: 1; }
+.login-left h2 { font-size: 44px; margin-bottom: 28px; }
+.login-step { font-size: 30px; color: #ff6699; margin-bottom: 24px; }
+.login-note { font-size: 22px; color: #8b959e; line-height: 1.7; margin-bottom: 36px; }
+.login-right { flex: 0 0 auto; }
+.qr { border-radius: 12px; }
+
+.me { margin-bottom: 20px; }
+.me-name { font-size: 46px; margin-bottom: 12px; }
+.me-sub { font-size: 24px; color: #8b959e; margin-bottom: 28px; }

@@ -136,9 +136,24 @@ Spikes 01 and 02 are **done and all five tests pass**. The CDN, the API and both
 playback paths work from the device with no infrastructure of any kind. There is
 no known platform blocker left.
 
-1. **Login** — QR-code flow plus WBI request signing. `qn=80` silently falls back
-   to 64 without an account, so 1080p is the payoff. Needs the user's own
-   session; nothing here can be tested without them.
+1. **Login** — done, by QR. Two findings worth keeping:
+
+   *No WBI signing is needed.* `search/all/v2`, `popular`, `ranking`, `view` and
+   `playurl` all answer unsigned. Only `search/type` demands a signature, and
+   `search/all/v2` covers the same ground.
+
+   *The poll response does not carry the credentials.* It returns a cross-domain
+   url whose query holds `ticket, gourl, first_domain` — the session arrives as
+   `Set-Cookie` on that hop, which XHR cannot read. `auth.js` therefore fetches
+   the url with `withCredentials` and lets the engine's own jar keep it. That
+   works, but it means **this code never sees SESSDATA**, so AVPlay's `COOKIE`
+   streaming property cannot be filled in and a logged-in session has to play
+   through MSE, which goes over XHR and picks up the jar.
+
+   The QR is encoded on device by `qr.js` rather than fetched from an image
+   service: the payload is a single-use login token and anything that can read it
+   can complete the login as the user. `tools/qr-verify.mjs` round-trips the
+   encoder through a real decoder — run it after any change there.
 2. **The client proper** — browse, search, history, playback. Build the player on
    MSE, with progressive `durl` as the fallback for anything that has no DASH.
    This is ordinary API work now, against a foundation that is known-good.

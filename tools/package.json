@@ -11,6 +11,8 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "node-forge": "^1.4.0"
+    "jsqr": "^1.4.0",
+    "node-forge": "^1.4.0",
+    "qrcode": "^1.5.4"
   }
 }
