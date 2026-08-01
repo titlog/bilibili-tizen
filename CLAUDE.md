@@ -1,8 +1,9 @@
 # bilibili on Samsung TV (Tizen)
 
-Building a bilibili client for a living-room Samsung TV. `app/` is currently a
-diagnostic harness, not a product — it answers platform questions one at a time
-so the real client is not built on guesses.
+Building a bilibili client for a living-room Samsung TV. `app/` is the client:
+browse, search, QR login, and playback. `spike/` keeps the diagnostic harness that
+established the platform facts below — it is not deployed, but it is the fastest
+way to re-answer a media question without disturbing the app.
 
 ## The target
 
@@ -76,16 +77,17 @@ zsh tools/deploy.sh          # refresh playurl, sign, install, launch (~15 s)
 node tools/collect.mjs       # in another terminal, before pressing play
 ```
 
-`deploy.sh` rewrites two values in `app/js/config.js` on every run: `VIDEO_URL`
-(CDN links die after an hour or two — if tests suddenly go red, suspect this
-before suspecting the code) and `REPORT_TO`.
+`deploy.sh` rewrites `REPORT_TO` in `app/js/config.js` so the TV knows where to
+send diagnostics. It also derives the package filename from the build rather than
+assuming it: `tizen` names the wgt after `<name>` in `config.xml`, and renaming
+the app once left the installer pushing a stale package while the launch step
+cheerfully started the previously installed build — which reads exactly like new
+code having no effect.
 
 Results come back over HTTP because `dlog` is closed on retail sets: the app
-POSTs each finished test to `collect.mjs` on port 8099. Without the collector
-running, reporting silently no-ops and results can only be read off the screen.
-
-Web Inspector via `tizen debug` is the fallback when a run dies before any test
-reports — for example a syntax error at load.
+POSTs errors to `collect.mjs` on port 8099. Without the collector running,
+reporting silently no-ops. Web Inspector via `tizen debug` is the fallback when a
+run dies before anything reports, such as a syntax error at load.
 
 ## Certificates
 
@@ -107,13 +109,20 @@ permissions problem but is really a wrong turn — just parse the JSON.
 ## Layout
 
 ```
-app/          the Tizen widget (config.xml, index.html, css/, js/)
-  js/config.js   the only file meant to be hand-edited
-  js/main.js     tests, MPD builder, remote handling
+app/          the client
+  js/config.js   user agent, preferred quality, reporting address
+  js/api.js      bilibili endpoints and response normalisation
+  js/auth.js     QR login and session storage
+  js/qr.js       QR encoder, verified by tools/qr-verify.mjs
+  js/nav.js      geometric D-pad focus
+  js/player.js   AVPlay and MSE playback
+  js/app.js      screens and routing
+spike/        the harness that established the platform facts; not deployed
 tools/
   deploy.sh        one-command build + install + launch
-  collect.mjs      results collector on :8099
+  collect.mjs      diagnostics collector on :8099
   samsung-cert.mjs headless Samsung certificate issuance
+  qr-verify.mjs    round-trips qr.js through a real decoder
   probe-gating.py  re-check the CDN/API gating rules from the dev machine
 docs/
   操作手册-原始.md   the original plan, kept for reference; its step 3
@@ -126,9 +135,10 @@ docs/
 step. No frameworks, no bundler, no `let`/`const`/arrow functions in app code.
 `tools/` is Node ESM and modern JS is fine there.
 
-The spike UI is driven entirely by the D-pad: up/down moves focus, centre runs,
-return exits. Anything added to the app has to be reachable that way — there is
-no pointer.
+Everything is driven by the D-pad: direction moves focus, centre selects, return
+goes back. Focus is geometric — `nav.js` picks whichever `.focusable` lies in the
+pressed direction and is nearest — so ragged grids work without anyone declaring
+a column count. Anything added has to be reachable that way; there is no pointer.
 
 ## Where this is going
 
