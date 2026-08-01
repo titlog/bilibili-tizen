@@ -35,14 +35,33 @@
 
 </div>
 
+<div id="pause-glyph" class="hidden"><div class="bar"></div><div class="bar"></div></div>
+
 <div id="playerui" class="hidden">
+    <div id="player-part"></div>
     <div id="player-title"></div>
     <div id="player-bar">
         <span id="player-pos">0:00</span>
-        <div id="player-track"><div id="player-fill"></div></div>
+        <div id="player-track">
+            <div id="player-buffer"></div>
+            <div id="player-fill"></div>
+            <div id="player-scrub" class="hidden"></div>
+        </div>
         <span id="player-dur">0:00</span>
+        <span id="player-quality"></span>
     </div>
-    <div id="player-hint">确认键 播放/暂停 &middot; 左右 快退/快进 &middot; 返回键 退出</div>
+    <div id="player-hint">确认键 播放/暂停 &middot; 左右 快退/快进 &middot; 下键 清晰度 &middot; 返回键 退出</div>
+</div>
+
+<div id="options" class="hidden">
+    <div class="opt-group">
+        <div class="opt-label">清晰度</div>
+        <div class="opt-row" id="opt-quality"></div>
+    </div>
+    <div class="opt-group" id="opt-parts-group">
+        <div class="opt-label">分P</div>
+        <div class="opt-row" id="opt-parts"></div>
+    </div>
 </div>
 
 <div id="nextup" class="hidden">
@@ -59,6 +78,7 @@
 <script src="js/qr.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/resume.js"></script>
+<script src="js/settings.js"></script>
 <script src="js/api.js"></script>
 <script src="js/nav.js"></script>
 <script src="js/player.js"></script>

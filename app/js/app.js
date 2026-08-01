@@ -394,14 +394,14 @@
 
             el("btn-logout").onselect = function () {
                 Auth.logout();
-                PREFERRED_QN = 64;
+                PREFERRED_QN = Settings.get("qn", 127);
                 toast("已退出登录");
                 renderMine();
             };
             Nav.reset("#btn-logout");
 
             if (me.isLogin) {
-                PREFERRED_QN = 80;
+                PREFERRED_QN = Settings.get("qn", 127);
                 API.history(function (items) {
                     var h = el("hist");
                     if (!h) { return; }
@@ -548,6 +548,21 @@
     }
 
     var chromeTimer = null;
+
+    /* A paused video should read as paused from the sofa, not just by a frozen
+     * number in the corner. */
+    function setPaused(paused) {
+        if (paused) {
+            Player.pause();
+            el("pause-glyph").className = "";
+            el("playerui").className = "";
+            if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
+        } else {
+            Player.resume();
+            el("pause-glyph").className = "hidden";
+            showChrome();
+        }
+    }
     var pendingNext = null;     /* {detail, cid, title} awaiting the countdown */
     var nextTimer = null;
     var playedInChain = {};     /* stops a chain of autoplays circling back */
@@ -585,6 +600,143 @@
         if (d.related) { fromList(d.related); }
         else { API.related(d.bvid, function (list) { d.related = list; fromList(list); },
                            function () { cb(null); }); }
+    }
+
+    /* ---------------- scrubbing ----------------
+     * Ten seconds a press is unusable on a fifty-minute video. Holding a
+     * direction now moves a scrub head along the bar, accelerating the longer it
+     * is held, and the jump commits when the viewer stops — the same shape as
+     * every television player, and it keeps a single button doing one thing. */
+    var scrub = null;          /* {target, step, commitTimer} */
+
+    function scrubStep() {
+        /* 10s, then 30s, then a minute, then a thirtieth of the video: on a long
+         * upload the last tier is what makes crossing it bearable. */
+        var n = scrub.presses;
+        var dur = Player.durationMs() || 0;
+        if (n < 4) { return 10000; }
+        if (n < 8) { return 30000; }
+        if (n < 14) { return 60000; }
+        return Math.max(60000, Math.floor(dur / 30));
+    }
+
+    function enterScrub() {
+        if (scrub) { return; }
+        scrub = { target: Player.durationMs() ? lastKnownPosition : 0, presses: 0, timer: null };
+        el("playerui").className = "scrubbing";
+        el("player-scrub").className = "";
+        if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
+    }
+
+    function moveScrub(dir) {
+        if (!playing) { return; }
+        if (!scrub) { enterScrub(); }
+        scrub.presses++;
+        var dur = Player.durationMs() || 0;
+        scrub.target = Math.max(0, Math.min(dur ? dur - 2000 : Infinity,
+                                            scrub.target + dir * scrubStep()));
+        paintScrub();
+        if (scrub.timer) { clearTimeout(scrub.timer); }
+        /* Commit on a pause in input rather than on a separate confirm press:
+         * one button, one meaning. */
+        scrub.timer = setTimeout(commitScrub, 700);
+    }
+
+    function paintScrub() {
+        var dur = Player.durationMs() || 1;
+        var pct = Math.min(100, (scrub.target / dur) * 100);
+        el("player-fill").style.width = pct + "%";
+        el("player-scrub").style.left = "calc(" + pct + "% - 3px)";
+        el("player-pos").textContent = fmt(scrub.target);
+    }
+
+    function commitScrub() {
+        if (!scrub) { return; }
+        var target = scrub.target;
+        cancelScrub();
+        Player.seekTo(target);
+    }
+
+    function cancelScrub() {
+        if (!scrub) { return; }
+        if (scrub.timer) { clearTimeout(scrub.timer); }
+        scrub = null;
+        el("playerui").className = "";
+        el("player-scrub").className = "hidden";
+        showChrome();
+    }
+
+    var lastKnownPosition = 0;
+
+    /* ---------------- options: quality and parts ---------------- */
+
+    var optionsOpen = false;
+
+    var QUALITY_NAMES = {
+        127: "8K", 120: "4K", 116: "1080P60", 112: "1080P+",
+        80: "1080P", 74: "720P60", 64: "720P", 32: "480P", 16: "360P"
+    };
+
+    function openOptions() {
+        if (!playing || optionsOpen) { return; }
+        optionsOpen = true;
+        el("playerui").className = "hidden";
+        el("options").className = "";
+
+        var accept = (playing.accept && playing.accept.length)
+            ? playing.accept : [80, 64, 32, 16];
+        var html = "";
+        for (var i = 0; i < accept.length; i++) {
+            var q = accept[i];
+            html += '<div class="opt focusable' + (q === playing.quality ? " current" : "") +
+                    '" data-qn="' + q + '">' + esc(QUALITY_NAMES[q] || ("QN " + q)) + "</div>";
+        }
+        el("opt-quality").innerHTML = html;
+
+        var d = playing.detail;
+        var group = el("opt-parts-group");
+        if (d.pages && d.pages.length > 1) {
+            group.className = "opt-group";
+            var ph = "";
+            for (var p = 0; p < d.pages.length && p < 40; p++) {
+                ph += '<div class="opt focusable' + (d.pages[p].cid === playing.cid ? " current" : "") +
+                      '" data-cid="' + d.pages[p].cid + '">P' + (p + 1) + "</div>";
+            }
+            el("opt-parts").innerHTML = ph;
+        } else {
+            group.className = "opt-group hidden";
+            el("opt-parts").innerHTML = "";
+        }
+
+        var opts = document.querySelectorAll("#options .opt");
+        for (var k = 0; k < opts.length; k++) {
+            (function (node) {
+                node.onselect = function () {
+                    var qn = node.getAttribute("data-qn");
+                    var cid = node.getAttribute("data-cid");
+                    closeOptions();
+                    if (qn) { switchQuality(Number(qn)); }
+                    else if (cid) { play(playing.detail, Number(cid)); }
+                };
+            })(opts[k]);
+        }
+        Nav.reset("#options .opt.current") ;
+        if (!Nav.current()) { Nav.reset("#options .opt"); }
+    }
+
+    function closeOptions() {
+        optionsOpen = false;
+        el("options").className = "hidden";
+        el("playerui").className = "";
+        showChrome();
+    }
+
+    function switchQuality(qn) {
+        if (!playing) { return; }
+        PREFERRED_QN = qn;
+        Settings.set("qn", qn);
+        toast("切换到 " + (QUALITY_NAMES[qn] || qn));
+        play(playing.detail, playing.cid);
     }
 
     var nextToken = 0;
@@ -668,6 +820,19 @@
         var startMs = Resume.positionMs(detail.bvid, cid);
         if (startMs) { toast("从 " + fmt(startMs) + " 继续播放"); }
         el("player-title").textContent = detail.title;
+        var partLabel = "";
+        if (detail.pages && detail.pages.length > 1) {
+            for (var pi = 0; pi < detail.pages.length; pi++) {
+                if (detail.pages[pi].cid === cid) {
+                    partLabel = "P" + (pi + 1) + " / " + detail.pages.length +
+                                "  " + detail.pages[pi].part;
+                    break;
+                }
+            }
+        }
+        el("player-part").textContent = partLabel;
+        el("pause-glyph").className = "hidden";
+        cancelScrub();
         el("player-pos").textContent = "0:00";
         el("player-dur").textContent = detail.duration;
         el("player-fill").style.width = "0%";
@@ -689,6 +854,7 @@
             if (playing !== session) { return; }
             playing.quality = r.quality;
             playing.accept = r.accept || [];
+            el("player-quality").textContent = QUALITY_NAMES[r.quality] || ("QN " + r.quality);
             Player.playProgressive(r.url, startMs);
         }, function (why) {
             if (playing !== session) { return; }
@@ -728,6 +894,9 @@
     function stopPlayback() {
         var was = playing;
         Resume.flush();
+        cancelScrub();
+        closeOptions();
+        el("pause-glyph").className = "hidden";
         cancelNext();
         playedInChain = {};
         Player.stop();
@@ -745,11 +914,17 @@
             if (playing) {
                 Resume.record(playing.detail.bvid, playing.cid, data.position, data.duration);
             }
+            lastKnownPosition = data.position;
+            /* While scrubbing the bar belongs to the scrub head, not the clock. */
+            if (scrub) { return; }
             el("player-pos").textContent = fmt(data.position);
             if (data.duration) {
                 el("player-dur").textContent = fmt(data.duration);
                 el("player-fill").style.width =
                     Math.min(100, (data.position / data.duration) * 100) + "%";
+                var buf = Player.bufferedMs();
+                el("player-buffer").style.width =
+                    Math.min(100, (buf / data.duration) * 100) + "%";
             }
         } else if (kind === "buffering") {
             el("player-hint").textContent = data ? "缓冲中…"
@@ -789,22 +964,30 @@
             if (k === Nav.KEY.EXIT) { return false; }
             return true;
         }
+        if (optionsOpen) {
+            if (k === Nav.KEY.RETURN) { closeOptions(); return true; }
+            if (k === Nav.KEY.EXIT) { return false; }
+            return false;   /* let Nav move focus between the options */
+        }
         if (!playing) { return false; }
-        showChrome();
+        if (!scrub) { showChrome(); }
         /* While playing, the remote drives the player rather than the focus. */
         switch (k) {
             case Nav.KEY.ENTER:
             case Nav.KEY.PLAY_PAUSE:
-                if (Player.isPaused()) { Player.resume(); showChrome(); }
-                else { Player.pause(); el("playerui").className = ""; if (chromeTimer) { clearTimeout(chromeTimer); } }
+                if (scrub) { commitScrub(); return true; }
+                setPaused(!Player.isPaused());
                 return true;
             case Nav.KEY.LEFT:
             case Nav.KEY.REW:
-                Player.seekBy(-10000); return true;
+                moveScrub(-1); return true;
             case Nav.KEY.RIGHT:
             case Nav.KEY.FF:
-                Player.seekBy(10000); return true;
+                moveScrub(1); return true;
+            case Nav.KEY.DOWN:
+                openOptions(); return true;
             case Nav.KEY.RETURN:
+                if (scrub) { cancelScrub(); return true; }
                 stopPlayback(); return true;
             case Nav.KEY.EXIT:
                 return false;   /* let Nav close the app */

@@ -141,6 +141,33 @@ goes back. Focus is geometric — `nav.js` picks whichever `.focusable` lies in 
 pressed direction and is nearest — so ragged grids work without anyone declaring
 a column count. Anything added has to be reachable that way; there is no pointer.
 
+## Traps this codebase has already fallen into
+
+Three separate times a wrong premise was treated as a constraint and designed
+around, and each cost hours. The pattern is the same every time: an assumption
+about *why* something failed, never isolated, hardened into architecture.
+
+- *"The CDN needs a Referer, so we need a proxy."* It was `curl`'s default
+  User-Agent being blocklisted. Always vary one thing at a time.
+- *"AVPlay cannot see the cookie jar, so a signed-in session must play through
+  MSE."* Stream urls are pre-signed; AVPlay needs no session at all. Only the
+  playurl call does, and that goes over XHR. Hand-rolling MSE gave up native
+  buffering, seeking and hardware decode for nothing.
+- *"Every manifest delivery route fails, so AVPlay cannot do DASH."* Stale
+  listeners on the avplay singleton were knocking over each attempt before it
+  ran. With a generation guard, HTTP delivery worked on the first try.
+
+That last one has a corollary worth stating on its own, because it has now bitten
+twice: **anything that drives AVPlay must guard its callbacks with a generation
+counter.** `setListener` registers on a singleton and `close()` does not detach
+it, so a torn-down session's `onerror` or `onstreamcompleted` fires into whatever
+is playing now. `player.js` and `spike/main.js` both do this; new code must too.
+
+The same shape applies to every async callback that paints: a response that
+arrives after the viewer has moved on must check a token before touching the DOM,
+or it repaints a dead screen and — worse — hands focus to a detached node, which
+reads to the user as the remote having stopped working.
+
 ## Where this is going
 
 Spikes 01 and 02 are **done and all five tests pass**. The CDN, the API and both
@@ -165,8 +192,20 @@ no known platform blocker left.
    service: the payload is a single-use login token and anything that can read it
    can complete the login as the user. `tools/qr-verify.mjs` round-trips the
    encoder through a real decoder — run it after any change there.
-2. **The client proper** — browse, search, history, playback. Build the player on
-   MSE, with progressive `durl` as the fallback for anything that has no DASH.
-   This is ordinary API work now, against a foundation that is known-good.
-3. **Wits hot reload** — optional. A deploy cycle is about 15 s, which has been
-   fast enough so far.
+2. **The client** — done: recommendations, 热门, 排行, 动态, search with the
+   television's own IME, detail with parts and related videos, resume, autoplay
+   of the next video, and a player built on AVPlay with progressive `durl`. MSE
+   is the fallback for videos with no single-file stream.
+
+**Not possible on this login path.** Like, coin, favourite and watch-later all
+need the CSRF token `bili_jct`. The session lives in the engine's cookie jar
+where this code cannot read it, so those actions cannot be signed. The way out
+would be bilibili's TV login endpoint, which returns credentials as JSON for
+exactly this reason — but it requires signing with the official TV client's
+appkey, which is a decision about impersonating their client, not a technical
+one. Left alone deliberately.
+
+**Still missing**, roughly in order of how much the absence is felt: a UP主 page
+(the space API answers -352 without WBI signing), categories beyond 全站, search
+history and hot searches, subtitles (the endpoint works; many videos carry
+them), and a settings screen for quality, autoplay and clearing history.

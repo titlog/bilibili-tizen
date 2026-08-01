@@ -5,9 +5,10 @@
  * stream. */
 var USER_AGENT = "Mozilla/5.0 (SMART-TV; LINUX; Tizen 7.0) AppleWebKit/537.36 (KHTML, like Gecko) Version/7.0 TV Safari/537.36";
 
-/* 64 is 720p and needs no account. 80 (1080p) silently falls back to 64 until
- * a session cookie is present. */
-var PREFERRED_QN = 64;
+/* Ask for the top tier and let bilibili clamp it to whatever the account is
+ * entitled to: signed out that lands on 720p, signed in on 1080p or better.
+ * Settings overrides this once the viewer picks a quality by hand. */
+var PREFERRED_QN = 127;
 
 /* Dev only: the app posts errors here so a run can be read from the terminal
  * instead of off the screen. Empty disables it. */

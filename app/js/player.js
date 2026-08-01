@@ -358,6 +358,38 @@ var Player = (function () {
             lastTime = target;
             emit("time", { position: target, duration: duration });
         },
+        /* Absolute seek, for the scrub bar. seekBy stays for the +/-10 s keys. */
+        seekTo: function (ms) {
+            var target = Math.max(0, ms);
+            if (duration) { target = Math.min(target, duration - 2000); }
+            if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
+            else if (mode === "mse") {
+                if (mseSeek && !mseSeek(target / 1000)) { emit("seek-refused"); return; }
+                el("html5-video").currentTime = target / 1000;
+            }
+            lastTime = target;
+            emit("time", { position: target, duration: duration });
+        },
+
+        /* How much is ready to play, so the bar can show it. */
+        bufferedMs: function () {
+            if (mode === "avplay") {
+                /* AVPlay exposes no buffered range; report the playhead so the
+                 * bar simply shows no lead rather than a wrong one. */
+                return lastTime;
+            }
+            if (mode === "mse") {
+                var v = el("html5-video");
+                try {
+                    if (v.buffered && v.buffered.length) {
+                        return v.buffered.end(v.buffered.length - 1) * 1000;
+                    }
+                } catch (e) {}
+            }
+            return 0;
+        },
+
+        durationMs: function () { return duration; },
         stop: reset,
         mode: function () { return mode; }
     };
