@@ -3,3 +3,4 @@ node_modules/
 .manifest.tmp
 author-signature.xml
 signature*.xml
+.DS_Store
