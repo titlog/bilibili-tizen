@@ -285,9 +285,25 @@
     function newView() { return ++viewToken; }
     function stillViewing(token) { return token === viewToken; }
 
+    /* The zone tabs, as bilibili's partition ids. Each is that partition's
+     * ranking — the same shape as 排行, and unsigned at every rid.
+     *
+     * These are the 1000-series ids of the site's current layout, taken from
+     * the zone pages themselves: /c/food is 1020, /c/dance 1004, /c/ai 1011,
+     * /c/tech 1012. The old two-and-three-digit ids still answer (美食 was 211,
+     * 舞蹈 129) but they are the previous layout, and they no longer hold what
+     * the website shows under the same name.
+     *
+     * There is no public list of these. The only way to learn one is to open
+     * the zone page and read the `region_id` its own requests carry — the
+     * search and ranking endpoints will not tell you, and guessing by name
+     * finds nothing. */
+    var ZONES = { food: 1020, dance: 1004, ai: 1011, tech: 1012 };
+
     /* ranking answers with its full 100 in one go and has no second page. */
     function fetchPage(kind, page, onOk, onFail) {
-        if (kind === "ranking") { return page === 1 ? API.ranking(onOk, onFail) : onOk([]); }
+        if (kind === "ranking") { return page === 1 ? API.ranking(0, onOk, onFail) : onOk([]); }
+        if (ZONES[kind]) { return page === 1 ? API.ranking(ZONES[kind], onOk, onFail) : onOk([]); }
         if (kind === "rcmd") { return API.recommended(page, onOk, onFail); }
         if (kind === "dynamic") { return API.dynamic(page, onOk, onFail); }
         return API.popular(page, onOk, onFail);
@@ -789,7 +805,13 @@
             var h0 = el("hist");
             if (h0) {
                 if (shown.length) { paintCards(h0, shown); }
-                else { h0.innerHTML = '<div class="empty">读取中…</div>'; }
+                else {
+                    /* "读取中…" only when something is actually on its way. With
+                     * an expired session nothing follows this, and the message
+                     * would have sat there for the rest of the evening. */
+                    h0.innerHTML = '<div class="empty">' + (me.isLogin
+                        ? "读取中…" : "这台电视上还没有看过什么") + '</div>';
+                }
             }
 
             el("btn-switch").onselect = function () { renderAccounts(false); };
@@ -1214,6 +1236,7 @@
     }
 
     var lastKnownPosition = 0;
+    var lastKnownDuration = 0;
 
     /* ---------------- options: quality and parts ---------------- */
 
@@ -1419,8 +1442,12 @@
 
         var startMs = Resume.positionMs(detail.bvid, cid);
         var fromPhone = false;
+        /* 30 seconds is where `Resume` starts keeping a position, and a handoff
+         * has to answer to the same rule: a video someone glanced at for ten
+         * seconds on their phone should open at the beginning here, not ten
+         * seconds in with a notice about it. */
         if (handoff && handoff.bvid === detail.bvid && handoff.cid === cid &&
-                handoff.positionMs > startMs) {
+                handoff.positionMs >= 30000 && handoff.positionMs > startMs) {
             /* Take the further of the two. Watching on the phone after watching
              * here should win, and the reverse should not be undone by a stale
              * server entry. */
@@ -1430,6 +1457,7 @@
         handoff = null;
 
         lastKnownPosition = startMs;
+        lastKnownDuration = 0;      /* the previous video's length is not this one's */
         playing.startMs = startMs;
         if (startMs) {
             toast((fromPhone ? "接着手机上的进度，从 " : "从 ") +
@@ -1643,23 +1671,32 @@
      * of thirty. */
     var lastReport = { key: "", secs: -2, at: 0 };
     var csrfNoted = false;
+    var routeNoted = false;
 
-    function reportProgress(secs, force) {
+    function reportProgress(secs, force, durSecs) {
         if (!playing || !Auth.isLoggedIn()) { return; }
-        if (!Auth.csrf()) {
-            /* Accounts restored through the web fallback have no readable CSRF
-             * token, so they cannot write. Said once, because otherwise it is
-             * invisible: the television would simply never appear in the
-             * phone's history and nothing would explain why. */
+        if (!Auth.csrf() && !Auth.accessKey()) {
+            /* Accounts restored through the web fallback have neither an access
+             * token nor a readable CSRF token, so they cannot write. Said once,
+             * because otherwise it is invisible: the television would simply
+             * never appear in the phone's history and nothing would explain
+             * why. */
             if (!csrfNoted) {
                 csrfNoted = true;
-                report("history", "这个账号没有 csrf（网页扫码进来的），电视上的进度不会同步回 bilibili");
+                report("history", "这个账号既没有 access_key 也没有 csrf（网页扫码进来的），电视上的进度不会同步回 bilibili");
             }
             return;
         }
         /* Opened and abandoned is not watching. -1 means finished and always
          * goes. */
         if (secs >= 0 && secs < 5) { return; }
+
+        /* The last half minute counts as watched to the end — the same line
+         * `Resume` draws. Without this the two disagree about the same video:
+         * this set would call it finished and start it over, while the phone
+         * would have it sitting twenty seconds from the credits, and whichever
+         * one the merge trusted would be wrong somewhere. */
+        if (secs > 0 && durSecs && secs > durSecs - 30) { secs = -1; }
 
         var d = playing.detail;
         /* Cards from the feeds carry an aid; the ones that do not are playing
@@ -1675,7 +1712,16 @@
             if (!force && now - lastReport.at < 30000) { return; }
         }
         lastReport = { key: key, secs: secs, at: now };
-        API.report(d.aid, playing.cid, secs, null, function (why) {
+        API.report(d.aid, playing.cid, secs, function (j, note) {
+            /* Once per run of the app: which credential bilibili accepted from
+             * this device. Every heartbeat after that is silent — the answer
+             * does not change, and a log line per 30 seconds of television
+             * would bury everything else. */
+            if (!routeNoted) {
+                routeNoted = true;
+                report("history", "上报成功，" + note);
+            }
+        }, function (why) {
             report("history", "上报失败 " + d.bvid + " " + secs + "s：" + why);
         });
     }
@@ -1684,8 +1730,17 @@
         el("player-loading").className = "hidden";
         var was = playing;
         /* Before `playing` is cleared: this is the position the viewer actually
-         * stopped at, and the one the phone should show. */
-        reportProgress(Math.floor(lastKnownPosition / 1000), true);
+         * stopped at, and the one the phone should show.
+         *
+         * Only if something was actually watched, though. `lastKnownPosition`
+         * starts life at the resume point, so a video that was opened and never
+         * played — the 403s do this — would otherwise be reported at the
+         * position it never reached, and would jump to the top of the phone's
+         * history as if it had just been watched. */
+        if (playing && lastKnownPosition !== playing.startMs) {
+            reportProgress(Math.floor(lastKnownPosition / 1000), true,
+                           Math.floor(lastKnownDuration / 1000));
+        }
         Resume.flush();
         cancelScrub();
         closeOptions();
@@ -1724,7 +1779,9 @@
                 });
             }
             lastKnownPosition = data.position;
-            reportProgress(Math.floor(data.position / 1000), false);
+            lastKnownDuration = data.duration || lastKnownDuration;
+            reportProgress(Math.floor(data.position / 1000), false,
+                           Math.floor(lastKnownDuration / 1000));
             /* While scrubbing the bar belongs to the scrub head, not the clock. */
             if (scrub) { return; }
             el("player-pos").textContent = fmt(data.position);

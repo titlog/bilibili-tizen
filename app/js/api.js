@@ -69,21 +69,34 @@ var API = (function () {
      * this engine will not read back, so those accounts silently cannot. That
      * is why `Auth.csrf()` is checked by the caller rather than here — a write
      * that cannot be signed is not an error worth surfacing on a television. */
-    function postForm(url, fields, onOk, onFail) {
+    function postForm(url, fields, headers, onOk, onFail) {
         var xhr = new XMLHttpRequest();
         var settled = false;
         function fail(why) { if (!settled) { settled = true; if (onFail) { onFail(why); } } }
         function ok(j) { if (!settled) { settled = true; if (onOk) { onOk(j); } } }
 
-        var body = [];
-        for (var k in fields) {
-            if (!fields.hasOwnProperty(k)) { continue; }
-            body.push(encodeURIComponent(k) + "=" + encodeURIComponent(fields[k]));
+        /* A string body is already encoded — the signed ones have to be, since
+         * the signature covers the exact bytes. */
+        var body = fields;
+        if (typeof fields !== "string") {
+            var parts = [];
+            for (var k in fields) {
+                if (!fields.hasOwnProperty(k)) { continue; }
+                parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(fields[k]));
+            }
+            body = parts.join("&");
         }
 
         xhr.open("POST", url, true);
         xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
         applySession(xhr);
+        /* Referer and Origin are forbidden header names in a browser, but a
+         * widget runs under <access> rather than CORS and sets Cookie the same
+         * way, so they are worth trying — see `report`, which needs them. */
+        for (var hk in (headers || {})) {
+            if (!headers.hasOwnProperty(hk)) { continue; }
+            try { xhr.setRequestHeader(hk, headers[hk]); } catch (e) {}
+        }
         xhr.timeout = 20000;
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) { return; }
@@ -91,12 +104,15 @@ var API = (function () {
             var j;
             try { j = JSON.parse(xhr.responseText); }
             catch (e) { fail("bad JSON"); return; }
-            if (j.code !== 0) { fail(j.message || ("code " + j.code)); return; }
+            /* The number, not just the sentence. "请求错误" alone does not
+             * separate -400 (the request is wrong) from -111 (the token is),
+             * and those want opposite fixes. */
+            if (j.code !== 0) { fail("code " + j.code + " " + (j.message || "")); return; }
             ok(j);
         };
         xhr.ontimeout = function () { fail("timeout"); };
         xhr.onerror = function () { fail("network error"); };
-        xhr.send(body.join("&"));
+        xhr.send(body);
     }
 
     /* Thumbnails come back as http:// or protocol-relative, and some are huge.
@@ -201,8 +217,12 @@ var API = (function () {
             }, onFail);
         },
 
-        ranking: function (onOk, onFail) {
-            getJson(BASE + "/x/web-interface/ranking/v2?rid=0&type=all", function (d) {
+        /* rid 0 is the whole site; a partition id narrows it. The endpoint takes
+         * no WBI signature at any rid, which is why the zone tabs use the
+         * ranking rather than 分区最新 — the newest uploads in a partition are
+         * mostly not worth a television screen anyway. */
+        ranking: function (rid, onOk, onFail) {
+            getJson(BASE + "/x/web-interface/ranking/v2?type=all&rid=" + (rid || 0), function (d) {
                 onOk((d.list || []).map(normalise));
             }, onFail);
         },
@@ -347,15 +367,52 @@ var API = (function () {
          * convention the history endpoint reports back. Failures are handed to
          * the caller and go no further than the log: a history write that does
          * not land is not something to interrupt a video for. */
+        /* The endpoint takes either kind of credential, and this device has a
+         * different one from a browser, so both are tried in order and the log
+         * records which carried it.
+         *
+         * The web shape — aid/cid/progress/csrf — succeeds from a logged-in
+         * Chrome and comes back -400 请求错误 from the television, with or
+         * without a Referer. What the television cannot produce is a browser's
+         * Origin, and `setRequestHeader` cannot forge one. The TV login's
+         * access token goes in the body instead, signed with the same appkey
+         * the login itself used, and owes nothing to headers. */
         report: function (aid, cid, progressSeconds, onOk, onFail) {
+            var url = BASE + "/x/v2/history/report";
+            var attempts = [];
+            var key = Auth.accessKey();
             var csrf = Auth.csrf();
-            if (!aid || !cid || !csrf) {
-                if (onFail) { onFail(csrf ? "缺 aid/cid" : "这个账号没有 csrf"); }
+
+            if (key) {
+                attempts.push({ how: "access_key", body: Auth.signTv({
+                    access_key: key, aid: aid, cid: cid, progress: progressSeconds
+                }) });
+            }
+            if (csrf) {
+                attempts.push({ how: "csrf", body: {
+                    aid: aid, cid: cid, progress: progressSeconds, csrf: csrf
+                } });
+            }
+            if (!aid || !cid || !attempts.length) {
+                if (onFail) { onFail(attempts.length ? "缺 aid/cid" : "这个账号既没有 access_key 也没有 csrf"); }
                 return;
             }
-            postForm(BASE + "/x/v2/history/report", {
-                aid: aid, cid: cid, progress: progressSeconds, csrf: csrf
-            }, onOk, onFail);
+
+            var tried = [];
+            function attempt(i) {
+                var a = attempts[i];
+                postForm(url, a.body, null, function (j) {
+                    if (onOk) {
+                        onOk(j, "走的是 " + a.how +
+                                (tried.length ? "（先失败：" + tried.join("；") + "）" : ""));
+                    }
+                }, function (why) {
+                    tried.push(a.how + " " + why);
+                    if (i + 1 < attempts.length) { attempt(i + 1); return; }
+                    if (onFail) { onFail(tried.join("；")); }
+                });
+            }
+            attempt(0);
         },
 
         view: function (bvid, onOk, onFail) {

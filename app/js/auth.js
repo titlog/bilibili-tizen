@@ -319,6 +319,18 @@ var Auth = (function () {
             return (s && s.bili_jct) || "";
         },
 
+        /* The other way to sign a write. The TV login hands back an access token
+         * as well as cookies, and the app-style endpoints take it in the body —
+         * no CSRF token, no Origin, no jar. On a device whose requests carry
+         * neither an Origin a website would recognise nor a browser's full set
+         * of cookies, that is the path that fits. */
+        accessKey: function () {
+            var s = session();
+            return (s && s.access_token) || "";
+        },
+
+        signTv: function (params) { return sign(params); },
+
         /* Signs the active account out and forgets it entirely, along with the
          * watch history that belonged to them. */
         logout: function () {

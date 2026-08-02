@@ -33,11 +33,14 @@ body {
     margin-right: 56px;
 }
 
-#tabs { display: flex; gap: 16px; flex: 1; }
+/* Ten tabs at the original 28px/32px measured 1516px, which left the row
+ * fighting the account chip for the last 150 pixels of a 1920 panel. Measured
+ * again at 26/20/10: 1174px, and the chip has room. */
+#tabs { display: flex; gap: 10px; flex: 1; }
 
 .tab {
-    font-size: 28px;
-    padding: 12px 32px;
+    font-size: 26px;
+    padding: 12px 20px;
     border-radius: 999px;
     color: #9aa4ad;
     border: 3px solid transparent;

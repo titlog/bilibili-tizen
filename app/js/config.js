@@ -16,4 +16,4 @@ var REPORT_TO = "http://192.168.1.10:8099/report";
 
 /* Set by tools/deploy.sh --selftest: walks the whole flow on the device and
  * reports each step to the collector. Never on in a normal build. */
-var SELFTEST = false;
+var SELFTEST = true;

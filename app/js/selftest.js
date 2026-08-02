@@ -81,6 +81,40 @@ var SelfTest = (function () {
         }, function (why) { post("✗ 探测：playurl 失败 " + why); });
     }
 
+    /* The zone tabs run through the same code as 排行 with a different
+     * partition id, so what can actually break is an id — and an id that
+     * answers with nothing looks exactly like a network hiccup from the sofa.
+     * Asking the endpoints directly is steadier than walking the tab bar with
+     * the remote and trusting focus to land where the press count says. */
+    var zoneProbe = null;
+
+    function probeZones() {
+        zoneProbe = {};
+        var want = [["美食", 1020], ["舞蹈", 1004], ["人工智能", 1011], ["科技数码", 1012]];
+        for (var i = 0; i < want.length; i++) {
+            (function (name, rid) {
+                API.ranking(rid, function (items) {
+                    zoneProbe[name] = items.length;
+                }, function (why) { zoneProbe[name] = "失败 " + why; });
+            })(want[i][0], want[i][1]);
+        }
+    }
+
+    /* A partition that answers with an empty list is the failure worth catching
+     * — bilibili renumbered these once already, and a renumbered id returns
+     * code 0 with nothing in it rather than an error. */
+    function zoneVerdict() {
+        if (!zoneProbe) { return "分区探测没有跑"; }
+        var bad = [], names = ["美食", "舞蹈", "人工智能", "科技数码"], line = [];
+        for (var i = 0; i < names.length; i++) {
+            var v = zoneProbe[names[i]];
+            line.push(names[i] + "=" + (v === undefined ? "没回来" : v));
+            if (typeof v !== "number" || v === 0) { bad.push(names[i]); }
+        }
+        post("分区 " + line.join(" "));
+        return bad.length ? ("这些分区取不到内容：" + bad.join("、")) : null;
+    }
+
     var steps = [
         ["首页加载出卡片", 3500, function () {
             return count("#screen .card") > 0 ? null : "网格里没有任何卡片";
@@ -89,8 +123,9 @@ var SelfTest = (function () {
             var f = document.querySelector("#screen .card.focused");
             return f ? null : "没有卡片处于选中状态";
         }],
-        ["探测流地址", 200, function () { probeStream(); return null; }],
+        ["探测流地址", 200, function () { probeStream(); probeZones(); return null; }],
         ["等待探测结果", 4000, function () { return null; }],
+        ["四个分区都有内容", 100, zoneVerdict],
         ["按确认键开始播放", 200, function () { key(KEY.ENTER); return null; }],
         ["播放器接管画面", 6000, function () {
             if (visible("shell")) { return "浏览界面没有让位给播放器"; }
@@ -222,7 +257,11 @@ var SelfTest = (function () {
             return null;
         }],
         ["右键走到账号位", 600, function () {
-            for (var i = 0; i < 8; i++) { key(KEY.RIGHT); }
+            /* One press per tab plus slack. This said 8 when there were six
+             * tabs; four zone tabs later it stopped short of the chip and the
+             * account steps all failed for a reason that had nothing to do with
+             * accounts. */
+            for (var i = 0; i < 16; i++) { key(KEY.RIGHT); }
             var f = document.getElementById("account");
             return (f && f.className.indexOf("focused") >= 0)
                 ? null : "右键走到头也没停在账号位上";
