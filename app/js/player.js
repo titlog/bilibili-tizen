@@ -21,15 +21,52 @@ var Player = (function () {
     var onEvent = function () {};
     var duration = 0;
     var lastTime = 0;
-    var mseGeneration = 0;   /* invalidates in-flight appends after a reset */
+    var mseGeneration = 0;   /* invalidates a load that a newer one superseded */
     var avGeneration = 0;    /* same, for the avplay singleton's listener */
-    var mseSeek = null;      /* set while an MSE session is live */
+    var shakaPlayer = null;  /* the live DASH player, kept across videos */
+    /* load() and unload() both take time and both own the media element while
+     * they run, so they are queued rather than raced. */
+    var shakaOp = Promise.resolve();
 
     function el(id) { return document.getElementById(id); }
 
     function emit(kind, data) { onEvent(kind, data); }
 
     function log(msg) { onEvent("log", msg); }
+
+    /* Milliseconds from the button press to each stage of getting a picture up.
+     * "several seconds before it plays" is a symptom with at least five
+     * candidate causes — two API round trips, the index fetch, the first media
+     * chunk, the decoder — and no way to tell them apart by watching the screen.
+     * Every stage records once; the first value wins so a retry cannot rewrite
+     * the run that is being measured. */
+    var marks = null;
+    var markOrder = [];
+
+    /* A stall is the failure the viewer actually complains about and the one
+     * least likely to leave a trace, so it still gets a line — now taken from
+     * the player's own statistics. */
+    var lastStallAt = 0;
+
+    function startTiming() {
+        marks = { t0: new Date().getTime() };
+        markOrder = [];
+    }
+
+    function mark(name) {
+        if (!marks || marks[name] !== undefined) { return; }
+        marks[name] = new Date().getTime() - marks.t0;
+        markOrder.push(name);
+    }
+
+    function timings() {
+        if (!marks) { return ""; }
+        var out = [];
+        for (var i = 0; i < markOrder.length; i++) {
+            out.push(markOrder[i] + "=" + marks[markOrder[i]] + "ms");
+        }
+        return out.join(" ");
+    }
 
     /* Bound once. Attaching these inside playMse left one live set of handlers
      * per video played, so by the fifth clip every tick fired five times. */
@@ -44,10 +81,37 @@ var Player = (function () {
             emit("time", { position: lastTime, duration: duration });
         });
         v.addEventListener("playing", function () {
-            if (mode === "mse") { emit("playing", { duration: duration }); }
+            if (mode === "mse") { mark("playing"); emit("playing", { duration: duration }); }
         });
         v.addEventListener("waiting", function () {
-            if (mode === "mse") { emit("buffering", true); }
+            if (mode !== "mse") { return; }
+            emit("buffering", true);
+
+            /* A stall still gets described, but from the player's own stats
+             * rather than from a byte pump we no longer own. Rate-limited: a
+             * stall flaps, and one line per flap buries the run it belongs to. */
+            var now = new Date().getTime();
+            if (!shakaPlayer || now - lastStallAt < 5000) { return; }
+            lastStallAt = now;
+            try {
+                var st = shakaPlayer.getStats() || {};
+                var ahead = 0;
+                if (v.buffered && v.buffered.length) {
+                    for (var b = 0; b < v.buffered.length; b++) {
+                        if (v.currentTime >= v.buffered.start(b) - 0.5 &&
+                            v.currentTime <= v.buffered.end(b)) {
+                            ahead = v.buffered.end(b) - v.currentTime;
+                        }
+                    }
+                }
+                log("卡住 t=" + (v.currentTime || 0).toFixed(1) + "s" +
+                    " ahead=" + ahead.toFixed(1) + "s" +
+                    " readyState=" + v.readyState +
+                    " 估算带宽=" + Math.round((st.estimatedBandwidth || 0) / 1000) + "kbps" +
+                    " 当前画质=" + (st.width || "?") + "x" + (st.height || "?") +
+                    " 已卡=" + (st.bufferingTime || 0).toFixed(1) + "s" +
+                    " 丢帧=" + (st.droppedFrames || 0));
+            } catch (e) {}
         });
         v.addEventListener("canplay", function () {
             if (mode === "mse") { emit("buffering", false); }
@@ -81,16 +145,31 @@ var Player = (function () {
     function reset() {
         mseGeneration++;
         avGeneration++;
-        mseSeek = null;
         try { webapis.avplay.stop(); } catch (e) {}
         try { webapis.avplay.close(); } catch (e) {}
         if (obj && obj.parentNode) { obj.parentNode.removeChild(obj); }
         obj = null;
+
         var v = el("html5-video");
-        /* Revoke first: removeAttribute empties v.src, and revoking "" leaks
-         * the blob for the lifetime of the app. */
-        if (ms) { try { URL.revokeObjectURL(v.src); } catch (e) {} ms = null; }
-        try { v.pause(); v.removeAttribute("src"); v.load(); } catch (e) {}
+
+        /* unload(), not destroy(): the player is kept for the next video, and
+         * unloading is what cancels every in-flight segment request and frees
+         * the SourceBuffers. Leaving requests to be garbage collected left them
+         * holding connections, which is the fault that made fast-forwarding a
+         * few times break playback for good.
+         *
+         * It is asynchronous, and the element belongs to it while it runs —
+         * clearing src here fought it, and the next load started before the
+         * previous teardown had finished. Both are serialised through shakaOp
+         * instead. */
+        if (shakaPlayer) {
+            try { v.autoplay = false; } catch (e) {}
+            shakaOp = shakaOp.then(function () {
+                return shakaPlayer ? shakaPlayer.unload() : null;
+            })["catch"](function () {});
+        } else {
+            try { v.pause(); v.removeAttribute("src"); v.load(); } catch (e) {}
+        }
         v.className = "hidden";
         mode = null;
         duration = 0;
@@ -144,6 +223,7 @@ var Player = (function () {
             try { duration = webapis.avplay.getDuration(); } catch (e) { duration = 0; }
             if (startMs) { try { webapis.avplay.seekTo(startMs); } catch (e) {} }
             webapis.avplay.play();
+            mark("playing");
             emit("playing", { duration: duration });
         }, function (err) {
             if (live()) { emit("error", "prepare failed: " + err); }
@@ -152,22 +232,201 @@ var Player = (function () {
 
     /* ---------------- MSE ---------------- */
 
-    function fetchRange(url, from, to, onOk, onFail) {
-        var xhr = new XMLHttpRequest();
-        xhr.open("GET", url, true);
-        xhr.responseType = "arraybuffer";
-        if (from !== null) { xhr.setRequestHeader("Range", "bytes=" + from + "-" + to); }
-        xhr.timeout = 30000;
-        xhr.onload = function () {
-            if (xhr.status === 200 || xhr.status === 206) { onOk(xhr.response); }
-            /* Reading sequentially, the range past the last byte answers 416.
-             * That is the end of the file, not a failure. */
-            else if (xhr.status === 416) { onOk(null); }
-            else { onFail("HTTP " + xhr.status); }
+    /* Built once and kept. Constructing a player and attaching it to the element
+     * measured at about seven hundred milliseconds, and paying that on every
+     * video is seven hundred milliseconds of black screen for nothing — Shaka is
+     * designed to be loaded and unloaded, not rebuilt. */
+    function ensureShaka() {
+        if (shakaPlayer) { return shakaPlayer; }
+        if (typeof shaka === "undefined" || !shaka.Player) { return null; }
+
+        shaka.polyfill.installAll();
+        if (!shaka.Player.isBrowserSupported()) { return null; }
+
+        var player = new shaka.Player();
+        player.attach(el("html5-video"));
+        player.configure(shakaConfig());
+
+        /* Registered once. They act on whatever is playing now, which is what
+         * a long-lived player means — there is no generation to check because
+         * there is only ever one session. */
+        player.addEventListener("error", function (e) {
+            var err = e && e.detail;
+            if (err && (err.category === 1 || err.category === 3)) {
+                log("shaka 可恢复错误 " + describeShakaError(err) + "，重试取流");
+                try { player.retryStreaming(); } catch (e2) {}
+                return;
+            }
+            emit("error", "shaka error " + describeShakaError(err));
+        });
+
+        player.addEventListener("adaptation", function () {
+            var t = currentVideoTrack(player);
+            if (!t) { return; }
+            log("画质切到 " + t.width + "x" + t.height +
+                " (" + Math.round((t.videoBandwidth || t.bandwidth) / 1000) + " kbps)");
+            emit("quality", { id: t.originalVideoId || t.id, width: t.width, height: t.height });
+        });
+
+        shakaPlayer = player;
+        return player;
+    }
+
+    function shakaConfig() {
+        return {
+                /* Adaptation on, capped by the manifest itself — Mpd.build only
+                 * writes tiers at or below PREFERRED_QN. This is what makes a
+                 * deep seek into a long upload survivable: the CDN has never
+                 * cached the middle of a four gigabyte file, and dropping a tier
+                 * beats waiting on bytes that have to come from the origin. */
+                abr: {
+                    enabled: true,
+                    /* Shaka's own default is deliberately pessimistic, so the
+                     * first video started at 720p and switched up a second
+                     * later — a whole segment fetched and thrown away before
+                     * the picture appeared. This link measured at 14 Mbit;
+                     * six is a conservative reading of that and still starts
+                     * at 1080p. After the first video the player's own estimate
+                     * has taken over, which is another reason it is kept
+                     * between videos rather than rebuilt. */
+                    defaultBandwidthEstimate: 6000000
+                },
+                /* Flat, short retries. An exponential backoff sounds prudent and
+                 * is not — the thing being waited out is usually one dropped
+                 * connection, and seconds of frozen picture cost more than one
+                 * more request. */
+                manifest: {
+                    retryParameters: { maxAttempts: 3, baseDelay: 150, backoffFactor: 1, timeout: 15000 }
+                },
+            streaming: {
+                /* Spread over roughly ten seconds rather than one and a half.
+                 * What is being ridden out is this CDN refusing a burst from one
+                 * address and then recovering on its own — measured turning away
+                 * even single sequential requests for a while after a couple of
+                 * dozen rapid ones. Six attempts inside a second and a half all
+                 * land within that window and all fail, and the video is
+                 * declared unplayable when it is merely unlucky. */
+                retryParameters: { maxAttempts: 7, baseDelay: 600, backoffFactor: 1.6,
+                                   fuzzFactor: 0.5, timeout: 20000 },
+                bufferingGoal: 30,
+                /* One second, not two. This is how much has to be in hand
+                 * before the picture is allowed to start, and it was measured
+                 * costing two seconds of black screen after the load had
+                 * already finished. */
+                rebufferingGoal: 1,
+                bufferBehind: 30
+            }
         };
-        xhr.onerror = function () { onFail("network error"); };
-        xhr.ontimeout = function () { onFail("timeout"); };
-        xhr.send();
+    }
+
+    function playDashWithShaka(dash, startMs, isRetry) {
+        mode = "mse";
+        var gen = ++mseGeneration;
+        var retriedLoad = !!isRetry;
+
+        var manifest = Mpd.build(dash, PREFERRED_QN);
+        if (!manifest) {
+            emit("error", "拼不出播放清单（缺少分段索引）");
+            return;
+        }
+        var player = ensureShaka();
+        if (!player) {
+            emit("error", "这台设备的浏览器内核不支持 DASH 播放");
+            return;
+        }
+
+        var v = el("html5-video");
+        bindMediaElement();
+        v.className = "";
+        duration = (dash.duration || 0) * 1000;
+        /* Start the moment there is something to show, rather than waiting for
+         * load() to resolve and only then asking. */
+        v.autoplay = true;
+
+        mark("manifest");
+        var url = URL.createObjectURL(new Blob([manifest], { type: "application/dash+xml" }));
+
+        /* The start position goes into load(). Loading at zero and seeking
+         * afterwards buffers the opening and throws it away, which is exactly
+         * what made resuming a video take forever. */
+        var startAt = startMs > 1000 ? startMs / 1000 : undefined;
+        shakaOp = shakaOp.then(function () {
+            if (gen !== mseGeneration) { return null; }
+            return player.load(url, startAt);
+        }).then(function () {
+            try { URL.revokeObjectURL(url); } catch (e) {}
+            if (gen !== mseGeneration) { return; }
+            mark("loaded");
+            if (!duration) {
+                try { duration = (v.duration || 0) * 1000; } catch (e) {}
+            }
+            var t = currentVideoTrack(player);
+            if (t) { emit("quality", { id: t.originalVideoId || t.id, width: t.width, height: t.height }); }
+            v.play().catch(function (e) {
+                if (gen !== mseGeneration) { return; }
+                if (/interrupted|aborted/i.test(e.message || "")) { return; }
+                emit("error", "play(): " + e.message);
+            });
+        })["catch"](function (e) {
+            try { URL.revokeObjectURL(url); } catch (e2) {}
+            if (gen !== mseGeneration) { return; }
+            /* 7000 is LOAD_INTERRUPTED, which is a newer load winning. */
+            if (e && e.code === 7000) { return; }
+
+            /* One more go, after a pause, when the failure was the network.
+             * Shaka's own retries all happen inside a few seconds; this CDN's
+             * refusals outlast that, and a second attempt half a minute later
+             * routinely succeeds where the first was turned away. */
+            if (e && e.category === 1 && !retriedLoad) {
+                retriedLoad = true;
+                log("首次加载被拒（" + describeShakaError(e) + "），3 秒后重来一次");
+                setTimeout(function () {
+                    if (gen !== mseGeneration) { return; }
+                    playDashWithShaka(dash, startMs, true);
+                }, 3000);
+                return;
+            }
+            emit("error", "shaka load 失败 " + describeShakaError(e));
+        });
+    }
+
+    /* `code` alone names the class of failure and nothing about this one.
+     * `data` carries the part that matters — the url and the HTTP status for a
+     * network error, the offending codec for an unsupported one — and without
+     * it a 1001 is just "something was refused somewhere". */
+    function describeShakaError(e) {
+        if (!e) { return "(no error object)"; }
+        var out = "code=" + e.code + " category=" + e.category +
+                  " severity=" + e.severity;
+        try {
+            var d = e.data || [];
+            for (var i = 0; i < d.length; i++) {
+                var part = d[i];
+                if (part && typeof part === "object") {
+                    try { part = JSON.stringify(part).slice(0, 200); }
+                    catch (e2) { part = "[object]"; }
+                } else {
+                    part = String(part);
+                    /* Stream urls are enormous; the host and status are the
+                     * informative bits. */
+                    if (part.length > 120) {
+                        part = part.slice(0, 60) + "…(" + part.length + " chars)";
+                    }
+                }
+                out += " data[" + i + "]=" + part;
+            }
+        } catch (e3) {}
+        return out;
+    }
+
+    function currentVideoTrack(player) {
+        try {
+            var tracks = player.getVariantTracks();
+            for (var i = 0; i < tracks.length; i++) {
+                if (tracks[i].active) { return tracks[i]; }
+            }
+        } catch (e) {}
+        return null;
     }
 
     /* Fragmented MP4 is a run of moof+mdat boxes after the init segment, so
@@ -181,238 +440,17 @@ var Player = (function () {
         })[0] || (dash.video || [])[0];
     }
 
-    function playMse(dash, startMs) {
-        mode = "mse";
-        /* Minted here rather than inside sourceopen: a late-opening MediaSource
-         * would otherwise bump the counter after a newer session had captured
-         * it, killing the live pump and reviving the dead one. */
-        var gen = ++mseGeneration;
-        var video = pickDashVideo(dash);
-        /* dash.audio comes back unsorted, and on some videos the first entry is
-         * a tier the account cannot fetch — every mirror then answers 403 and
-         * the video buffers fine while the sound never arrives. Prefer a modest
-         * standard track, and keep the rest as fallbacks. */
-        var audioReps = (dash.audio || []).slice().sort(function (a, b) {
-            return (a.bandwidth || 0) - (b.bandwidth || 0);
-        });
-        var audio = audioReps[0];
-        if (!video || !audio) { emit("error", "no usable dash pair"); return; }
-
-        var vType = 'video/mp4; codecs="' + video.codecs + '"';
-        var aType = 'audio/mp4; codecs="' + audio.codecs + '"';
-        log("dash id=" + video.id + " " + video.codecs + " " + video.width + "x" + video.height +
-            " audio=" + audio.codecs +
-            " mirrors=" + ((video.urls || []).length || 1));
-        if (!window.MediaSource) { emit("error", "MediaSource unavailable"); return; }
-        if (!MediaSource.isTypeSupported(vType)) { emit("error", "codec unsupported: " + vType); return; }
-        if (!MediaSource.isTypeSupported(aType)) { emit("error", "codec unsupported: " + aType); return; }
-
-        var v = el("html5-video");
-        bindMediaElement();
-        v.className = "";
-        ms = new MediaSource();
-        v.src = URL.createObjectURL(ms);
-        duration = (dash.duration || 0) * 1000;
-
-        ms.addEventListener("sourceopen", function () {
-            var vb, ab;
-            try {
-                vb = ms.addSourceBuffer(vType);
-                ab = ms.addSourceBuffer(aType);
-            } catch (e) { emit("error", "addSourceBuffer: " + e.message); return; }
-
-            /* A flat chunk size is wrong for both streams at once: 4 MB is three
-             * minutes of audio but thirteen seconds of 1080p video, so the audio
-             * raced far ahead while the picture — the thing playback waits on —
-             * trickled in. Size each request by its own bitrate instead, and ask
-             * for a short one first so something is playable almost at once. */
-            function chunkFor(rep, seconds) {
-                var bps = (rep.bandwidth || 1200000) / 8;
-                return Math.max(192 * 1024, Math.round(bps * seconds));
-            }
-            var FIRST_SECONDS = 5, NEXT_SECONDS = 20;
-
-            var streams = [
-                { rep: video, sb: vb, at: 0, done: false, inflight: 0, host: 0,
-                  kind: "video", pending: {}, appendAt: 0 },
-                { rep: audio, sb: ab, at: 0, done: false, inflight: 0, host: 0,
-                  kind: "audio", pending: {}, appendAt: 0 }
-            ];
-            /* Waiting for QuotaExceededError is too late on a feature-length
-             * video; drop what is well behind the playhead as we go. */
-            function evict(s) {
-                if (gen !== mseGeneration || !ms) { return; }
-                if (s.sb.updating || ms.readyState !== "open") { return; }
-                /* Deep enough that the usual short rewinds stay seekable. */
-                var keepFrom = (v.currentTime || 0) - 120;
-                if (keepFrom <= 0) { return; }
-                try {
-                    if (s.sb.buffered.length && s.sb.buffered.start(0) < keepFrom - 30) {
-                        s.sb.remove(0, keepFrom);
-                    }
-                } catch (e) {}
-            }
-
-            function drain(s) {
-                if (gen !== mseGeneration || !ms || ms.readyState !== "open") { return; }
-                if (s.sb.updating) { return; }   /* updateend calls back in */
-                var buf = s.pending[s.appendAt];
-                if (!buf) { return; }
-                delete s.pending[s.appendAt];
-                try { s.sb.appendBuffer(buf); } catch (e) {
-                    if (e.name === "QuotaExceededError") {
-                        /* Put it back and make room; the next tick retries. */
-                        s.pending[s.appendAt] = buf;
-                        try {
-                            var keep = Math.max(0, (v.currentTime || 0) - 20);
-                            if (keep > 0 && !s.sb.updating) { s.sb.remove(0, keep); }
-                        } catch (e2) {}
-                        return;
-                    }
-                    emit("error", "append: " + e.message);
-                    return;
-                }
-                s.appendAt += buf.byteLength;
-                if (s.eof && s.appendAt >= s.eof) { s.done = true; }
-            }
-
-            function pump(s) {
-                /* inflight matters as much as updating: a 4 MB fetch outlives
-                 * several ticks of the timer, and without this the same range is
-                 * requested again and again and appended on top of itself. */
-                /* Two requests in flight keeps the link busy while one is being
-                 * appended; more than that only queues behind the first. */
-                if (s.done || s.inflight >= 2 || s.sb.updating) { return; }
-                if (gen !== mseGeneration || !ms || ms.readyState !== "open") { return; }
-                /* Stay a couple of chunks ahead of the playhead, no further. */
-                var buffered = 0;
-                try {
-                    if (s.sb.buffered.length) {
-                        buffered = s.sb.buffered.end(s.sb.buffered.length - 1);
-                    }
-                } catch (e) {}
-                if (buffered - (v.currentTime || 0) > 60) { return; }
-
-                var want = chunkFor(s.rep, s.at === 0 ? FIRST_SECONDS : NEXT_SECONDS);
-                var to = s.at + want - 1;
-                s.inflight++;
-                var urls = s.rep.urls || [s.rep.baseUrl];
-                var from = s.at;
-                s.at = to + 1;   /* claim the range so the second request follows it */
-                fetchRange(urls[s.host || 0], from, to, function (buf) {
-                    s.inflight--;
-                    if (gen !== mseGeneration || !ms || ms.readyState !== "open") { return; }
-                    if (!buf || buf.byteLength === 0) { s.done = true; return; }
-                    s.misses = 0;                 /* this mirror is working again */
-                    if (buf.byteLength < want) { s.eof = from + buf.byteLength; }
-                    /* Held until its turn: two requests are in flight to keep the
-                     * link busy, but a fragmented MP4 is a sequential byte
-                     * stream, and appending the second range before the first
-                     * hands the parser garbage. */
-                    s.pending[from] = buf;
-                    drain(s);
-                }, function (why) {
-                    s.inflight--;
-                    s.at = from;                  /* nothing arrived; still owed */
-                    if (gen !== mseGeneration) { return; }
-
-                    s.misses = (s.misses || 0) + 1;
-                    if (s.misses < 2) { return; }
-                    s.misses = 0;
-
-                    if ((s.host || 0) + 1 < urls.length) {
-                        s.host = s.host + 1;
-                        log("mirror " + s.host + " for " + s.kind + " after " + why);
-                        return;
-                    }
-
-                    /* Out of mirrors. Cycling them again is pointless when the
-                     * refusal is about the track itself, so move to the next
-                     * representation before giving up — some videos list an
-                     * audio tier this account cannot fetch, and the picture then
-                     * buffers happily while the sound never arrives. */
-                    if (s.kind === "audio" && audioReps.length > (s.repIdx || 0) + 1) {
-                        s.repIdx = (s.repIdx || 0) + 1;
-                        s.rep = audioReps[s.repIdx];
-                        s.host = 0; s.at = 0; s.appendAt = 0;
-                        s.pending = {}; s.done = false; s.eof = 0;
-                        log("audio track " + s.rep.id + " after " + why);
-                        return;
-                    }
-                    emit("error", "fetch: " + why + "（" + s.kind + " 所有镜像与音轨均被拒）");
-                });
-            }
-
-            /* Seeking is limited to what is already buffered. Estimating a byte
-             * offset from the average bitrate lands mid-box, and appending
-             * there hands the parser a malformed stream — the picture dies and
-             * the whole video restarts in a lower quality. Refusing the jump is
-             * the lesser evil until the sidx is parsed properly. */
-            mseSeek = function (seconds) {
-                for (var i = 0; i < streams.length; i++) {
-                    var sb = streams[i].sb;
-                    var inside = false;
-                    try {
-                        for (var b = 0; b < sb.buffered.length; b++) {
-                            if (seconds >= sb.buffered.start(b) &&
-                                seconds <= sb.buffered.end(b)) { inside = true; }
-                        }
-                    } catch (e) {}
-                    if (!inside) { return false; }
-                }
-                return true;
-            };
-
-            for (var d0 = 0; d0 < streams.length; d0++) {
-                (function (st) {
-                    st.sb.addEventListener("updateend", function () { drain(st); });
-                })(streams[d0]);
-            }
-
-            var timer = setInterval(function () {
-                if (mode !== "mse" || gen !== mseGeneration) { clearInterval(timer); return; }
-                for (var i = 0; i < streams.length; i++) { evict(streams[i]); }
-                for (var i = 0; i < streams.length; i++) { drain(streams[i]); }
-                for (var i = 0; i < streams.length; i++) { pump(streams[i]); }
-                if (streams[0].done && streams[1].done &&
-                    !streams[0].inflight && !streams[1].inflight &&
-                    !streams[0].sb.updating && !streams[1].sb.updating) {
-                    try { if (ms.readyState === "open") { ms.endOfStream(); } } catch (e) {}
-                    clearInterval(timer);
-                }
-            }, 250);
-
-            for (var i = 0; i < streams.length; i++) { pump(streams[i]); }
-
-            /* If nothing is buffered after a reasonable wait, say so instead of
-             * spinning: a silent stall was indistinguishable from a slow link. */
-            setTimeout(function () {
-                if (gen !== mseGeneration) { return; }
-                var vb2 = 0, ab2 = 0;
-                try { vb2 = vb.buffered.length ? vb.buffered.end(vb.buffered.length - 1) : 0; } catch (e) {}
-                try { ab2 = ab.buffered.length ? ab.buffered.end(ab.buffered.length - 1) : 0; } catch (e) {}
-                log("dash after 12s: video buffered " + vb2.toFixed(1) + "s, audio " + ab2.toFixed(1) +
-                    "s, bytes v=" + streams[0].at + " a=" + streams[1].at +
-                    ", readyState=" + v.readyState);
-                if (vb2 === 0 && ab2 === 0) { emit("error", "dash 无法缓冲任何数据"); }
-            }, 12000);
-        });
-
-        if (startMs) { v.currentTime = startMs / 1000; }
-        v.play().catch(function (e) {
-            /* Backing out mid-start rejects the promise; that is a race being
-             * resolved correctly, not a playback failure. */
-            if (gen !== mseGeneration) { return; }
-            if (/interrupted|aborted/i.test(e.message || "")) { return; }
-            emit("error", "play(): " + e.message);
-        });
-    }
-
     return {
         on: function (fn) { onEvent = fn; },
 
+        /* The clock starts when the button is pressed, which is before the
+         * player is involved at all — so app.js owns starting it. */
+        startTiming: startTiming,
+        mark: mark,
+        timings: timings,
+
         playProgressive: function (url, startMs) { reset(); playAvplay(url, startMs); },
-        playDash: function (dash, startMs) { reset(); playMse(dash, startMs); },
+        playDash: function (dash, startMs) { reset(); playDashWithShaka(dash, startMs); },
 
         pause: function () {
             if (mode === "avplay") { try { webapis.avplay.pause(); } catch (e) {} }
@@ -429,17 +467,15 @@ var Player = (function () {
             if (mode === "mse") { return el("html5-video").paused; }
             return true;
         },
+        /* Seeking is now unconditional. It used to be refused unless the target
+         * was already buffered, because a hand-rolled reader had no way to know
+         * which byte a given second lived at; the player fetches what it needs
+         * and "seek-refused" no longer happens. */
         seekBy: function (deltaMs) {
             var target = Math.max(0, lastTime + deltaMs);
             if (duration) { target = Math.min(target, duration - 2000); }
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
-            else if (mode === "mse") {
-                if (mseSeek && !mseSeek(target / 1000)) {
-                    emit("seek-refused");
-                    return;
-                }
-                el("html5-video").currentTime = target / 1000;
-            }
+            else if (mode === "mse") { el("html5-video").currentTime = target / 1000; }
             lastTime = target;
             emit("time", { position: target, duration: duration });
         },
@@ -448,10 +484,7 @@ var Player = (function () {
             var target = Math.max(0, ms);
             if (duration) { target = Math.min(target, duration - 2000); }
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
-            else if (mode === "mse") {
-                if (mseSeek && !mseSeek(target / 1000)) { emit("seek-refused"); return; }
-                el("html5-video").currentTime = target / 1000;
-            }
+            else if (mode === "mse") { el("html5-video").currentTime = target / 1000; }
             lastTime = target;
             emit("time", { position: target, duration: duration });
         },

@@ -28,6 +28,13 @@
             <div class="tab focusable" data-screen="search">搜索</div>
             <div class="tab focusable" data-screen="mine">我的</div>
         </nav>
+        <!-- Who the set is currently signed in as. Right of the tabs, so the
+             remote reaches it by pressing right from 我的. -->
+        <div id="account" class="focusable">
+            <span id="account-initial">客</span>
+            <img id="account-face" class="hidden" alt="">
+            <span id="account-name">未登录</span>
+        </div>
         <div id="status"></div>
     </header>
 
@@ -90,8 +97,17 @@
 
 <div id="toast" class="hidden"></div>
 
+<!-- Shaka does the DASH. This replaced a hand-rolled MSE byte pump that had to
+     parse the segment index, size its own requests, evict its own buffer and
+     abort its own fetches on a seek — every one of which was a bug at some
+     point. The pre-compiled build is ES5 and needs no bundler. -->
+<script src="vendor/shaka-player.compiled.js"></script>
+
 <script src="js/config.js"></script>
+<script src="js/md5.js"></script>
+<script src="js/mpd.js"></script>
 <script src="js/qr.js"></script>
+<script src="js/accounts.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/resume.js"></script>
 <script src="js/settings.js"></script>

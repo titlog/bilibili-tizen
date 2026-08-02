@@ -47,6 +47,32 @@ body {
 
 #status { font-size: 22px; color: #6b7680; }
 
+/* Who the set is signed in as. Sized to the top bar's 64px of content height. */
+#account {
+    display: flex; align-items: center; gap: 14px;
+    padding: 4px 24px 4px 4px;
+    margin-right: 28px;
+    border-radius: 999px;
+    border: 3px solid transparent;
+    max-width: 360px;
+}
+#account.focused { border-color: #ff6699; background: rgba(255,102,153,0.16); }
+#account.warn #account-name { color: #ffb454; }
+
+#account-face, #account-initial {
+    width: 52px; height: 52px; border-radius: 50%;
+    flex: 0 0 auto;
+}
+#account-face { object-fit: cover; }
+#account-initial {
+    background: #2a3540; color: #cbd3da;
+    font-size: 26px; line-height: 52px; text-align: center;
+}
+#account-name {
+    font-size: 24px; color: #9aa4ad;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+
 /* ---------------- grid ---------------- */
 
 #screen {
@@ -127,6 +153,14 @@ body {
 }
 .btn.focused { border-color: #fff; }
 
+/* The part number on a history card, so "half watched" means something on a
+   twenty-four part upload. */
+.card-part {
+    display: inline-block;
+    background: rgba(255,102,153,0.22); color: #ff8fb4;
+    border-radius: 5px; padding: 1px 8px; margin-right: 10px;
+}
+
 .section { font-size: 28px; color: #8b959e; margin: 32px 0 20px; }
 .parts { display: flex; flex-wrap: wrap; gap: 14px; }
 .part {
@@ -174,6 +208,58 @@ body {
 .me { margin-bottom: 20px; }
 .me-name { font-size: 46px; margin-bottom: 12px; }
 .me-sub { font-size: 24px; color: #8b959e; margin-bottom: 28px; }
+
+/* ---------------- account switcher ---------------- */
+
+/* A wall of faces, which is what a shared television wants: the choice is
+   recognisable across a room and reachable in one press. */
+.accounts { padding-top: 48px; }
+.accounts h2 { font-size: 48px; margin-bottom: 48px; }
+
+.acc-row { display: flex; flex-wrap: wrap; gap: 40px; margin-bottom: 40px; }
+
+.acc {
+    width: 220px;
+    padding: 20px 12px 12px;
+    border-radius: 16px;
+    border: 4px solid transparent;
+    text-align: center;
+}
+.acc.focused { border-color: #ff6699; background: rgba(255,102,153,0.12); }
+
+.acc-face {
+    width: 148px; height: 148px; margin: 0 auto 20px;
+    border-radius: 50%;
+    background: #182029;
+    overflow: hidden;
+}
+.acc-face img { width: 148px; height: 148px; object-fit: cover; display: block; }
+.acc-initial, .acc-plus {
+    display: block; width: 148px; height: 148px;
+    line-height: 148px; text-align: center;
+    font-size: 64px; color: #cbd3da;
+}
+.acc-plus { font-size: 76px; color: #8b959e; }
+/* The ring marks who is active without needing the label to be read. */
+.acc.on .acc-face { box-shadow: inset 0 0 0 5px #ff6699; }
+
+.acc-name {
+    font-size: 26px;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+/* Reserved whether or not there is a tag, so the tiles stay on one baseline. */
+.acc-tag { font-size: 20px; height: 32px; line-height: 32px; color: #ff6699; }
+.accounts.managing .acc-tag { color: #ff7a6b; }
+
+.acc-confirm {
+    font-size: 26px; color: #cbd3da; line-height: 1.6;
+    margin-bottom: 24px; max-width: 1000px;
+}
+.acc-note { font-size: 22px; color: #6b7680; }
+
+.btn.ghost { background: transparent; color: #cbd3da; border-color: #33404b; }
+.btn.ghost.focused { border-color: #fff; color: #fff; }
+.btn.danger { background: #c0392b; }
 
 /* progress sliver on a card whose video was started but not finished */
 .seen {

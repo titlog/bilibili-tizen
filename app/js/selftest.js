@@ -38,6 +38,14 @@ var SelfTest = (function () {
 
     function count(sel) { return document.querySelectorAll(sel).length; }
 
+    /* "3:30" or "1:06:40" back into seconds, for the position readouts. */
+    function secs(text) {
+        var parts = String(text || "").split(":");
+        var out = 0;
+        for (var i = 0; i < parts.length; i++) { out = out * 60 + Number(parts[i] || 0); }
+        return isFinite(out) ? out : 0;
+    }
+
     /* Steps run on a timer rather than promises: this is ES5 on an old engine,
      * and the whole point is to be sure about what the real build does. */
     /* The decisive one: hand the very url AVPlay refuses to a plain XHR. If the
@@ -130,6 +138,40 @@ var SelfTest = (function () {
             var t = document.getElementById("player-pos").textContent;
             return (t && t !== "0:00") ? null : "拖动之后进度仍是 0:00";
         }],
+
+        /* The one that needs the segment index. A short scrub lands inside what
+         * is already buffered and proves nothing; this jumps clear of it, which
+         * used to be refused outright on the DASH path and — when it was the
+         * resume point rather than a keypress — made the player download the
+         * whole file up to that second and throw all of it away. */
+        ["跨出缓冲区的远距离拖动", 900, function () {
+            var dur = secs(document.getElementById("player-dur").textContent);
+            window.__stFar = false;
+            if (dur < 300) {
+                post("拖动：这个视频只有 " + dur + "s，跳过远距离拖动（会撞到片尾自动续播）");
+                return null;
+            }
+            window.__stFar = true;
+            /* 8 presses is 3:30 by the step ladder in app.js — well past the
+             * 60 s the pump keeps ahead of the playhead. */
+            for (var i = 0; i < 8; i++) { key(KEY.RIGHT); }
+            return null;
+        }],
+        ["跳转落在远处", 9000, function () {
+            if (!window.__stFar) { return null; }
+            var t = secs(document.getElementById("player-pos").textContent);
+            window.__stSeekTo = t;
+            return t > 120 ? null : "远距离拖动之后位置只有 " + t + "s";
+        }],
+        ["跨区之后确实播得下去", 7000, function () {
+            if (!window.__stFar) { return null; }
+            var t = secs(document.getElementById("player-pos").textContent);
+            /* If the jump was refused or nothing buffered there, the readout
+             * sits exactly where the scrub left it and never advances. */
+            return t > window.__stSeekTo
+                ? null
+                : "跳到 " + window.__stSeekTo + "s 后进度不前进（现在 " + t + "s）——那里没有缓冲到";
+        }],
         ["确认键暂停", 600, function () {
             key(KEY.ENTER);
             return null;
@@ -147,6 +189,69 @@ var SelfTest = (function () {
             if (!count("#screen .card")) { return "回来后网格是空的"; }
             var f = document.querySelector("#screen .card.focused");
             return f ? null : "回来后没有任何卡片被选中";
+        }],
+
+        /* The decisive one for multiple accounts, and it can only be answered
+         * here. A Tizen widget may or may not be allowed to set a Cookie header
+         * — it is a property of the firmware, not of the spec — and the whole
+         * design rests on it, because that header is how a *chosen* account
+         * reaches the server. The jar cannot do that job: it is global and
+         * holds one account. So report which route carried the request and
+         * whether bilibili recognised it. isLogin true on the "Cookie 头" route
+         * means switching accounts genuinely works. */
+        ["凭证是否真的送达服务器", 200, function () {
+            if (typeof Accounts === "undefined" || !Accounts.active()) {
+                post("账号：这台电视上没有登录账号，跳过");
+                return null;
+            }
+            var route = Auth.cookieHeader() ? "Cookie 头"
+                      : (Auth.jarIsOurs() ? "cookie jar" : "没有可用凭证");
+            post("账号：共 " + Accounts.count() + " 个，当前走 " + route);
+            API.nav(function (me) {
+                post("账号：服务器" + (me.isLogin ? ("认得 " + me.uname) : "不认这个会话") +
+                     "（route=" + route + "）");
+            }, function (why) { post("账号：nav 失败 " + why); });
+            return null;
+        }],
+        ["等待凭证检查", 3500, function () { return null; }],
+
+        /* The switcher is reachable only by remote, so walk to it the way a
+         * viewer does: up out of the grid, then right past every tab. */
+        ["上键离开网格进入顶栏", 500, function () {
+            key(KEY.UP);
+            return null;
+        }],
+        ["右键走到账号位", 600, function () {
+            for (var i = 0; i < 8; i++) { key(KEY.RIGHT); }
+            var f = document.getElementById("account");
+            return (f && f.className.indexOf("focused") >= 0)
+                ? null : "右键走到头也没停在账号位上";
+        }],
+        ["确认键打开账号页", 1200, function () { key(KEY.ENTER); return null; }],
+        ["账号页或登录页出现", 900, function () {
+            var accounts = count("#screen .accounts");
+            var login = count("#screen .login");
+            if (!accounts && !login) { return "既没有账号页也没有登录页"; }
+            if (login) { post("账号：一个账号都没有，开的是登录页"); return null; }
+            if (!count("#screen .acc")) { return "账号页上一个头像都没有"; }
+            if (count("#screen .acc.on") > 1) { return "同时有多个账号标着「当前」"; }
+            /* 添加账号 is always the last tile; without it a second person can
+             * never get onto the television. */
+            var tiles = document.querySelectorAll("#screen .acc");
+            var add = tiles[tiles.length - 1].getAttribute("data-id");
+            if (add !== "__add") { return "没有「添加账号」入口"; }
+            post("账号：账号页有 " + (tiles.length) + " 个格子");
+            return null;
+        }],
+        ["焦点落在某个账号上", 400, function () {
+            var f = document.querySelector("#screen .acc.focused");
+            return f ? null : "账号页打开了但没有任何格子被选中";
+        }],
+        ["返回键离开账号页", 1500, function () { key(KEY.RETURN); return null; }],
+        ["回到浏览界面", 2500, function () {
+            if (!visible("shell")) { return "没有回到浏览界面"; }
+            if (count("#screen .accounts")) { return "账号页没有关掉"; }
+            return null;
         }]
     ];
 

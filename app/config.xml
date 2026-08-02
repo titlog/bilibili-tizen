@@ -32,6 +32,12 @@
          tizen.filesystem.resolve throws Permission denied, synchronously. -->
     <tizen:privilege name="http://tizen.org/privilege/filesystem.read"/>
     <tizen:privilege name="http://tizen.org/privilege/filesystem.write"/>
+    <!-- Several people share this television, and the engine's cookie jar is
+         global: without a way to empty it, an account signed in through the web
+         fallback would ride along on requests made under the next person's
+         name. tizen.websetting.removeAllCookies is that way. Everything guards
+         for its absence — Accounts.clearJar reports whether it worked. -->
+    <tizen:privilege name="http://tizen.org/privilege/websetting"/>
 
     <tizen:profile name="tv-samsung"/>
 

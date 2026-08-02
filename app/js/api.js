@@ -10,6 +10,29 @@ var API = (function () {
 
     var BASE = "https://api.bilibili.com";
 
+    /* Attaching the session, which multiple accounts made delicate.
+     *
+     * The Cookie header is a forbidden header name in a normal browser, but a
+     * Tizen widget runs under its own <access> policy rather than CORS, so it
+     * is worth setting and it is the route that carries a *chosen* account.
+     *
+     * withCredentials is the other route, and it is no longer set whenever
+     * signed in. The engine's jar is global and holds at most one account, so
+     * on a set with several people on it that flag would quietly attach
+     * whoever logged in through the web fallback last — to requests made under
+     * somebody else's name. It goes on only when the active account is the one
+     * the jar actually belongs to, which Accounts tracks. */
+    function applySession(xhr) {
+        if (typeof Auth === "undefined" || !Auth.isLoggedIn()) { return; }
+        var header = Auth.cookieHeader();
+        if (header) {
+            try { xhr.setRequestHeader("Cookie", header); } catch (e) {}
+        }
+        if (Auth.jarIsOurs()) {
+            try { xhr.withCredentials = true; } catch (e) {}
+        }
+    }
+
     function getJson(url, onOk, onFail) {
         var xhr = new XMLHttpRequest();
         var settled = false;
@@ -20,16 +43,7 @@ var API = (function () {
         function ok(data) { if (!settled) { settled = true; onOk(data); } }
         xhr.open("GET", url, true);
 
-        /* Two routes for the session, because which one works is a property of
-         * the firmware, not of the spec. Cookie is a forbidden header name in a
-         * normal browser, but a Tizen widget runs under its own <access> policy
-         * rather than CORS and this build already lets Referer through. If the
-         * header is refused, withCredentials still lets the jar populated by the
-         * login poll do the job. */
-        if (typeof Auth !== "undefined" && Auth.isLoggedIn()) {
-            try { xhr.setRequestHeader("Cookie", Auth.cookieHeader()); } catch (e) {}
-            try { xhr.withCredentials = true; } catch (e) {}
-        }
+        applySession(xhr);
 
         xhr.timeout = 20000;
         xhr.onreadystatechange = function () {
@@ -80,7 +94,14 @@ var API = (function () {
      * fetches — in AVPlay that surfaces as PLAYER_ERROR_CONNECTION_FAILED, which
      * reads like a broken video rather than a picky host. Keep them last rather
      * than dropping them: sometimes they are the only option offered. */
-    function mirrors(primary, backups) {
+    /* `plain` adds an http:// twin of every https mirror. That exists for
+     * AVPlay, whose HTTP stack is far older than WebKit's and fails the TLS
+     * handshake with some nodes. MSE fetches over XHR and has no such problem,
+     * so for DASH the twins are not mirrors at all — they are the same two hosts
+     * listed twice, and a failure burst rotating through them hits each host
+     * again within a second. On a CDN that rate-limits bursts by IP that is how
+     * one refusal becomes twenty requests. */
+    function mirrors(primary, backups, plain) {
         var all = [primary].concat(backups || []).filter(function (u) { return !!u; });
         var good = [], iffy = [];
         for (var i = 0; i < all.length; i++) {
@@ -94,6 +115,8 @@ var API = (function () {
          * the TLS handshake with some CDN nodes while an XHR to the very same
          * url succeeds. The plaintext variant is the same file on the same host,
          * so append one per mirror as a last resort rather than giving up. */
+        if (!plain) { return ordered; }
+
         var withPlain = [];
         for (var j = 0; j < ordered.length; j++) { withPlain.push(ordered[j]); }
         for (var k = 0; k < ordered.length; k++) {
@@ -164,14 +187,14 @@ var API = (function () {
         },
 
         /* Doubles as the proof that the stored session actually reaches the
-         * server: isLogin true here means the cookies are being applied. */
+         * server: isLogin true here means the cookies are being applied. That
+         * makes it the only honest way to tell a live account from an expired
+         * one, so the account switcher runs it and takes the name, avatar and
+         * mid from the answer rather than trusting what is stored. */
         nav: function (onOk, onFail) {
             var xhr = new XMLHttpRequest();
             xhr.open("GET", BASE + "/x/web-interface/nav", true);
-            if (typeof Auth !== "undefined" && Auth.isLoggedIn()) {
-                try { xhr.setRequestHeader("Cookie", Auth.cookieHeader()); } catch (e) {}
-                try { xhr.withCredentials = true; } catch (e) {}
-            }
+            applySession(xhr);
             xhr.timeout = 20000;
             xhr.onreadystatechange = function () {
                 if (xhr.readyState !== 4) { return; }
@@ -180,7 +203,13 @@ var API = (function () {
                 catch (e) { onFail("bad JSON"); return; }
                 /* code -101 is "not logged in", which is an answer, not a fault. */
                 var d = j.data || {};
-                onOk({ isLogin: !!d.isLogin, uname: d.uname || "", level: (d.level_info || {}).current_level });
+                onOk({
+                    isLogin: !!d.isLogin,
+                    uname: d.uname || "",
+                    mid: d.mid || 0,
+                    face: d.face ? thumb(d.face, 160, 160) : "",
+                    level: (d.level_info || {}).current_level
+                });
             };
             xhr.ontimeout = function () { onFail("timeout"); };
             xhr.onerror = function () { onFail("network error"); };
@@ -274,7 +303,8 @@ var API = (function () {
                       "&qn=" + (qn || 64) + "&fnval=1";
             getJson(url, function (d) {
                 if (!d.durl || !d.durl.length) { onFail("no progressive stream"); return; }
-                var urls = mirrors(d.durl[0].url, d.durl[0].backup_url);
+                /* AVPlay plays this one, so it gets the http:// twins. */
+                var urls = mirrors(d.durl[0].url, d.durl[0].backup_url, true);
                 onOk({ url: urls[0], urls: urls,
                        quality: d.quality, accept: d.accept_quality || [] });
             }, onFail);
@@ -292,8 +322,21 @@ var API = (function () {
                  * the player work down the list. Deprioritise the mcdn hosts
                  * rather than dropping them: sometimes they are all there is. */
                 function candidates(rep) {
+                    /* MSE fetches over XHR, so no http:// twins — they would be
+                     * the same hosts listed twice. */
                     return mirrors(rep.baseUrl || rep.base_url,
-                                   rep.backupUrl || rep.backup_url);
+                                   rep.backupUrl || rep.backup_url, false);
+                }
+                /* Where the init segment and the segment index live inside the
+                 * file, kept as the "0-916" strings the API states them in —
+                 * that is the form a DASH manifest wants, and Shaka reads the
+                 * index itself. bilibili gives both casings; take either. */
+                function segments(rep) {
+                    var sb = rep.SegmentBase || rep.segment_base || {};
+                    var init = sb.Initialization || sb.initialization || "";
+                    var index = sb.indexRange || sb.index_range || "";
+                    if (!/^\d+-\d+$/.test(init) || !/^\d+-\d+$/.test(index)) { return null; }
+                    return { init: init, index: index };
                 }
                 var kinds = ["video", "audio"];
                 for (var k = 0; k < kinds.length; k++) {
@@ -301,6 +344,7 @@ var API = (function () {
                     for (var i = 0; i < list.length; i++) {
                         list[i].urls = candidates(list[i]);
                         list[i].baseUrl = list[i].urls[0];
+                        list[i].segments = segments(list[i]);
                     }
                 }
                 /* Carry the tier list across: the panel had to guess it. */

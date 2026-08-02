@@ -2,7 +2,8 @@
 
 A bilibili client for a Samsung Tizen television, driven entirely by the remote.
 Plain ES5, no build step, no backend, no proxy — the TV talks to bilibili
-directly.
+directly. Several people can be signed in at once, each with their own watch
+history and recommendations.
 
 - `app/` — the client
 - `spike/` — the diagnostic harness that established what the platform can do

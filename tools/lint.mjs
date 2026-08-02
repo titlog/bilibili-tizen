@@ -14,8 +14,9 @@ import vm from "vm";
 const APP = new URL("../app/js/", import.meta.url).pathname;
 
 /* Load order matters: the app is a series of plain scripts sharing globals. */
-const ORDER = ["config.js", "qr.js", "auth.js", "resume.js", "settings.js",
-               "api.js", "nav.js", "player.js", "app.js"];
+const ORDER = ["config.js", "md5.js", "mpd.js", "qr.js", "accounts.js",
+               "auth.js", "resume.js", "settings.js", "api.js", "nav.js",
+               "player.js", "app.js"];
 
 /* Browser and Tizen surface the app is allowed to assume. */
 const HOST = [
@@ -25,7 +26,8 @@ const HOST = [
   "Boolean", "Array", "Object", "RegExp", "Error", "parseInt", "parseFloat",
   "isNaN", "isFinite", "encodeURIComponent", "decodeURIComponent", "escape",
   "unescape", "btoa", "atob", "Uint8Array", "Uint8ClampedArray", "ArrayBuffer",
-  "Promise", "tizen", "webapis",
+  "DataView", "Promise", "Blob", "Function", "fetch", "shaka",
+  "tizen", "webapis",
 ];
 
 let failed = false;

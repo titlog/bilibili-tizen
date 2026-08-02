@@ -1,346 +1,534 @@
-# bilibili on Samsung TV (Tizen)
+# 三星电视（Tizen）上的 bilibili 客户端
 
-Building a bilibili client for a living-room Samsung TV. `app/` is the client:
-browse, search, QR login, and playback. `spike/` keeps the diagnostic harness that
-established the platform facts below — it is not deployed, but it is the fastest
-way to re-answer a media question without disturbing the app.
+给客厅那台三星电视做的 bilibili 客户端。`app/` 是客户端本体：浏览、搜索、扫码
+登录、播放。`spike/` 是当初摸清平台能力的诊断工装，不参与发布，但要重新验证一个
+媒体层的问题时，它仍然是最快的路径。
 
-## The target
+## 目标设备
 
 | | |
 |---|---|
-| Model | UE65XXXXXXXXXX, Tizen 7, 2023 |
-| LAN address | `192.168.1.100` (sdb on `:26101`) |
+| 型号 | UE65XXXXXXXXXX，2023 年 |
+| 固件 | **Tizen 9.0，Chromium 120** —— 已经升级过，不是出厂那一版，见「约定」 |
+| 局域网地址 | `192.168.1.100`（sdb 走 `:26101`） |
 | DUID | `YOURDUIDHERE` |
-| Dev machine | `192.168.1.10` on `en0` |
+| Wi-Fi | 5 GHz，协商速率 433 Mbit（1×1 天线），RSSI −43 —— 全屋信号最好的一台，也是链路最慢的一台 |
+| 开发机 | `192.168.1.10`，走 `en0` |
 
-Developer Mode is already on and the host PC address is registered. If sdb
-refuses to connect, that registration is the first thing to check — the TV
-accepts connections from that one address only, and the setting needs a full
-power cycle to take effect.
+开发者模式已开，主机地址已登记。sdb 连不上时先查这条登记 —— 电视只接受那一个
+地址，而且改完要完整断电重启才生效。
 
-## What has been measured
+## 已经测定的事实
 
-These were established by experiment on 2026-08-01 and several contradict the
-assumptions the project started from. Do not re-derive them casually.
+以下结论来自 2026-08-01 和 08-02 的实测，其中好几条推翻了项目最初的假设 ——
+包括这份文档自己断言了很久的一条。**不要凭直觉重新推导，也不要相信这里任何一条
+没有附带测量的说法。**
 
-**bilibili does not require a Referer.** Both `api.bilibili.com` and the CDN
-reject a Referer they do not recognise, and accept a request carrying none at
-all. They also 403 a `curl/*` User-Agent. So the rule is: send *no* Referer,
-send *any* browser-shaped UA. In the widget that is
-`<meta name="referrer" content="no-referrer">` in `index.html` plus
-`avplay.setStreamingProperty("USER_AGENT", …)`. The consequence is large — the
-TV talks to bilibili directly, so **no LAN proxy and no backend of our own**.
+**bilibili 不需要 Referer。** `api.bilibili.com` 和 CDN 都会拒绝它不认识的
+Referer，却接受完全不带 Referer 的请求；它们同时会对 `curl/*` 这类 UA 返回 403。
+所以规则是：**不发 Referer，发任意浏览器形状的 UA**。在 widget 里就是
+`index.html` 的 `<meta name="referrer" content="no-referrer">` 加上
+`avplay.setStreamingProperty("USER_AGENT", …)`。这条的后果很大 —— 电视直连
+bilibili，**不需要局域网代理，也不需要自建后端**。
 
-> Never probe bilibili with bare `curl`. Its default UA is blocklisted, so every
-> response reads as "Referer required" and you will conclude the project needs a
-> proxy. That false signal already cost most of an evening. Always pass `-A`.
+> 永远不要用裸 `curl` 去试探 bilibili。它默认的 UA 在黑名单里，于是每个响应都
+> 读起来像「需要 Referer」，你会据此断定项目非上代理不可。这个假信号已经吃掉过
+> 一整个晚上。**永远带 `-A`。**
 
-**Samsung TVs of this generation demand a Samsung distributor certificate.**
-Tizen's bundled distributor certs fail with `Invalid certificate chain` — both
-the ones that expired in 2022 and the valid-to-2032 `-new` ones, so this is a
-trust-chain issue, not an expiry issue. The VS Code `tizentv` extension cannot
-issue Samsung certs; neither can any CLI that ships with Tizen Studio.
+**这一代三星电视必须用三星发行的分发证书。** Tizen 自带的分发证书一律
+`Invalid certificate chain` —— 2022 年过期的那套和有效期到 2032 的 `-new` 那套
+都一样，所以这是信任链问题，不是过期问题。VS Code 的 `tizentv` 插件签不出三星
+证书，Tizen Studio 自带的任何 CLI 也签不出。
 
-**AVPlay exposes only `COOKIE` and `USER_AGENT`.** There is no general custom
-HTTP header for progressive playback — arbitrary headers exist only on the DRM
-license path via `setDrm()`. Any design that needs a request header other than
-those two has to change shape.
+**AVPlay 只开放 `COOKIE` 和 `USER_AGENT` 两个流属性。** 渐进式播放没有通用的
+自定义 HTTP 头，任意头只存在于 `setDrm()` 那条 DRM 授权路径上。任何需要第三个
+请求头的设计，都得换形状。
 
-**Setting `COOKIE` to an empty string breaks playback.** A jar-only session has no
-readable SESSDATA, so `Auth.cookieHeader()` returns `""` while `isLoggedIn()` is
-true. Handing that to `setStreamingProperty("COOKIE", "")` makes AVPlay emit a
-malformed `Cookie` header and the CDN refuses everything. It looked exactly like
-a broken stream and it only started once the viewer signed in. Set the property
-only when there is something to send.
+**把 `COOKIE` 设成空字符串会直接搞坏播放。** 纯 cookie jar 的会话读不到
+SESSDATA，于是 `Auth.cookieHeader()` 返回 `""` 而 `isLoggedIn()` 是 true。把它
+交给 `setStreamingProperty("COOKIE", "")`，AVPlay 会发出一个畸形的 `Cookie` 头，
+CDN 拒绝一切。表现和「这个流坏了」一模一样，而且只在用户登录之后才开始出现。
+**只在确实有东西可发时才设这个属性。**
 
-**Playback routes, all measured on device.**
+**播放路径，全部在设备上实测过。**
 
-| route | works | notes |
+| 路径 | 可用 | 备注 |
 |---|---|---|
-| AVPlay, progressive `durl` | yes | native buffering, seeking, constant memory — but see the cap below |
-| MSE in the `<video>` element | yes | the only way to play DASH here; `avc1` and `mp4a.40.2` both pass `isTypeSupported` |
-| AVPlay, MPD served over HTTP | yes | proves the generated manifest is valid |
-| AVPlay, MPD as `data:` URI | no | `PLAYER_ERROR_INVALID_URI` |
-| AVPlay, MPD as `file://` | no | `PLAYER_ERROR_NOT_SUPPORTED_FILE` |
-| AVPlay, bare `.m4s` | yes | decodes, but video only — no audio track |
+| AVPlay + 渐进式 `durl` | 是 | 原生缓冲、原生 seek、内存恒定 —— 但受下面的画质上限所限 |
+| `<video>` + MSE | 是 | 这里播 DASH 的唯一途径，现由 Shaka 驱动；`avc1` 与 `mp4a.40.2` 都过 `isTypeSupported` |
+| AVPlay + HTTP 上的 MPD | 是 | 证明我们生成的清单本身是合法的 |
+| AVPlay + `data:` URI 的 MPD | 否 | `PLAYER_ERROR_INVALID_URI` |
+| AVPlay + `file://` 的 MPD | 否 | `PLAYER_ERROR_NOT_SUPPORTED_FILE` |
+| AVPlay + 裸 `.m4s` | 是 | 能解，但只有画面，没有音轨 |
 
-AVPlay does DASH correctly, it just insists the manifest arrive over HTTP, and a
-widget cannot listen on a socket. So DASH means MSE.
+AVPlay 的 DASH 实现是对的，它只是坚持清单必须走 HTTP 到达，而 widget 没法监听
+端口。所以 DASH 走 MSE —— 由 Shaka 承担，清单以 `blob:` URL 交给它，不需要任何
+服务端。
 
-**The single-file form is capped at 720p, and sometimes refused entirely.** This
-is the fact that decides the player's architecture:
+**单文件形式封顶 720P，而且有时干脆被拒。** 这条决定了播放器的架构：
 
-| form | what it offers |
+| 形式 | 能给什么 |
 |---|---|
-| `fnval=1` (`durl`) | `accept_quality` tops out at `[64, 16]` |
-| `fnval=16` (DASH) | `[116, 112, 80, 64, 32, 16]` on the same video |
+| `fnval=1`（`durl`） | `accept_quality` 最高只到 `[64, 16]` |
+| `fnval=16`（DASH） | 同一个视频给 `[116, 112, 80, 64, 32, 16]` |
 
-Asking progressive first therefore played *everything* at 720P however good the
-source, and for videos carrying a high-tier source the API still returns a durl
-whose CDN answers **403 on every mirror, at every quality** — which presented as
-"some videos just fail". `app.js` now asks both forms and takes the better;
-progressive wins ties because AVPlay beats hand-rolled MSE on buffering, seeking
-and memory.
+所以先问渐进式，等于把**所有**视频都按 720P 播，不管片源多好；而对于有高码率
+片源的视频，API 仍然会返回一个 durl，但它的 CDN **在每个镜像、每个画质上都返回
+403** —— 表现出来就是「有些视频就是打不开」。`app.js` 现在**两种形式并行请求**，
+取更好的那个；打平时渐进式胜出，因为 AVPlay 是原生的 —— 不过自从 DASH 这一侧
+换成 Shaka，这个差距已经小了很多。
 
-**`dash.audio` is unsorted, and some entries the account cannot fetch.** One
-video listed bandwidths in the order 105k, 66k, 210k. Taking `audio[0]` is
-therefore a coin flip, and drawing a gated track shows up as the picture
-buffering to four minutes while the sound never arrives and every audio mirror
-answers 403. Sort by bandwidth, and treat exhausted mirrors as a reason to try
-the *next representation*, not to cycle the dead mirrors again.
+### DASH 是 Shaka 的事，不是我们的事
 
-**Size MSE requests from each representation's bitrate.** A flat 4 MB chunk is
-three minutes of audio but thirteen seconds of 1080p video, so the audio raced
-ahead while the picture — the thing playback actually waits on — trickled in.
-Ask for a fixed number of *seconds* instead, with a deliberately short first
-request so something is playable quickly. Two requests in flight keeps the link
-busy; because a fragmented MP4 is a sequential byte stream, arrivals must go
-through an ordered queue rather than being appended as they land.
+`Mpd.build()` 用 playurl 已经返回的东西写出一份 MPD 清单 —— 各档表示、编码、
+init 段和分段索引的 `SegmentBase` 字节区间 —— 然后
+`app/vendor/shaka-player.compiled.js` 以 `blob:` URL 播放它。分段索引的解析、
+请求大小、缓冲区回收、跳转时中止在飞请求、被拒后重试、画质自适应，全部是 Shaka
+的事。
 
-> Anything that drives AVPlay repeatedly must guard its callbacks. `setListener`
-> registers on the avplay singleton and swapping the `<object>` element does not
-> detach it, so a stale `onerror` from a previous attempt fires into the current
-> one. `player.js` and `spike/main.js` use a generation counter for this; without
-> it an experiment that tries several sources in sequence produces results in the
-> wrong order and reads as "everything failed". That happened, and inverted a
-> conclusion.
+这套东西替换掉了一版手写的 MSE 字节泵，原因值得留档：**下面每一条都曾经是那个
+泵的 bug，而且全部是在一天之内暴露出来的。**
 
-## Deploying
+| 症状 | 原因 |
+|---|---|
+| 续播要等很久，几十 MB 下下来又被丢掉 | 读取游标从字节 0 开始，而 `currentTime` 已在续播点，中间下到的全被回收 |
+| 往回跳转直接被拒 | 没有时间→字节的映射，因为从没解析过 `sidx` |
+| `video element error 3`，视频降档重启 | 换偏移续读却没调 `SourceBuffer.abort()`，解析器还停在上一段流中间 |
+| 播几分钟后彻底不动 | 把短响应读成了文件结束；这个 CDN 把单个 range 截断在 2 MB |
+| **只要快进，之后就再也加载不出来** | 跳转没有中止在飞的 XHR，按几下就把这个引擎给单主机的六个连接耗尽了 |
+| 音轨领先画面 66 秒而画面饿死 | 两条轨的预读之间没有任何耦合 |
+
+Shaka 一条都没有，而且不是勉强打平：同一条链路上它估算出 14 Mbit/s，手写泵只
+跑到 5.8；自检里的深度跳转步骤也全过。
+
+配置里这几项是量出来的，不是凭口味定的：
+
+- `abr.defaultBandwidthEstimate: 6000000` —— Shaka 自己的默认值太保守，第一个
+  视频会先起 720P、一秒后再切上去，白下载并丢弃一个分段。到画面的时间：
+  4.8 秒 → 3.0 秒。
+- `rebufferingGoal: 1` —— 设成 2 的那一秒，是在 `load()` **已经完成之后**多出来
+  的两秒黑屏。
+- 重试跨度约十秒（`maxAttempts: 7, baseDelay: 600, backoffFactor: 1.6`）。这条
+  改过两次方向，见下面的限流一节：一开始按参考实现用了平坦短延迟，但那对付的是
+  单次断连；这个 CDN 的拒绝是以秒计的冷却，1.5 秒的重试窗口全落在冷却里。
+- 播放器**只建一次，反复复用**。构造加 attach 要约 700 毫秒，每个视频都付一次
+  就是 700 毫秒的纯黑屏。`load()` 和 `unload()` 串在同一个 promise 上排队 ——
+  让它们竞争会把媒体元素留在什么都播不了的状态；而且 Shaka 持有这个元素期间，
+  `reset()` 绝对不能去动 `src`。
+- `Mpd.build()` 拿 `PREFERRED_QN` 当天花板，写出的画质阶梯到 1080P 为止。这样
+  自适应才有**向下**的余地，而这正是深度跳转进一个超长视频还能活下来的原因。
+
+> 时间数据来自每个构建都会上报的 `到画面` 那一行：
+> `playurl=… manifest=… loaded=… playing=…`，单位毫秒，从按下按钮算起。
+> **动启动路径之前先读它。** 有两个「显然更快」的改动 —— 把索引请求并进第一个
+> 媒体块、以及用递增退避 —— 实测都更慢。
+
+### 换 CDN 节点在这条链路上行不通（已实测，别再推导一遍）
+
+面向海外用户的那几个油猴脚本（CCB、Bilibili Accelerator、Bilibili Video CDN
+Switcher）做法都一样：保留签名 query 原样，只改主机名。2026-08-02 从这个网络对
+九个 upos 节点、分别用主地址和备用地址的签名试过：
+
+- 八个候选里有七个返回 **403**。签名是绑主机的：URL 里带着 `os=akam` 和 Akamai
+  专属的 `hdnts=exp=…~hmac=…`，和 `upsig` 一起被校验，换主机就对不上。
+- 唯一接受改写地址的 `upos-sz-upcdnbda2` 跑 0.14 MB/s，而原节点是 4.5 MB/s ——
+  慢三十倍。
+- **bilibili 自己给的备用地址**（`upos-sz-mirrorcosov`）原封不动、在它自己的
+  主机上也返回 403。所以镜像轮转会把请求浪费在一个从一开始就是死的镜像上，这也
+  是当初一次拒绝会连锁成一片的部分原因。
+
+原本的 Akamai 主节点就是这里能达到的最快节点，没有更快的可切。**登录与否毫无
+区别** —— 用登录浏览器拿到的真实 1080P 地址（`id=80`，3.0 Mbit）重跑一遍，同样
+那七个节点 403，`upcdnbda2` 通过但只有 0.44 MB/s，原 Akamai 主机 12.2 MB/s。
+
+**12.2 MB/s 这个数字值得记住，因为电视差得远。** 同一网络、同一主机、同一文件：
+
+| | 速率 |
+|---|---|
+| 开发机，单流 | 12.2 MB/s |
+| 电视，最好的持续速率 | 5.8 MB/s |
+| 电视，冷连接的第一块 | 0.93 MB/s |
+
+所以启动延迟剩下的部分是**电视自己的链路和 HTTP 栈**，不是 CDN，也不是客户端的
+请求方式。路由器管理页确认过：电视在 5 GHz 上，RSSI −43、SNR 47，是全屋信号最好
+的设备，但协商速率只有 433 Mbit —— 那是 802.11ac **单空间流**的典型值，这台机器
+的 Wi-Fi 模块就是 1×1 的，换位置换频段都改不了。而 433 Mbit 的链路本该给出
+150–200 Mbit 的 TCP 吞吐，电视实测最好只有 46 Mbit。**所以插网线大概率帮助
+有限，瓶颈在这台机器的软件栈。**
+
+### CDN 会按 IP 对突发请求限流，冷却期让「有些视频就是打不开」看起来很随机
+
+2026-08-02 从开发机对一个 `upos-hz-mirrorakam` 地址实测：
+
+| 方式 | 结果 |
+|---|---|
+| 顺序单个 range 请求 ×3 | `206 206 206` |
+| 4 个并发 range 请求 ×3 轮 | 一半返回 `000` —— 连接被掐断，拿不到状态码 |
+| 累计约 20 个请求之后，任何方式 | 每批只有一个成功，其余全被拒 |
+
+最后一行才是关键：**一旦触发，冷却期内连单发顺序请求都会被拒。** 它不是按 URL
+也不是按视频，而是这个客户端在短时间内要得太多。
+
+这就是应用真正表现出来的那个故障的机制：一个视频第一个 range 成功、第二个被拒，
+紧接着**下一个视频也垮掉**。当初一次拒绝会衍生出另外二十几个请求 —— 四个「镜像」
+其实是两台主机各列两遍、立刻重试、然后整个视频换另一种形式从头重启、再垮一次。
+这场风暴把限流一直续着。
+
+所以这里的规矩是：
+
+- **被拒之后退避，给冷却期留时间。** Shaka 的重试跨度是七次、约十秒。它自己的
+  默认值（1.5 秒内六次）整个落在冷却窗口里，次次失败，然后把一个好端端的视频
+  判成不可播。
+- **`load()` 因网络类错误失败时，隔几秒把整个加载重来一次。** 日志里认这一行：
+  `首次加载被拒（…），3 秒后重来一次`。
+- **不要给 DASH 那条路 http:// 镜像孪生。** 它们是为 AVPlay 那套老旧 TLS 栈准备
+  的；对任何现代客户端来说那就是同两台主机再列一遍，轮转一轮等于每台打两次。
+- **bilibili 给的备用地址经常是死的** —— 试过的每个视频上 `upos-sz-mirrorcosov`
+  在它自己主机上都返回 403。轮转到它，会把一次可恢复的抖动变成「所有镜像被拒」。
+
+**`Referer` 和 `Origin` 与这些 403 无关，`fetch` 和 `XMLHttpRequest` 的区别也
+无关。** 对同一个 URL、在同一时段、在浏览器已经成功取过它之后测的：
+
+| 请求方式 | 结果 |
+|---|---|
+| 浏览器 `fetch`，从 bilibili 页面发出 | 206 |
+| curl，不带 Referer 不带 Origin | 206 |
+| curl，带 `Referer: https://www.bilibili.com/` | 206 |
+| curl，带 `Origin: https://www.bilibili.com` | 206 |
+
+而几分钟前对**另一个**、浏览器从没碰过的 URL 用同样三种 curl 组合，次次 403。
+所以变量不是请求头也不是客户端，**是最近问了多少、问得多急**。不要再靠「加个
+Referer」来重新论证这件事，试过了。
+
+> 从开发机测这件事会触发同一个限流，然后电视上的播放会因为和电视毫无关系的原因
+> 失败。**探测要节制**；当某个视频在你跑完一轮 `curl` 之后开始失败，先怀疑这个。
+
+> 深偏移的 range **不会**因为「深」而被拒 —— 文件末尾的 range 返回 206，字节数
+> 和索引预言的一模一样，越界则返回 416。真正慢的是 CDN 边缘**从没缓存过**的
+> range：一个 3.9 GB、5.6 小时的稿件，中段得回源去取，实测能取到时慢三十倍，
+> 取不到时连接直接被掐 —— 从台式机发和从电视发一样。这也是清单要提供画质阶梯
+> 的原因：降一档，好过等一段谁都没取过的字节。
+
+> 任何反复驱动 AVPlay 的代码都必须给回调加世代守卫。`setListener` 注册在 avplay
+> 单例上，换掉 `<object>` 元素并不会解绑，于是上一次尝试的 `onerror` 会打进当前
+> 这一次。`player.js` 和 `spike/main.js` 都用世代计数器守着；没有它，一个依次
+> 尝试多个源的实验会给出乱序结果，读起来像「全都失败了」。这件事发生过，而且
+> 让结论完全反了。
+
+## 部署
 
 ```bash
-node tools/collect.mjs          # terminal 1, leave running
-zsh tools/deploy.sh             # terminal 2: check, sign, install, launch (~15 s)
-zsh tools/deploy.sh --selftest  # same, but the build walks the flow and reports
+node tools/collect.mjs          # 终端 1，一直开着
+zsh tools/deploy.sh             # 终端 2：检查、签名、安装、启动（约 15 秒）
+zsh tools/deploy.sh --selftest  # 同上，但构建会自己走一遍全流程并上报
 ```
 
-`deploy.sh` runs `node --check` over every file and then `tools/lint.mjs`, and
-**refuses to install if either fails** — the parse check alone once let a build
-ship in which selecting a video did nothing at all.
+`deploy.sh` 先对每个文件跑 `node --check`，然后依次跑 `tools/lint.mjs`、
+`tools/md5-verify.mjs`、`tools/accounts-verify.mjs`、`tools/mpd-verify.mjs`，
+**任何一个失败就拒绝安装** —— 光靠语法检查曾经放过一个「按确认键什么都不发生」
+的构建。
 
-`deploy.sh` rewrites `REPORT_TO` in `app/js/config.js` so the TV knows where to
-send diagnostics. It also derives the package filename from the build rather than
-assuming it: `tizen` names the wgt after `<name>` in `config.xml`, and renaming
-the app once left the installer pushing a stale package while the launch step
-cheerfully started the previously installed build — which reads exactly like new
-code having no effect.
+`deploy.sh` 会改写 `app/js/config.js` 里的 `REPORT_TO`，让电视知道诊断往哪发。
+它还从构建产物里推导包文件名，而不是写死：`tizen` 按 `config.xml` 里的 `<name>`
+命名 wgt，有一次改了应用名，安装器一直在推旧包而启动步骤欢快地起了上一个版本
+—— 表现和「新代码毫无效果」一模一样。
 
-Results come back over HTTP because `dlog` is closed on retail sets: the app
-POSTs errors to `collect.mjs` on port 8099. Without the collector running,
-reporting silently no-ops. Web Inspector via `tizen debug` is the fallback when a
-run dies before anything reports, such as a syntax error at load.
+结果通过 HTTP 回来，因为零售机上 `dlog` 是关的：应用把错误 POST 到 8099 端口的
+`collect.mjs`。收集器没开的话，上报静默失败。`tizen debug` 那个 Web Inspector
+是兜底手段，用在应用还没来得及上报任何东西就死掉的场合，比如加载期的语法错误。
 
-## Certificates
+## 证书
 
-Live in `~/tizen-studio-data/SamsungCertificate/BiliSpike/`, deliberately outside
-this repo since they include private keys. The signing profile is `SamsungBili`
-and its password is read from `~/.bilibili-tizen-cert-password`, also outside the
-repo. **The distributor certificate expires around 2027-08.**
+放在 `~/tizen-studio-data/SamsungCertificate/BiliSpike/`，**故意放在仓库外**，
+因为里面含私钥。签名档名为 `SamsungBili`，密码从 `~/.bilibili-tizen-cert-password`
+读，同样在仓库外。**分发证书大约 2027-08 过期。**
 
-To reissue, `node tools/samsung-cert.mjs` opens a Samsung account login, captures
-the OAuth callback and posts CSRs to `svdca.samsungqbe.com`. It needs no Eclipse,
-no sudo and no Tizen certificate GUI.
+要重新签发，`node tools/samsung-cert.mjs` 会打开三星账号登录、捕获 OAuth 回调、
+向 `svdca.samsungqbe.com` 提交 CSR。不需要 Eclipse、不需要 sudo、不需要 Tizen
+的证书 GUI。
 
-One trap is baked into that script's comments and worth repeating: the OAuth
-callback's `code` parameter is **not** an authorization code. Samsung packs the
-entire token payload into it as JSON. Trying to exchange it at
-`api.samsungosp.com/v2/license/security/authorizeToken` returns
-`403 ACF_0403 [AllowList]` from any ordinary network, which reads like a
-permissions problem but is really a wrong turn — just parse the JSON.
+那个脚本的注释里埋着一个坑，值得再说一遍：OAuth 回调里的 `code` 参数**不是**
+授权码。三星把整个 token 载荷以 JSON 塞进了它。拿去
+`api.samsungosp.com/v2/license/security/authorizeToken` 换取会从任何普通网络得到
+`403 ACF_0403 [AllowList]`，读起来像权限问题，其实是走错了路 —— 直接解析那段
+JSON 就行。
 
-## Layout
+## 目录结构
 
 ```
-app/          the client
-  js/config.js   user agent, preferred quality, reporting address
-  js/api.js      bilibili endpoints and response normalisation
-  js/auth.js     QR login and session storage
-  js/qr.js       QR encoder, verified by tools/qr-verify.mjs
-  js/nav.js      geometric D-pad focus
-  js/player.js   AVPlay and MSE playback
-  js/resume.js   where each video was left off
-  js/settings.js preferences that outlive a session
-  js/app.js      screens and routing
-  js/selftest.js on-device walkthrough, off unless --selftest
-spike/        the harness that established the platform facts; not deployed
+app/          客户端
+  vendor/shaka-player.compiled.js   DASH 播放器；预编译，不需要打包工具
+  js/config.js   UA、首选画质、上报地址
+  js/md5.js      TV 登录接口的签名摘要
+  js/mpd.js      写出交给 Shaka 的 DASH 清单
+  js/api.js      bilibili 接口与响应归一化
+  js/accounts.js 这台电视上登录的人，以及各自的存储命名空间
+  js/auth.js     两条扫码登录流程，以及它们产出的会话
+  js/qr.js       二维码编码器，由 tools/qr-verify.mjs 验证
+  js/nav.js      基于几何位置的 D-pad 焦点
+  js/player.js   两条路：渐进式走 AVPlay，DASH 走 Shaka
+  js/resume.js   每个视频看到哪了 —— 按账号隔离，也按分 P 记录
+  js/settings.js 跨会话保留的偏好（属于这台电视，不属于某个人）
+  js/app.js      各屏幕与路由
+  js/selftest.js 设备上的自动走查，非 --selftest 构建里关闭
+spike/        当初摸清平台事实的工装；不参与发布
 tools/
-  deploy.sh        one-command build + install + launch
-  collect.mjs      diagnostics collector on :8099
-  lint.mjs         catches calls to things that do not exist; gates deploys
-  samsung-cert.mjs headless Samsung certificate issuance
-  qr-verify.mjs    round-trips qr.js through a real decoder
-  probe-gating.py  re-check the CDN/API gating rules from the dev machine
+  deploy.sh           一条命令完成构建 + 安装 + 启动
+  collect.mjs         :8099 上的诊断收集器
+  lint.mjs            抓「调用了不存在的东西」；卡发布
+  accounts-verify.mjs 用假设备驱动整个账号层；卡发布
+  md5-verify.mjs      把 md5.js 对着 node 的实现回环验证；卡发布
+  mpd-verify.mjs      检查清单是否合法且转义正确；卡发布
+  samsung-cert.mjs    无 GUI 的三星证书签发
+  qr-verify.mjs       把 qr.js 过一遍真实解码器
+  probe-gating.py     从开发机重新核对 CDN/API 的门禁规则
 docs/
-  操作手册-原始.md   the original plan, kept for reference; its step 3
-                    (certificates via the VS Code extension) does not work
+  操作手册-原始.md    最初的方案，留作参考；其中第 3 步
+                     （用 VS Code 插件搞证书）是行不通的
 ```
 
-## Conventions
+## 约定
 
-`app/js/` is plain ES5 in an IIFE — Tizen 7's WebKit is old and there is no build
-step. No frameworks, no bundler, no `let`/`const`/arrow functions in app code.
-`tools/` is Node ESM and modern JS is fine there.
+`app/js/` 是包在 IIFE 里的纯 ES5，没有构建步骤。`tools/` 是 Node ESM，用现代
+语法没问题。
 
-Everything is driven by the D-pad: direction moves focus, centre selects, return
-goes back. Focus is geometric — `nav.js` picks whichever `.focusable` lies in the
-pressed direction and is nearest — so ragged grids work without anyone declaring
-a column count. Anything added has to be reachable that way; there is no pointer.
+> **这台设备不是本文档以前声称的那样。** 它报告
+> `Tizen 9.0 … Chromium 120.0.6099.5`，ES6、MSE、Blob URL、Promise、fetch 一应
+> 俱全 —— 出厂之后升级过。ES5 风格现在是**约定**而不是**约束**，「引擎太老所以
+> 不能用 X」这个论据对任何事情都不再成立。每个构建启动时都会上报引擎字符串，
+> **先读它，再做假设。**
 
-## How to debug anything on this television
+唯一的依赖是 `app/vendor/shaka-player.compiled.js`，以预编译包的形式入库。它不
+需要打包工具，而且它本身就是 ES5。
 
-Everything convenient is closed on a retail set, and finding that out takes
-longer than working around it:
+一切由 D-pad 驱动：方向键移动焦点，中键选中，返回键后退。焦点是几何的 ——
+`nav.js` 挑出位于按下方向上、距离最近的那个 `.focusable` —— 所以参差不齐的网格
+不需要任何人声明列数就能工作。**新加的东西必须能这样够到，这里没有指针。**
 
-| route | state |
+## 怎么在这台电视上调试
+
+零售机上一切方便的手段都是关的，而发现这一点比绕开它更花时间：
+
+| 途径 | 状态 |
 |---|---|
-| `dlog` / `sdb shell dlogutil` | returns nothing at all |
-| Web Inspector via `tizen debug` | hangs; no port ever opens |
-| Samsung remote WebSocket (`:8002`) | works, but the first connection needs someone in front of the set to accept a dialog |
+| `dlog` / `sdb shell dlogutil` | 什么都不返回 |
+| `tizen debug` 的 Web Inspector | 挂起，端口从不打开 |
+| `sdb shell` | 直接 `closed`，零售机上读不到应用存储 |
+| 三星遥控 WebSocket（`:8002`） | 可用，但第一次连接需要有人站在电视前点确认 |
 
-So the app reports on itself. `report()` in `app.js` and `window.onerror` POST to
-`tools/collect.mjs` on port 8099, which `deploy.sh` wires up automatically. Run
-the collector in one terminal before deploying and every error arrives as text.
+所以应用自己上报。`app.js` 里的 `report()` 和 `window.onerror` 把内容 POST 到
+8099 端口的 `tools/collect.mjs`，`deploy.sh` 会自动接线。部署前在一个终端里开着
+收集器，每个错误都会以文本到达。
 
-For anything more than an error message, `zsh tools/deploy.sh --selftest` ships a
-build that walks the entire flow by dispatching the same key events the remote
-sends — grid, play, panel, scroll, scrub, pause, resume, exit — and reports each
-step. That is the only way to exercise a build unattended, and it is also how a
-regression gets caught before it reaches the sofa. Add a step whenever a bug
-turns out to be reachable by pressing buttons in order.
+比错误信息更进一步的，用 `zsh tools/deploy.sh --selftest`：它会派发和遥控器一样
+的按键事件，把整条流程走一遍 —— 网格、播放、面板、滚动、拖动、暂停、恢复、退出、
+账号页 —— 并逐步上报。这是**唯一**能在无人值守下检验一个构建的办法，也是让回归
+在到达沙发之前就被抓住的办法。**只要某个 bug 能靠按顺序按键复现，就给它加一步。**
 
-## Traps this codebase has already fallen into
+## 这个代码库已经踩过的坑
 
-Read this before diagnosing anything. Every entry below cost at least an hour,
-and most of them cost several — always for the same reason.
+诊断任何问题之前先读这一节。下面每一条至少花掉一小时，多数花了好几小时 ——
+而且总是同一个原因。
 
-**A plausible cause is not a diagnosis.** Four separate times an error was
-explained by the first mechanism that fit, designed around, and shipped:
+**说得通的机制不等于诊断。** 已经有五次，一个错误被第一个能自圆其说的机制解释、
+据此设计、然后发布出去：
 
-- *"The CDN needs a Referer, so we need a LAN proxy."* It was `curl`'s default
-  User-Agent being blocklisted. Nearly abandoned the project as too expensive.
-- *"AVPlay cannot see the cookie jar, so a signed-in session must play through
-  MSE."* Stream urls are pre-signed; AVPlay needs no session at all. Only the
-  playurl call does, and that already goes over XHR. Hand-rolling MSE gave up
-  native buffering, seeking and hardware decode for nothing.
-- *"Every manifest delivery route fails, so AVPlay cannot do DASH."* Stale
-  listeners were knocking over each attempt before it ran. With a generation
-  guard, HTTP delivery worked on the first try — the opposite conclusion.
-- *"`PLAYER_ERROR_CONNECTION_FAILED` means the CDN refused us."* Twice: first
-  blamed on restricted PCDN nodes, then on an empty `COOKIE` property. It was
-  neither.
+- *「CDN 需要 Referer，所以我们得上局域网代理。」* 实际是 `curl` 的默认 UA 在
+  黑名单里。差点因为成本过高放弃整个项目。
+- *「AVPlay 看不到 cookie jar，所以登录后的会话只能走 MSE。」* 流地址是预签名
+  的，AVPlay 根本不需要会话；只有 playurl 调用需要，而它本来就走 XHR。为此手写
+  MSE，白白放弃了原生缓冲、原生 seek 和硬解。
+- *「每条清单投递路径都失败，所以 AVPlay 做不了 DASH。」* 是过期的监听器在每次
+  尝试跑起来之前就把它掀翻了。加上世代守卫后，HTTP 投递第一次就成功 —— 结论
+  完全相反。
+- *「`PLAYER_ERROR_CONNECTION_FAILED` 意味着 CDN 拒绝了我们。」* 两次：先怪到
+  受限的 PCDN 节点上，又怪到空的 `COOKIE` 属性上。两次都不是。
+- *「深度跳转长视频打不开，是 CDN 冷缓存。」* 有一次确实是。之后同一症状的三次
+  报告分别是：假的文件结束、每次跳转泄漏一个连接、以及单纯的限流。**每一次，
+  上一个解释都仍然成立，也仍然不是原因。**
 
-**The move that actually works is a discriminating test** — one experiment whose
-two outcomes point at different causes. For that last one: hand the very url
-AVPlay rejects to a plain `XMLHttpRequest`.
+**不要重写库已经做好的事。** 这个仓库历史上最贵的一件东西就是那版手写的 MSE
+字节泵。它得自己解析分段索引、自己定请求大小、自己回收缓冲、自己判断文件结束、
+自己在跳转时中止请求、自己重试被拒、自己降画质。这七件事**全部**变成了 bug，
+全部在一天之内，每一个表现出来都是「视频很慢」或者「视频不动了」。换成 Shaka
+之后删掉 550 行代码和全部七种故障模式，而且**更快** —— 同一条链路上估算出
+14 Mbit/s，手写泵只有 5.8。当初之所以手写，是因为一个后来被证伪的平台假设，
+见下一条。
 
-That test is now permanent. `probeUrl()` in `app.js` runs on every playback
-failure and reports one line:
+**在围绕一个约束做设计之前，先让它自证。** 这份文档曾经写着设备是 Tizen 7、
+内核老旧，而这句话塑造了「无框架、无构建、纯 ES5」的风格 —— 以及不使用现成
+DASH 播放器的决定。实际上设备报告的是 `Tizen 9.0 … Chromium 120`。这个假设从来
+没有被测过；**测它只要十行代码和一次部署**，现在每个构建启动时都会打印引擎字符串。
+当一个约束在承担大量架构决策时，让它先证明自己。
+
+**真正管用的动作是判别实验** —— 一个实验，两种结果分别指向不同的原因。对上面
+最后一条来说就是：把 AVPlay 拒绝的那个 URL 原样交给一个普通的 `XMLHttpRequest`。
+
+这个实验现在是常驻的。`app.js` 里的 `probeUrl()` 在每次播放失败时运行，上报一行：
 
 ```
-probe: https upos-hz-mirrorakam.akamaized.net avplay=PLAYER_ERROR_CONNECTION_FAILED xhr=403
-probe: https upos-hz-mirrorakam.akamaized.net avplay=PLAYER_ERROR_CONNECTION_FAILED xhr=206
+probe: BV1xxx 标题 | https upos-hz-mirrorakam.akamaized.net avplay=PLAYER_ERROR_CONNECTION_FAILED xhr=403
+probe: BV1xxx 标题 | https upos-hz-mirrorakam.akamaized.net avplay=PLAYER_ERROR_CONNECTION_FAILED xhr=206
 ```
 
-`xhr=403` means bilibili is refusing the stream and no amount of retrying will
-help — switch form. `xhr=206` means the url and the network are fine and the
-fault is in how AVPlay is asking — switch mirror or scheme. Reading the AVPlay
-code alone cannot tell these apart, and guessing between them cost several
-deploys before the probe existed.
+`xhr=403` 说明 bilibili 在拒绝这个流，再怎么重试都没用 —— 换形式。`xhr=206`
+说明地址和网络都没问题，毛病在 AVPlay 怎么发这个请求 —— 换镜像或换协议。光读
+AVPlay 的代码分不出这两者，而在这个探测存在之前，靠猜已经浪费了好几次部署。
 
-The `206` case turned out to be that selecting a video fired the playurl call,
-`view()`, `related()` and AVPlay's own stream connection in the same instant, and
-AVPlay intermittently lost that race. Metadata is queued until the picture is up.
+那个 `206` 的情形最后查明是：选中一个视频会在同一瞬间触发 playurl、`view()`、
+`related()` 以及 AVPlay 自己的建流连接，AVPlay 会间歇性地输掉这场竞争。现在
+元数据会排队等到画面起来之后再取。
 
-**One error code can mean several things.** `CONNECTION_FAILED` covers "refused",
-"no route" and "could not get a socket"; `InvalidAccessError` accompanies all of
-them. Never reason from the code alone — find something that separates the cases.
+**每条播放日志都要带上视频名字。** `probeUrl` 和 playurl 的上报都携带 bvid 和
+一小段标题。没有它，一条「有个视频打不开」的报告除了猜是当晚哪一个之外无从追查
+—— 而这正是某次报告卡住的地方。
 
-**Never edit by replacing text you remember.** Twice in one session an edit was
-applied against an anchor that had already drifted:
+**一个错误码可能意味着好几件事。** `CONNECTION_FAILED` 同时覆盖「被拒绝」、
+「没有路由」和「拿不到 socket」，而 `InvalidAccessError` 三种情况都会伴随出现。
+**永远不要只凭错误码推理** —— 找一个能把这些情况分开的东西。
 
-- A block delete keyed on two surrounding markers took `playVideo` with it,
-  because that function had been written *between* them. Pressing OK on the home
-  screen then did nothing, and every file still parsed.
-- A rewrite of the playback routing silently matched nothing. The build shipped,
-  the behaviour was unchanged, and the logs showed the old code path — costing a
-  full round of "why didn't that fix it".
+**永远不要靠记忆去替换文本。** 同一次会话里有两次，编辑被应用到了已经漂移的
+锚点上：
 
-Read the region first, then edit. When a change is supposed to alter behaviour,
-confirm it did by looking for its evidence in the collector, not by assuming the
-edit landed.
+- 一次以两个相邻标记为界的块删除，把 `playVideo` 一起带走了，因为那个函数是后来
+  写在两个标记**之间**的。结果是首页按确认键什么都不发生，而每个文件都还能解析。
+- 一次对播放路由的重写静默地什么都没匹配到。构建发出去了，行为没变，日志显示的
+  还是旧代码路径 —— 白白花掉一轮「为什么这个修复没生效」。
 
-**`node --check` proves nothing about whether the app works.** A block delete
-removed `playVideo` along with the dead detail screen beside it. Every file
-parsed, the build shipped, and the only symptom was that pressing OK on the home
-screen did nothing whatsoever. `tools/lint.mjs` now catches calls to things that
-do not exist and `deploy.sh` refuses to ship when it fails. Run it after any
-deletion that spans more than a few lines.
+**先读那一段，再编辑。** 当一个改动本该改变行为时，去收集器里找它生效的证据，
+而不是假设编辑落地了。
 
-**Silent no-ops are the expensive failures.** Nothing in this app throws when
-focus lands on a detached node, when a scroll container loses the class `nav.js`
-identifies it by, or when a callback repaints a screen the viewer already left.
-The user sees a remote that stopped working and there is nothing in any log.
-When a symptom is "it does nothing", suspect state rather than errors.
+**`node --check` 完全不能证明应用可用。** 一次块删除把 `playVideo` 连同它旁边
+那个废弃的详情页一起删掉了。每个文件都能解析，构建发了出去，唯一的症状是首页按
+确认键完全没反应。`tools/lint.mjs` 现在会抓「调用了不存在的东西」，`deploy.sh`
+在它失败时拒绝发布。**任何跨度超过几行的删除之后都要跑它。**
 
-**Guard every AVPlay callback with a generation counter.** `setListener`
-registers on a singleton and `close()` does not detach it, so a torn-down
-session's `onerror` or `onstreamcompleted` fires into whatever is playing now.
-This has bitten twice. `player.js` and `spike/main.js` both guard; new code must.
+**静默的空操作才是昂贵的故障。** 焦点落在一个已脱离文档的节点上、滚动容器丢掉
+了 `nav.js` 用来识别它的 class、回调重绘了一个用户已经离开的屏幕 —— 这些在这个
+应用里都不会抛异常。用户看到的是遥控器失灵，而任何日志里都没有东西。
+**当症状是「它什么都没做」时，怀疑状态，而不是错误。**
 
-**Guard every async callback that paints with a view token.** A response that
-lands after the viewer has moved on will repaint a dead screen and hand focus to
-a node that is no longer in the document. `app.js` uses `newView()` and
-`stillViewing()`; `loadFeed` additionally has its own request counter.
+**每个 AVPlay 回调都要加世代计数器。** `setListener` 注册在单例上，`close()`
+不会解绑，于是一个已经拆掉的会话的 `onerror` 或 `onstreamcompleted` 会打进当前
+正在播的东西里。这件事咬过两次。`player.js` 和 `spike/main.js` 都有守卫，新代码
+也必须有。
 
-**Clear per-video player state in `play()`, not on teardown.** The scrub head was
-seeded from `lastKnownPosition`, which nothing reset, so the first press of
-fast-forward on a new video jumped it to the previous video's timestamp — usually
-straight to its own ending. Anything that describes "the video playing now"
-belongs in the reset at the top of `play()`.
+**每个会绘制界面的异步回调都要加视图令牌。** 一个在用户已经离开之后才到达的
+响应，会重绘一个已死的屏幕，并把焦点交给一个不在文档里的节点。`app.js` 用
+`newView()` 和 `stillViewing()`；`loadFeed` 另外还有自己的请求计数器。
 
-## Where this is going
+**每个视频的播放器状态要在 `play()` 里清，不要在拆除时清。** 拖动头是从
+`lastKnownPosition` 取的初值，而没有任何东西重置它，于是在新视频上第一次按快进
+会跳到上一个视频的时间戳 —— 通常直接跳到它自己的结尾。**任何描述「现在正在播的
+这个视频」的东西，都属于 `play()` 顶部那段重置。**
 
-Spikes 01 and 02 are **done and all five tests pass**. The CDN, the API and both
-playback paths work from the device with no infrastructure of any kind. There is
-no known platform blocker left.
+**为某个机制写的文案会比那个机制活得更久。** 当画质还是手写挑选时，降一档意味着
+「这个档位在这里取不到」，文案也是这么写的。Shaka 的自适应在**向上**切换时触发
+同一个事件，于是每次画面变好，提示都在宣布「原画质取不到」。自适应现在是常态：
+角标跟着变，不说话。**当一个机制被替换之后，检查为它写的文案还在声称什么。**
 
-1. **Login** — done, by QR. Two findings worth keeping:
+## 一台电视，好几个人
 
-   *No WBI signing is needed.* `search/all/v2`, `popular`, `ranking`, `view` and
-   `playurl` all answer unsigned. Only `search/type` demands a signature, and
-   `search/all/v2` covers the same ground.
+这台电视是共用的，所以 `accounts.js` 持有的是一个账号列表而不是单个会话，
+`Accounts.scope()` 给每个人各自的存储命名空间。观看记录按账号隔离；
+`settings.js` 不隔离，因为首选画质属于这台电视，不属于某个观众。
 
-   *The poll response does not carry the credentials.* It returns a cross-domain
-   url whose query holds `ticket, gourl, first_domain` — the session arrives as
-   `Set-Cookie` on that hop, which XHR cannot read. `auth.js` therefore fetches
-   the url with `withCredentials` and lets the engine's own jar keep it. That
-   works, but it means **this code never sees SESSDATA**, so AVPlay's `COOKIE`
-   streaming property cannot be filled in and a logged-in session has to play
-   through MSE, which goes over XHR and picks up the jar.
+**cookie jar 正是采用 TV 登录路径的原因。** 多账号需要这段代码能存下来、能重放
+的凭证。网页流程的 ticket 跳转把凭证放进了一个不可读、不可写、而且全局的地方
+—— 一次只能装一个账号，而且没有任何办法把上一个放回去。`passport-tv-login` 以
+JSON 返回 `SESSDATA`、`bili_jct` 和 refresh token，这样拿到的账号可以随时切换、
+长期有效。代价是它的请求要用官方 TV 客户端的 appkey 签名，也就是对 bilibili 表现
+成那个客户端。**这是一个刻意的决定，不是疏忽。**
 
-   The QR is encoded on device by `qr.js` rather than fetched from an image
-   service: the payload is a single-use login token and anything that can read it
-   can complete the login as the user. `tools/qr-verify.mjs` round-trips the
-   encoder through a real decoder — run it after any change there.
-2. **The client** — done: recommendations, 热门, 排行, 动态, search with the
-   television's own IME, detail with parts and related videos, resume, autoplay
-   of the next video, and a player built on AVPlay with progressive `durl`. MSE
-   is the fallback for videos with no single-file stream.
+网页流程保留为兜底，而且回落发生在**任何二维码到达屏幕之前** —— 在别人已经举着
+手机对准的时候把码换掉，比失败更糟。走了兜底路径的账号，一旦 jar 易主就会被
+`Accounts.needsRelogin` 标记，界面会要求重新扫码，而不是悄悄用别人的名字端上一个
+未登录的信息流。
 
-**Watch history is local.** Reporting playback to bilibili needs the CSRF token
-`bili_jct`, which this login path never exposes, so nothing this app plays
-reaches the server-side history. `resume.js` keeps its own list and 我的 renders
-that — the only version that reflects what was actually watched here.
+**`withCredentials` 不再是「只要登录了就设」。** 它原本是对「固件可能拒绝
+`Cookie` 头」的两头下注。但这台电视上有多个账号之后，那个下注变成了泄漏：jar 是
+全局的，这个标志会把最后一个走网页兜底登录的人，挂到别人名下发出的请求上。
+`api.js` 现在只在活动账号确实是 jar 的主人时才设它。
 
-**Not possible on this login path.** Like, coin, favourite and watch-later all
-need the CSRF token `bili_jct`. The session lives in the engine's cookie jar
-where this code cannot read it, so those actions cannot be signed. The way out
-would be bilibili's TV login endpoint, which returns credentials as JSON for
-exactly this reason — but it requires signing with the official TV client's
-appkey, which is a decision about impersonating their client, not a technical
-one. Left alone deliberately.
+**这个固件确实允许 widget 设置 `Cookie` 头** —— 2026-08-02 在设备上实测，而整个
+账号设计压在这条上。每次启动都会上报是哪条路径承载了会话、以及 bilibili 认不认：
 
-**Still missing**, roughly in order of how much the absence is felt: a UP主 page
-(the space API answers -352 without WBI signing), categories beyond 全站, search
-history and hot searches, subtitles (the endpoint works; many videos carry
-them), and a settings screen for quality, autoplay and clearing history.
+```
+account: 1 个账号，当前 route=Cookie 头，服务器认得 <用户名>
+```
+
+`route=Cookie 头` 加上 `服务器认得`，意味着一个**被选中的**账号到达了服务器，
+所以切换是真的成立。同一条路径上出现 `服务器不认这个会话`，则意味着这个头被丢掉
+了、永远只能有一个账号在线 —— 而应用里没有任何别的地方会说出这件事，这也是这行
+日志常驻、而不是只在 `--selftest` 里出现的原因。
+
+**账号层的 bug 是静默的，所以在设备之外测。** 记录记到别人头上、上一个账号的
+cookie 顺风搭车、一个账号声称已登录但背后什么都没有 —— 这些都不抛异常、都不会
+到达收集器，表现出来全都是「bilibili 有点怪」。`tools/accounts-verify.mjs` 用假
+`localStorage` 和假 XHR 驱动整层，`tools/md5-verify.mjs` 把签名摘要对着 node 的
+实现核对，任何一个失败 `deploy.sh` 都拒绝发布。
+
+## 进展与缺口
+
+Spike 01 和 02 **已完成，五项测试全过**。CDN、API 和两条播放路径都能在设备上
+直接工作，不需要任何基础设施。**没有已知的平台阻塞。**
+
+**登录 —— 已完成**，扫码，支持这台电视上的任意多人。值得留档的发现：
+
+- *不需要 WBI 签名。* `search/all/v2`、`popular`、`ranking`、`view`、`playurl`
+  都能无签名应答。只有 `search/type` 要签名，而 `search/all/v2` 覆盖了同样的
+  场景。
+- *网页轮询的响应不携带凭证。* 它返回一个跨域地址，query 里只有
+  `ticket, gourl, first_domain` —— 会话是那一跳的 `Set-Cookie`，XHR 读不到。
+  兜底路径因此用 `withCredentials` 取那个地址，让引擎自己的 jar 收下 ——
+  这意味着**那条路径永远看不到 SESSDATA**。
+- *TV 登录路径携带凭证*，这就是它存在的理由。
+- 二维码由 `qr.js` 在设备上编码，而不是从图片服务取：载荷是一次性登录令牌，
+  任何能读到它的人都能以用户身份完成登录。`tools/qr-verify.mjs` 会把编码器过
+  一遍真实解码器 —— **改动那里之后跑它。**
+
+**客户端 —— 已完成**：推荐、热门、排行、动态、用电视自带 IME 的搜索、带分 P 和
+相关视频的详情、续播（含记住看到哪一 P）、自动续播下一个，以及两条播放路径 ——
+渐进式走 AVPlay，DASH 走 Shaka。DASH 是常用的那条，因为单文件形式封顶 720P。
+
+到画面的时间，用 `到画面` 那行在设备上实测：Shaka 实例已存在时**约 2.0 秒**，
+启动后的第一个视频约 3.0 秒。其中约 260 毫秒是 playurl 的往返，其余大部分是到
+CDN 的首次连接。
+
+**观看记录是本地的，而且会一直是本地的。** `resume.js` 维护自己的列表，按账号
+隔离，由「我的」渲染。把播放上报回 bilibili 需要 CSRF 令牌 `bili_jct`；TV 登录
+路径现在能提供它，所以这件事不再是不可能 —— 只是没做。本地列表仍然是唯一反映
+**在这台电视上**看了什么的版本，卡片上的进度条也是从它画出来的。
+
+有四件事合起来让这个列表看起来是坏的，而且全都是静默的：
+
+- 「我的」先把本地列表画进 `#hist`，然后让 `API.history()` 把服务端列表画进
+  **同一个容器**。这个应用播的东西从不进入 bilibili 的历史，所以服务端一应答，
+  在这台电视上看过的每个视频就全消失了。它们是两个不同的列表，现在分成两段，
+  本地的在前。
+- `record()` 在位置低于续播阈值时把整条记录删掉，于是一个打开看了一分钟就离开的
+  视频从来没进过历史。现在保留卡片，只丢弃位置。
+- `ended` 事件上的 `forget()` 也会删掉整条，于是完整看完的反而消失。那个调用现在
+  是 `finished()`，清位置、留卡片。
+- **多分 P 的稿件总是从 P1 重新开始。** P7 的位置一直存着 —— 条目是按 `bvid:cid`
+  存的 —— 但从来没有人问过它属于哪一 P。`Resume.lastPart()` 回答这个问题，
+  `app.js` 里的 `resumeCid()` 使用它；只有当那个 cid 仍然是这个视频的某一 P 时
+  才认，或者调用方根本没有分 P 列表时才认（推荐流的卡片只带第一 P 的 cid，而
+  该 bvid 下存着的 cid 只可能来自播放过这个视频）。「我的」的卡片上带 `P7` 角标
+  也是同一个理由：对一个 24 集的稿件来说，「看到一半」什么都没说。
+
+**`bili_jct` 现在拿得到，但还没有任何地方用它。** 点赞、投币、收藏、稍后再看都
+需要它，`Auth.csrf()` 对任何走 TV 登录路径的账号都会返回它。走网页兜底的账号
+仍然没有，所以基于它做的任何东西都必须为那些账号降级，而不是想当然。
+
+**Token 续期没有实现。** TV 登录的令牌带着 `expires_in` 和 `refresh_token`，
+端点是 `passport-tv-login/oauth2/refresh_token` —— 但确切的参数命名没有对着服务器
+验证过，而把一个未经验证的猜测塞进唯一保管全家凭证的那条路径，正是这个项目吃过
+亏的做法。在验证之前，过期的账号表现为「我的」显示「会话已失效」，需要重新扫码。
+`app.js` 里的 `refreshActiveProfile()` **刻意不**根据 `isLogin:false` 采取行动：
+那个回答在「令牌过期」和「`Cookie` 头被丢弃」之间是二义的，凭它把每个存下来的
+账号标记为失效，等于拿猜测销毁凭证。
+
+**仍然缺失**，大致按缺失感强弱排序：UP 主页面（space 接口不带 WBI 签名会返回
+-352）、全站以外的分区、搜索历史与热搜、字幕（接口可用，很多视频有）、以及一个
+用来调画质/自动续播/清历史的设置页。

@@ -69,6 +69,98 @@
             tabs[i].className = "tab focusable" + (on ? " active" : "") +
                                 (tabs[i] === focused ? " focused" : "");
         }
+        paintAccount();
+    }
+
+    /* ---------------- who is watching ---------------- */
+
+    /* Accounts are created before anyone knows whose they are: the web fallback
+     * hands back cookies and no identity at all, and even the TV path only
+     * carries a mid until nav() has been asked for a name. */
+    function accountLabel(acc) {
+        if (!acc) { return "未登录"; }
+        if (acc.uname) { return acc.uname; }
+        if (acc.mid) { return "UID " + acc.mid; }
+        return "账号 " + String(acc.id).slice(1);
+    }
+
+    function initial(name) {
+        var s = String(name || "").replace(/^\s+/, "");
+        return s ? s.charAt(0) : "?";
+    }
+
+    /* The chip in the top bar. Repainted from markTab, so every screen that
+     * renders keeps it honest. */
+    function paintAccount() {
+        var node = el("account");
+        if (!node) { return; }
+        var acc = Accounts.active();
+        var label = accountLabel(acc);
+        var stale = !!(acc && Accounts.needsRelogin(acc));
+
+        /* Same trap the tabs documented above: rebuilding className here would
+         * strip the focus ring off the chip while the viewer is standing on it. */
+        node.className = "focusable" + (stale ? " warn" : "") +
+                         (node === Nav.current() ? " focused" : "");
+
+        el("account-name").textContent = stale ? label + "（需重新扫码）" : label;
+
+        var face = el("account-face"), mark = el("account-initial");
+        if (acc && acc.face && !stale) {
+            face.src = acc.face;
+            face.className = "";
+            mark.className = "hidden";
+        } else {
+            face.className = "hidden";
+            mark.className = "";
+            mark.textContent = acc ? initial(label) : "客";
+        }
+    }
+
+    /* Fills in the name and avatar for whoever is active. Deliberately does not
+     * act on isLogin:false — that would also fire if the firmware ever refused
+     * the Cookie header, and marking every stored account dead on the strength
+     * of one ambiguous answer is exactly the kind of guess this project has
+     * paid for before. 我的 reports the failure instead, where it is readable. */
+    function refreshActiveProfile() {
+        var acc = Accounts.active();
+        if (!acc || !Auth.isLoggedIn()) { return; }
+        /* Which route is carrying the session. Whether this firmware lets a
+         * widget set a Cookie header is the fact the whole account design rests
+         * on, and nothing else in the app would ever say — a session that works
+         * and one that silently falls back to the jar look identical on screen. */
+        var route = Auth.cookieHeader() ? "Cookie 头"
+                  : (Auth.jarIsOurs() ? "cookie jar" : "无凭证");
+        API.nav(function (me) {
+            report("account", Accounts.count() + " 个账号，当前 route=" + route +
+                   "，服务器" + (me.isLogin ? ("认得 " + me.uname) : "不认这个会话"));
+            if (!me.isLogin) { return; }
+            Accounts.describe(acc.id, me);
+            paintAccount();
+        }, function (why) { report("account", "route=" + route + "，nav 失败 " + why); });
+    }
+
+    /* The one path an account change takes. Everything personal has to be let
+     * go of here: the feed cache holds the previous account's recommendations,
+     * and serving those under a new name is both wrong and invisible. */
+    function switchTo(id) {
+        if (playing) { stopPlayback(); }
+        Auth.cancelLogin();
+        Resume.flush();          /* into the outgoing account's namespace */
+        Accounts.switchTo(id);
+        feedCache = {};
+        state.query = "";
+        state.results = null;
+        paintAccount();
+
+        var acc = Accounts.active();
+        if (acc && Accounts.needsRelogin(acc)) {
+            toast("这个账号的登录凭证已经不在了，需要重新扫码");
+            renderLogin(acc.id);
+            return;
+        }
+        refreshActiveProfile();
+        loadFeed("rcmd");
     }
 
     /* ---------------- grid of videos ---------------- */
@@ -81,7 +173,12 @@
                (seen ? '<span class="seen" style="width:' + Math.round(seen * 100) + '%"></span>' : "") +
                '</div>' +
                '<div class="card-title">' + esc(v.title) + '</div>' +
-               '<div class="card-meta">' + esc(v.author) + ' &middot; ' + esc(v.play) + '次观看</div>' +
+               '<div class="card-meta">' +
+               /* Which part you were on, on the history cards — "看到一半" is
+                * not much use on a 24-part upload without it. */
+               (v.page ? '<span class="card-part">P' + esc(v.page) + '</span>' : "") +
+               esc(v.author) + (v.play ? ' &middot; ' + esc(v.play) + '次观看' : "") +
+               '</div>' +
                '</div>';
     }
 
@@ -99,6 +196,24 @@
             (function (card, v) {
                 card.onselect = function () { playVideo(v); };
             })(cards[j], items[Number(cards[j].getAttribute("data-i"))]);
+        }
+    }
+
+    /* A grid of cards inside any container, wired to play on select. 我的 builds
+     * two of these and the player panel a third. */
+    function paintCards(container, items) {
+        if (!container) { return; }
+        var html = '<div class="grid">';
+        for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], i); }
+        container.innerHTML = html + "</div>";
+
+        var cards = container.querySelectorAll(".card");
+        for (var j = 0; j < cards.length; j++) {
+            (function (card) {
+                card.onselect = function () {
+                    playVideo(items[Number(card.getAttribute("data-i"))]);
+                };
+            })(cards[j]);
         }
     }
 
@@ -441,109 +556,306 @@
         });
     }
 
+    /* ---------------- accounts ---------------- */
+
+    /* Modelled on how a television handles a shared household: a wall of faces,
+     * the current one marked, an empty tile to add another, and removal kept
+     * behind a separate mode so nobody deletes their sister by pressing OK on
+     * the wrong square. */
+    var manageMode = false;
+
+    function tileHtml(id, faceInner, name, tag, on) {
+        return '<div class="acc focusable' + (on ? " on" : "") + '" data-id="' + esc(id) + '">' +
+               '<div class="acc-face">' + faceInner + '</div>' +
+               '<div class="acc-name">' + esc(name) + '</div>' +
+               '<div class="acc-tag">' + esc(tag) + '</div>' +
+               '</div>';
+    }
+
+    function renderAccounts(picker) {
+        state.screen = "accounts";
+        manageMode = false;
+        newView();
+        Auth.cancelLogin();
+        paintAccounts(picker);
+    }
+
+    function paintAccounts(picker) {
+        markTab();
+        var list = Accounts.all();
+        var activeId = Accounts.activeId();
+
+        var html = '<div class="accounts' + (manageMode ? " managing" : "") + '">' +
+                   '<h2>' + (picker ? "谁在看？" : (manageMode ? "选择要移除的账号" : "切换账号")) + '</h2>' +
+                   '<div class="acc-row">';
+
+        for (var i = 0; i < list.length; i++) {
+            var a = list[i];
+            var label = accountLabel(a);
+            var stale = Accounts.needsRelogin(a);
+            var inner = (a.face && !stale)
+                ? '<img src="' + esc(a.face) + '" alt="">'
+                : '<span class="acc-initial">' + esc(initial(label)) + '</span>';
+
+            var tag = "";
+            if (manageMode) { tag = "移除"; }
+            else if (a.id === activeId) { tag = "当前"; }
+            else if (stale) { tag = "需重新扫码"; }
+
+            html += tileHtml(a.id, inner, label, tag, a.id === activeId && !manageMode);
+        }
+
+        if (!manageMode) {
+            /* Somewhere to go that touches nobody's history or recommendations.
+             * Only offered once there is an account it could be confused with. */
+            if (list.length) {
+                html += tileHtml("__guest", '<span class="acc-initial">客</span>', "访客",
+                                 activeId === Accounts.GUEST ? "当前" : "",
+                                 activeId === Accounts.GUEST);
+            }
+            html += tileHtml("__add", '<span class="acc-plus">+</span>', "添加账号", "", false);
+        }
+
+        html += '</div><div id="acc-actions"></div>';
+        if (list.length && !manageMode) {
+            html += '<div class="acc-note">每个账号的观看记录和推荐都是分开的，互相看不到。</div>';
+        }
+        screenEl.innerHTML = html + '</div>';
+
+        var tiles = screenEl.querySelectorAll(".acc");
+        for (var j = 0; j < tiles.length; j++) {
+            (function (node) {
+                var id = node.getAttribute("data-id");
+                node.onselect = function () {
+                    if (id === "__add") { renderLogin(null); return; }
+                    if (manageMode) { confirmRemove(id); return; }
+                    if (id === "__guest") { switchTo(Accounts.GUEST); return; }
+                    if (id === activeId) {
+                        /* Already here — unless their credentials are gone, in
+                         * which case switchTo would not run and pressing OK on
+                         * your own face would silently do nothing. */
+                        var cur = Accounts.get(id);
+                        if (cur && Accounts.needsRelogin(cur)) { renderLogin(id); return; }
+                        loadFeed("rcmd");
+                        return;
+                    }
+                    switchTo(id);
+                };
+            })(tiles[j]);
+        }
+
+        var box = el("acc-actions");
+        if (list.length && box) {
+            box.innerHTML = '<div class="actions">' +
+                '<div class="btn ghost focusable" id="btn-manage">' +
+                (manageMode ? "完成" : "管理账号") + '</div></div>';
+            el("btn-manage").onselect = function () {
+                manageMode = !manageMode;
+                paintAccounts(false);
+            };
+        }
+
+        var pick = screenEl.querySelector(".acc.on") || screenEl.querySelector(".acc");
+        Nav.focus(pick);
+    }
+
+    function confirmRemove(id) {
+        var acc = Accounts.get(id);
+        var box = el("acc-actions");
+        if (!acc || !box) { return; }
+        var label = accountLabel(acc);
+
+        box.innerHTML = '<div class="acc-confirm">移除「' + esc(label) + '」？' +
+            '这台电视上属于 TA 的观看记录会一起删掉，bilibili 上的账号不受影响。</div>' +
+            '<div class="actions">' +
+            '<div class="btn ghost focusable" id="btn-cancel">取消</div>' +
+            '<div class="btn danger focusable" id="btn-remove">移除</div>' +
+            '</div>';
+
+        el("btn-cancel").onselect = function () { paintAccounts(false); };
+        el("btn-remove").onselect = function () {
+            var wasActive = Accounts.activeId() === id;
+            Accounts.remove(id);
+            manageMode = false;
+            /* Whether or not the removed account was the active one, the cached
+             * feeds may be theirs — remove() promotes somebody else. */
+            feedCache = {};
+            state.query = "";
+            state.results = null;
+            toast("已移除「" + label + "」");
+            if (!Accounts.count()) { renderLogin(null); return; }
+            if (wasActive) { refreshActiveProfile(); }
+            paintAccounts(false);
+        };
+        /* Cancel takes the focus: the destructive button should need a
+         * deliberate move to reach. */
+        Nav.reset("#btn-cancel");
+    }
+
     /* ---------------- mine / login ---------------- */
 
     function renderMine() {
         state.screen = "mine";
         markTab();
-        newView();
-        Auth.cancelQrLogin();
+        Auth.cancelLogin();
 
         if (!Auth.isLoggedIn()) {
-            renderLogin();
+            /* With accounts already on the set, dropping straight into a QR code
+             * hides the ones that are a single press away. */
+            if (Accounts.count()) { renderAccounts(false); return; }
+            renderLogin(null);
             return;
         }
+        var token = newView();
+        var accId = Accounts.activeId();
         screenEl.innerHTML = '<div class="mine"><div class="empty">检查登录状态…</div></div>';
         API.nav(function (me) {
+            /* A slow nav landing after the viewer switched account or tab used
+             * to repaint the screen they had left, under the wrong name. */
+            if (!stillViewing(token)) { return; }
+            if (me.isLogin) { Accounts.describe(accId, me); paintAccount(); }
+
             var html = '<div class="mine">' +
                 '<div class="me">' +
                 '<div class="me-name">' + esc(me.isLogin ? me.uname : "会话已失效") + '</div>' +
                 '<div class="me-sub">' + (me.isLogin
                     ? "已登录，等级 " + esc(me.level) + " · 1080P 可用"
                     : "服务器不认这个会话，需要重新扫码") + '</div>' +
-                '<div class="actions">' +
-                '<div class="btn focusable" id="btn-logout">退出登录</div>' +
-                '</div></div>';
-            html += '<div class="section">观看历史</div><div id="hist"></div></div>';
+                '<div id="mine-actions"><div class="actions">' +
+                '<div class="btn focusable" id="btn-switch">切换账号</div>' +
+                '<div class="btn ghost focusable" id="btn-logout">退出登录</div>' +
+                '</div></div></div>';
+            /* Two lists, because they are two different things and one of them
+             * used to silently destroy the other. Nothing this app plays reaches
+             * bilibili's own history — that needs a write we do not make — so
+             * painting the server's list into the same container meant every
+             * video watched on this television vanished the moment the server
+             * answered. */
+            html += '<div class="section">在这台电视上看过</div><div id="hist"></div>' +
+                    '<div id="server-hist"></div></div>';
             screenEl.innerHTML = html;
 
-            /* Local first, because it is the only record of what this app has
-             * played — the server-side list needs a CSRF token we never see. */
             var mine = Resume.recent(24);
             var h0 = el("hist");
-            if (mine.length && h0) {
-                var g0 = '<div class="grid">';
-                for (var m0 = 0; m0 < mine.length; m0++) { g0 += cardHtml(mine[m0], m0); }
-                h0.innerHTML = g0 + "</div>";
-                var lc = h0.querySelectorAll(".card");
-                for (var li = 0; li < lc.length; li++) {
-                    (function (card, vv) { card.onselect = function () { playVideo(vv); }; })(
-                        lc[li], mine[Number(lc[li].getAttribute("data-i"))]);
-                }
+            if (h0) {
+                if (mine.length) { paintCards(h0, mine); }
+                else { h0.innerHTML = '<div class="empty">这台电视上还没有看过什么</div>'; }
             }
 
+            el("btn-switch").onselect = function () { renderAccounts(false); };
+
+            /* Signing out takes the account off the television altogether, which
+             * is not what "退出登录" implies on a phone — so it says so before
+             * doing it rather than after. */
             el("btn-logout").onselect = function () {
-                Auth.logout();
-                toast("已退出登录");
-                renderMine();
+                var box = el("mine-actions");
+                if (!box) { return; }
+                box.innerHTML =
+                    '<div class="acc-confirm">退出并从这台电视上移除这个账号？' +
+                    '本机的观看记录会一起删掉，bilibili 上的账号不受影响。</div>' +
+                    '<div class="actions">' +
+                    '<div class="btn ghost focusable" id="btn-cancel">取消</div>' +
+                    '<div class="btn danger focusable" id="btn-remove">退出并移除</div>' +
+                    '</div>';
+                el("btn-cancel").onselect = function () { renderMine(); };
+                el("btn-remove").onselect = function () {
+                    Auth.logout();
+                    feedCache = {};
+                    state.query = "";
+                    state.results = null;
+                    paintAccount();
+                    toast("已退出登录");
+                    if (Accounts.count()) { renderAccounts(false); }
+                    else { renderLogin(null); }
+                };
+                Nav.reset("#btn-cancel");
             };
-            Nav.reset("#btn-logout");
+            Nav.reset("#btn-switch");
 
             if (me.isLogin) {
                 API.history(function (items) {
-                    var h = el("hist");
-                    if (!h) { return; }
-                    if (!items.length) { h.innerHTML = '<div class="empty">没有历史记录</div>'; return; }
-                    var g = '<div class="grid">';
-                    for (var i = 0; i < items.length; i++) { g += cardHtml(items[i], i); }
-                    h.innerHTML = g + "</div>";
-                    var cards = h.querySelectorAll(".card");
-                    for (var j = 0; j < cards.length; j++) {
-                        (function (card, v) { card.onselect = function () { playVideo(v); }; })(
-                            cards[j], items[Number(cards[j].getAttribute("data-i"))]);
-                    }
+                    var h = el("server-hist");
+                    if (!h || !stillViewing(token) || !items.length) { return; }
+                    h.innerHTML = '<div class="section">bilibili 账号的历史（其他设备）</div>' +
+                                  '<div id="server-grid"></div>';
+                    paintCards(el("server-grid"), items);
                 }, function (why) {
-                    var h = el("hist");
-                    if (h) { h.innerHTML = '<div class="empty">历史读取失败：' + esc(why) + '</div>'; }
+                    var h = el("server-hist");
+                    if (h && stillViewing(token)) {
+                        h.innerHTML = '<div class="section">bilibili 账号的历史</div>' +
+                                      '<div class="empty">读取失败：' + esc(why) + '</div>';
+                    }
                 });
             }
         }, function (why) {
+            if (!stillViewing(token)) { return; }
             screenEl.innerHTML = '<div class="empty">无法检查登录状态：' + esc(why) + '</div>';
             Nav.reset(".tab");
         });
     }
 
-    function renderLogin() {
+    /* `intoId` re-authenticates an account already on the set, rather than
+     * adding another face to the switcher. It matters because the web fallback
+     * cannot say who just scanned, so without it a viewer restoring their own
+     * expired session would end up listed twice. */
+    function renderLogin(intoId) {
+        state.screen = "login";
+        markTab();
+        var token = newView();
+        var again = !!intoId;
+        var more = Accounts.count() > 0;
+
         screenEl.innerHTML = '<div class="login">' +
             '<div class="login-left">' +
-            '<h2>用 bilibili App 扫码登录</h2>' +
+            '<h2>' + (again ? "重新扫码登录这个账号"
+                            : (more ? "添加一个账号" : "用 bilibili App 扫码登录")) + '</h2>' +
             '<div class="login-step" id="login-step">正在获取二维码…</div>' +
             '<div class="login-note">登录后可用 1080P，并能看到自己的观看历史。<br>' +
-            '二维码只在这台电视上生成，不会经过任何第三方。</div>' +
-            '<div class="actions"><div class="btn focusable" id="btn-refresh">重新获取</div></div>' +
-            '</div>' +
+            '二维码只在这台电视上生成，不会经过任何第三方。' +
+            (more ? '<br>每个账号的记录和推荐相互独立。' : '') + '</div>' +
+            '<div class="actions">' +
+            '<div class="btn focusable" id="btn-refresh">重新获取</div>' +
+            (more ? '<div class="btn ghost focusable" id="btn-back">返回账号列表</div>' : '') +
+            '</div></div>' +
             '<div class="login-right" id="qrbox"></div></div>';
 
-        el("btn-refresh").onselect = function () { renderLogin(); };
+        el("btn-refresh").onselect = function () { renderLogin(intoId); };
+        if (more) { el("btn-back").onselect = function () { renderAccounts(false); }; }
         Nav.reset("#btn-refresh");
 
-        Auth.startQrLogin(function (s) {
+        Auth.startLogin(function (s) {
+            /* The poller outlives the screen if the viewer walks away mid-scan,
+             * and cancelLogin only fires on the routes that know they are
+             * leaving. */
+            if (!stillViewing(token)) { return; }
             var step = el("login-step"), box = el("qrbox");
             if (!step || !box) { return; }
+
             if (s.kind === "qr") {
                 try {
                     box.innerHTML = QR.toHtml(s.url, 8);
-                    step.textContent = "等待扫码…";
+                    step.textContent = s.via === "tv"
+                        ? "等待扫码…" : "等待扫码…（网页登录，此账号无法长期保存）";
                 } catch (e) {
                     step.textContent = "二维码生成失败：" + e.message;
                     report("qr", e.message);
                 }
+            } else if (s.kind === "fallback") {
+                /* Worth a line in the collector: it is the difference between an
+                 * account that can be switched back to and one that cannot. */
+                report("login", "TV 登录不可用，回落网页扫码：" + s.why);
+                step.textContent = "正在改用网页扫码…";
             } else if (s.kind === "scanned") {
                 step.textContent = "已扫码，请在手机上确认";
             } else if (s.kind === "finishing") {
                 step.textContent = "正在换取登录凭证…";
             } else if (s.kind === "done") {
                 toast("登录成功");
+                feedCache = {};
+                state.query = "";
+                state.results = null;
+                paintAccount();
+                refreshActiveProfile();
                 renderMine();
             } else if (s.kind === "expired") {
                 step.textContent = "二维码已过期，选「重新获取」";
@@ -551,16 +863,43 @@
                 step.textContent = "登录失败：" + s.why;
                 report("login", s.why);
             }
-        });
+        }, intoId);
     }
 
     /* ---------------- playback ---------------- */
 
     /* Selecting a video plays it. What used to be a detail page is the panel the
      * down key pulls up over the video. */
+    /* Which part to open. A multi-part upload watched to P7 and then reopened
+     * from the feed used to start again at P1: the position for P7 was stored
+     * the whole time, but nothing asked which part it belonged to. Only honoured
+     * when that part is really one of this video's — a stale entry from before
+     * an uploader reorganised the parts should not send playback somewhere the
+     * video no longer has. */
+    function resumeCid(detail) {
+        var last = Resume.lastPart(detail.bvid);
+        if (!last || !last.cid || last.cid === detail.cid) { return detail.cid; }
+
+        var pages = detail.pages || [];
+        for (var i = 0; i < pages.length; i++) {
+            if (pages[i].cid === last.cid) {
+                toast("从 P" + pages[i].page + " 继续：" + (pages[i].part || ""));
+                return last.cid;
+            }
+        }
+        /* Opened straight from a feed card, which carries only the first part's
+         * cid and no part list. The stored cid can only have come from playing
+         * this very video, so it is trustworthy even without the list. */
+        if (!pages.length) {
+            if (last.page) { toast("从 P" + last.page + " 继续"); }
+            return last.cid;
+        }
+        return detail.cid;
+    }
+
     function playVideo(v, fromPanel) {
         if (!fromPanel) { rememberPosition(); }
-        if (v.pages) { play(v, v.cid); return; }
+        if (v.pages) { play(v, resumeCid(v)); return; }
 
         /* 推荐, 热门 and 排行 already carry the cid, which is all playback needs.
          * Waiting on a view() round trip just to learn something we were handed
@@ -581,7 +920,7 @@
         toast("正在打开…");
         API.view(v.bvid, function (d) {
             if (!stillViewing(token)) { return; }
-            play(d, d.cid);
+            play(d, resumeCid(d));
         }, function (why) {
             if (!stillViewing(token)) { return; }
             toast("打开失败：" + why);
@@ -995,39 +1334,62 @@
          * hand-rolled MSE on buffering, seeking and memory. */
         playing.canDowngrade = true;
         var session = playing;
-        report("player", "requesting qn=" + PREFERRED_QN);
+        Player.startTiming();
+        /* Named, so that "one video would not play" can be chased to a bvid
+         * instead of guessing which of the evening's videos it was. */
+        report("player", detail.bvid + " " + String(detail.title || "").slice(0, 24) +
+               " — requesting qn=" + PREFERRED_QN);
+
+        /* Both forms at once. Asking DASH first and progressive from inside its
+         * callback put two full round trips to bilibili back to back before a
+         * single byte of media was requested — and the answer to one has never
+         * had any bearing on how to ask the other. `undefined` means still in
+         * flight, `null` means it failed; the decision waits for both. */
+        var got = { dash: undefined, prog: undefined };
+
+        function decide() {
+            if (playing !== session) { return; }
+            if (got.dash === undefined || got.prog === undefined) { return; }
+
+            var dash = got.dash, prog = got.prog;
+            var dashQn = 0;
+            if (dash) {
+                var best = Player.pickDashVideo(dash);
+                dashQn = (best && best.id) || 0;
+            }
+            Player.mark("playurl");
+
+            if (dash && (!prog || dashQn > prog.quality)) { playDash(dash, dashQn); return; }
+            if (prog) { startProgressive(prog); return; }
+            toast("播放失败：拿不到播放地址");
+            stopPlayback();
+        }
 
         API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
             if (playing !== session) { return; }
             var best = Player.pickDashVideo(dash);
-            var dashQn = (best && best.id) || 0;
-            report("player", "dash offers qn=" + dashQn +
+            report("player", "dash offers qn=" + ((best && best.id) || 0) +
                    " accept=" + (dash.acceptQuality || []).join(","));
-
-            API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
-                if (playing !== session) { return; }
-                report("player", "progressive gave qn=" + r.quality +
-                       " accept=" + (r.accept || []).join(","));
-                if (dashQn > r.quality) { playDash(dash, dashQn); }
-                else { startProgressive(r); }
-            }, function (why) {
-                if (playing !== session) { return; }
-                report("player", "no durl (" + why + ")");
-                if (dashQn) { playDash(dash, dashQn); }
-                else { toast("播放失败：" + why); stopPlayback(); }
-            });
+            got.dash = dash;
+            decide();
         }, function (dashWhy) {
             if (playing !== session) { return; }
             report("player", "no dash (" + dashWhy + ")");
-            API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
-                if (playing !== session) { return; }
-                report("player", "progressive gave qn=" + r.quality);
-                startProgressive(r);
-            }, function (why) {
-                if (playing !== session) { return; }
-                toast("播放失败：" + why);
-                stopPlayback();
-            });
+            got.dash = null;
+            decide();
+        });
+
+        API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
+            if (playing !== session) { return; }
+            report("player", "progressive gave qn=" + r.quality +
+                   " accept=" + (r.accept || []).join(","));
+            got.prog = r;
+            decide();
+        }, function (why) {
+            if (playing !== session) { return; }
+            report("player", "no durl (" + why + ")");
+            got.prog = null;
+            decide();
         });
     }
 
@@ -1098,6 +1460,12 @@
     function probeUrl(url, why) {
         var host = String(url).split("/")[2] || "?";
         var scheme = String(url).slice(0, 5);
+        /* Without this the collector says a stream was refused but not which
+         * video it was, and a report of "one video would not play" cannot be
+         * chased any further than guessing at candidates. */
+        var who = playing && playing.detail
+            ? playing.detail.bvid + " " + String(playing.detail.title || "").slice(0, 24)
+            : "?";
         try {
             var xhr = new XMLHttpRequest();
             xhr.open("GET", url, true);
@@ -1105,11 +1473,15 @@
             xhr.timeout = 10000;
             xhr.onreadystatechange = function () {
                 if (xhr.readyState !== 4) { return; }
-                report("probe", scheme + " " + host + " avplay=" + why +
+                /* 403 to a plain fetch is bilibili refusing the content, not a
+                 * fault in how AVPlay asks — remembered so the message shown
+                 * when everything has been tried can say which it was. */
+                if (xhr.status === 403 && playing) { playing.refused = true; }
+                report("probe", who + " | " + scheme + " " + host + " avplay=" + why +
                        " xhr=" + xhr.status);
             };
-            xhr.ontimeout = function () { report("probe", host + " xhr=timeout"); };
-            xhr.onerror = function () { report("probe", host + " xhr=error"); };
+            xhr.ontimeout = function () { report("probe", who + " | " + host + " xhr=timeout"); };
+            xhr.onerror = function () { report("probe", who + " | " + host + " xhr=error"); };
             xhr.send();
         } catch (e) {}
     }
@@ -1137,9 +1509,21 @@
         if (kind === "time") {
             if (playing) {
                 var d0 = playing.detail;
+                /* Which part this is, so 我的 can say P7 and reopening the
+                 * video can land back on it. */
+                var pg = 0, ptitle = "";
+                var pages0 = (d0.pages || []);
+                for (var pi = 0; pi < pages0.length; pi++) {
+                    if (pages0[pi].cid === playing.cid) {
+                        pg = pages0[pi].page;
+                        ptitle = pages0[pi].part || "";
+                        break;
+                    }
+                }
                 Resume.record(d0.bvid, playing.cid, data.position, data.duration, {
                     bvid: d0.bvid, title: d0.title, pic: d0.pic,
-                    author: d0.author, duration: d0.duration, play: d0.play
+                    author: d0.author, duration: d0.duration, play: d0.play,
+                    cid: playing.cid, page: pg, part: ptitle
                 });
             }
             lastKnownPosition = data.position;
@@ -1154,16 +1538,25 @@
                 el("player-buffer").style.width =
                     Math.min(100, (buf / data.duration) * 100) + "%";
             }
+        } else if (kind === "quality") {
+            /* Adaptation is routine now that the player picks the tier itself,
+             * and it moves *up* as often as down. The badge follows it; there is
+             * no toast, because the one that used to be here was inherited from
+             * a hand-rolled step-down and announced "原画质取不到" every time the
+             * picture got better. */
+            setQualityBadge(QUALITY_NAMES[data.id] || ("QN " + data.id));
         } else if (kind === "playing") {
             el("player-loading").className = "hidden";
+            /* Where the seconds before a picture actually went. Without this,
+             * "it takes a few seconds" has at least five candidate causes and
+             * no way to tell them apart from the sofa. */
+            report("player", "到画面 " + Player.timings());
             loadMetaForPlaying();
         } else if (kind === "buffering") {
             el("player-hint").textContent = data ? "缓冲中…" : HINT;
         } else if (kind === "ended") {
-            if (playing) { Resume.forget(playing.detail.bvid, playing.cid); }
+            if (playing) { Resume.finished(playing.detail.bvid, playing.cid); }
             beginAutoNext();
-        } else if (kind === "seek-refused") {
-            toast("该片段尚未缓冲，无法跳转");
         } else if (kind === "log") {
             report("player", data);
         } else if (kind === "error") {
@@ -1182,8 +1575,24 @@
                 Player.playProgressive(playing.urls[playing.urlIdx], playing.startMs || 0);
                 return;
             }
+            /* Downgrading restarts the video from the top in the other form.
+             * That is right when nothing ever played, and wrong once the viewer
+             * is watching — a dropped connection at four minutes in used to
+             * throw them back to the beginning. */
+            if (lastKnownPosition > 3000) {
+                report("player", "播放中出错但已在播，保持不动：" + data);
+                return;
+            }
             if (playing.canDowngrade && !playing.downgraded) { downgrade(String(data)); return; }
-            toast("播放错误：" + data);
+            /* Every route has been tried. If the probes came back 403 the
+             * content itself is being withheld — reuploads of films get their
+             * streams pulled while the page stays up — and "播放错误：
+             * PLAYER_ERROR_CONNECTION_FAILED" sends the viewer looking for a
+             * network problem that is not there. */
+            var refused = playing.refused || String(data).indexOf("403") >= 0;
+            toast(refused
+                ? "bilibili 拒绝提供这个视频的画面流（403），换一个试试"
+                : "播放错误：" + data);
             stopPlayback();
         }
     });
@@ -1238,7 +1647,10 @@
     Nav.onBack(function () {
         if (imeOpen) { closeIme(false); return; }
         if (playing) { stopPlayback(); return; }
-        Auth.cancelQrLogin();
+        Auth.cancelLogin();
+        /* Backing out of "add an account" belongs on the switcher, not on the
+         * home feed — the viewer was one press into a two-press errand. */
+        if (state.screen === "login" && Accounts.count()) { renderAccounts(false); return; }
         if (state.screen !== "rcmd") { loadFeed("rcmd"); return; }
         try { tizen.application.getCurrentApplication().exit(); } catch (e) {}
     });
@@ -1260,7 +1672,7 @@
             (function (tab) {
                 tab.onselect = function () {
                     var s = tab.getAttribute("data-screen");
-                    Auth.cancelQrLogin();
+                    Auth.cancelLogin();
                     if (s === "search") { renderSearch(); }
                     else if (s === "mine") { renderMine(); }
                     /* Pressing the tab you are already on reloads it; coming
@@ -1272,9 +1684,42 @@
             })(tabs[i]);
         }
 
-        loadFeed("rcmd");
-        if (typeof SELFTEST !== "undefined" && SELFTEST && typeof SelfTest !== "undefined") {
-            SelfTest.run();
-        }
+        el("account").onselect = function () {
+            Auth.cancelLogin();
+            if (Accounts.count()) { renderAccounts(false); }
+            else { renderLogin(null); }
+        };
+        paintAccount();
+        refreshActiveProfile();
+
+        /* What this engine actually is. The conventions here assume it is old
+         * enough to need ES5, which decides whether a maintained DASH player
+         * can be dropped in at all — and that assumption has never been
+         * checked against the set. */
+        try {
+            var es6 = false, blobUrl = false;
+            try { es6 = !!new Function("var a=(x)=>x*2;let b=`t`;class C{};return a(1)===2")(); }
+            catch (e) { es6 = false; }
+            try { blobUrl = !!(window.Blob && URL.createObjectURL(new Blob(["x"]))); }
+            catch (e) { blobUrl = false; }
+            report("engine", navigator.userAgent +
+                   " | ES6=" + es6 +
+                   " | MSE=" + (typeof MediaSource !== "undefined") +
+                   " | Blob URL=" + blobUrl +
+                   " | Promise=" + (typeof Promise !== "undefined") +
+                   " | fetch=" + (typeof fetch !== "undefined"));
+        } catch (e) { report("engine", "probe failed: " + e.message); }
+
+        /* A set with more than one person on it asks before showing anyone's
+         * recommendations — the same thing a television does when it is shared.
+         * With one account there is nothing to ask, and the selftest needs the
+         * grid to be what boots. */
+        var shared = Accounts.count() > 1;
+        var selftest = (typeof SELFTEST !== "undefined" && SELFTEST &&
+                        typeof SelfTest !== "undefined");
+        if (shared && !selftest) { renderAccounts(true); }
+        else { loadFeed("rcmd"); }
+
+        if (selftest) { SelfTest.run(); }
     };
 })();

@@ -1,8 +1,15 @@
 /* Where each video was left off.
  *
  * Kept locally rather than pushed to bilibili's history endpoint: that one wants
- * a CSRF token from the session, and this code never gets to see the cookies.
+ * a CSRF token from the session, and the web login path never exposes one.
  * Local is also what makes the progress bars on cards instant.
+ *
+ * The television is shared, so this is stored per account — nobody wants their
+ * half-watched videos showing up under somebody else's name, and a resume point
+ * from another person is worse than none at all. The namespace is re-derived on
+ * every access rather than captured once: an account switch that happened
+ * between two calls then repairs itself, and the data still in memory is written
+ * back to the person it belongs to before the new namespace is read.
  */
 var Resume = (function () {
     "use strict";
@@ -13,16 +20,38 @@ var Resume = (function () {
     var END_MARGIN = 30;      /* treat the last half minute as finished */
 
     var map = null;
+    var mapKey = null;        /* the namespace `map` was read from */
     var dirty = false;
 
     /* Turning the television off is the normal way to stop watching, and it
      * gives no unload event worth trusting, so writes are flushed on a timer
      * rather than only when playback ends. */
-    setInterval(function () { if (dirty) { flushNow(); } }, 10000);
+    setInterval(function () { flushNow(); }, 10000);
+
+    function trim(m) {
+        var keys = [];
+        for (var k in m) { if (m.hasOwnProperty(k)) { keys.push(k); } }
+        if (keys.length <= LIMIT) { return; }
+        keys.sort(function (a, b) { return (m[b].at || 0) - (m[a].at || 0); });
+        for (var i = LIMIT; i < keys.length; i++) { delete m[keys[i]]; }
+    }
+
+    function writeTo(k, m) {
+        if (!k) { return; }
+        trim(m);
+        try { localStorage.setItem(k, JSON.stringify(m)); } catch (e) {}
+    }
 
     function load() {
-        if (map) { return map; }
-        try { map = JSON.parse(localStorage.getItem(KEY) || "{}"); }
+        var k = Accounts.scope(KEY);
+        if (map && mapKey === k) { return map; }
+
+        /* Somebody else is watching now. What has not been written yet belongs
+         * to the person who was. */
+        if (map && dirty) { writeTo(mapKey, map); }
+        dirty = false;
+        mapKey = k;
+        try { map = JSON.parse(localStorage.getItem(k) || "{}"); }
         catch (e) { map = {}; }
         return map;
     }
@@ -30,17 +59,12 @@ var Resume = (function () {
     function flush() { flushNow(); }
 
     function flushNow() {
+        /* load() writes the previous account's entries out itself if the
+         * namespace moved, and clears the flag when it does. */
+        var m = load();
         if (!dirty) { return; }
         dirty = false;
-        var m = load();
-
-        var keys = [];
-        for (var k in m) { if (m.hasOwnProperty(k)) { keys.push(k); } }
-        if (keys.length > LIMIT) {
-            keys.sort(function (a, b) { return (m[b].at || 0) - (m[a].at || 0); });
-            for (var i = LIMIT; i < keys.length; i++) { delete m[keys[i]]; }
-        }
-        try { localStorage.setItem(KEY, JSON.stringify(m)); } catch (e) {}
+        writeTo(mapKey, m);
     }
 
     function id(bvid, cid) { return bvid + ":" + cid; }
@@ -53,13 +77,20 @@ var Resume = (function () {
             var m = load();
             var key = id(bvid, cid);
 
-            if (pos < MIN_SECONDS || (dur && pos > dur - END_MARGIN)) {
-                if (m[key]) { delete m[key]; dirty = true; flush(); }
-                return;
-            }
             var prev = m[key] || {};
+
+            /* Too early to be worth resuming, or close enough to the end to
+             * count as finished. Either way there is no position to keep — but
+             * it was still watched, and this list is the only record of what
+             * this television played. Deleting the entry outright meant a video
+             * opened and left after a minute never appeared in 我的 at all, and
+             * so did one watched all the way through. */
+            var resumable = pos >= MIN_SECONDS && !(dur && pos > dur - END_MARGIN);
+
             m[key] = {
-                pos: Math.floor(pos), dur: Math.floor(dur), at: new Date().getTime(),
+                pos: resumable ? Math.floor(pos) : 0,
+                dur: Math.floor(dur),
+                at: new Date().getTime(),
                 card: card || prev.card    /* enough to redraw it in 我的 */
             };
             dirty = true;
@@ -70,6 +101,28 @@ var Resume = (function () {
         positionMs: function (bvid, cid) {
             var e = load()[id(bvid, cid)];
             return e ? e.pos * 1000 : 0;
+        },
+
+        /* Which part of a multi-part upload was watched last, and where it was
+         * left. Without this, opening a series from the feed or from 我的 always
+         * restarted at P1 — the position for the part you were actually on was
+         * stored all along, but nothing ever asked which part that was. */
+        lastPart: function (bvid) {
+            var m = load(), best = null, bestAt = -1, prefix = bvid + ":";
+            for (var k in m) {
+                if (!m.hasOwnProperty(k)) { continue; }
+                if (k.indexOf(prefix) !== 0) { continue; }
+                var at = m[k].at || 0;
+                if (at <= bestAt) { continue; }
+                bestAt = at;
+                best = {
+                    cid: Number(k.slice(prefix.length)) || 0,
+                    positionMs: (m[k].pos || 0) * 1000,
+                    page: (m[k].card && m[k].card.page) || 0,
+                    part: (m[k].card && m[k].card.part) || ""
+                };
+            }
+            return best;
         },
 
         /* 0..1 for the sliver drawn across a card's thumbnail.
@@ -107,9 +160,16 @@ var Resume = (function () {
             return out;
         },
 
-        forget: function (bvid, cid) {
-            var m = load();
-            if (m[id(bvid, cid)]) { delete m[id(bvid, cid)]; dirty = true; flush(); }
+        /* Watched to the end: there is nothing left to resume, but it belongs in
+         * the history more than anything else does. This used to delete the
+         * entry, which quietly removed finished videos from 我的. */
+        finished: function (bvid, cid) {
+            var m = load(), e = m[id(bvid, cid)];
+            if (!e) { return; }
+            e.pos = 0;
+            e.at = new Date().getTime();
+            dirty = true;
+            flush();
         }
     };
 })();

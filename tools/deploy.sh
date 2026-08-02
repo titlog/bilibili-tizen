@@ -72,6 +72,14 @@ tizen cli-config "profiles.path=$PROFILES" >/dev/null
 echo "== checking =="
 for f in "$APP"/js/*.js; do node --check "$f" >/dev/null || { echo "  syntax error in $f"; exit 1; }; done
 node "$ROOT/tools/lint.mjs" || { echo "  refuse to deploy"; exit 1; }
+# The account layer fails silently on the device — history filed under the wrong
+# person, a cookie riding along from the previous account — so it is verified
+# against a fake localStorage here, where a wrong answer is an assertion.
+node "$ROOT/tools/md5-verify.mjs" >/dev/null || { echo "  md5 is wrong; TV login would be rejected"; exit 1; }
+node "$ROOT/tools/accounts-verify.mjs" || { echo "  refuse to deploy"; exit 1; }
+# An invalid manifest does not throw — the player refuses it and the viewer just
+# sees a spinner. One unescaped ampersand in a stream url is enough to cause it.
+node "$ROOT/tools/mpd-verify.mjs" >/dev/null || { echo "  the DASH manifest is malformed"; exit 1; }
 
 echo "== packaging =="
 cd "$APP"

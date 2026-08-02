@@ -14,5 +14,8 @@
     "jsqr": "^1.4.0",
     "node-forge": "^1.4.0",
     "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "fast-xml-parser": "^5.10.1"
   }
 }
