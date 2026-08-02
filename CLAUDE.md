@@ -47,28 +47,64 @@ HTTP header for progressive playback — arbitrary headers exist only on the DRM
 license path via `setDrm()`. Any design that needs a request header other than
 those two has to change shape.
 
-**Playback routes, all measured on device.** In descending order of usefulness:
+**Setting `COOKIE` to an empty string breaks playback.** A jar-only session has no
+readable SESSDATA, so `Auth.cookieHeader()` returns `""` while `isLoggedIn()` is
+true. Handing that to `setStreamingProperty("COOKIE", "")` makes AVPlay emit a
+malformed `Cookie` header and the CDN refuses everything. It looked exactly like
+a broken stream and it only started once the viewer signed in. Set the property
+only when there is something to send.
+
+**Playback routes, all measured on device.**
 
 | route | works | notes |
 |---|---|---|
-| MSE in the `<video>` element | yes | **the one to build on** — muxed audio+video, no server |
-| AVPlay, progressive `durl` | yes | simplest; `qn=64` gives 720p with no login |
+| AVPlay, progressive `durl` | yes | native buffering, seeking, constant memory — but see the cap below |
+| MSE in the `<video>` element | yes | the only way to play DASH here; `avc1` and `mp4a.40.2` both pass `isTypeSupported` |
 | AVPlay, MPD served over HTTP | yes | proves the generated manifest is valid |
 | AVPlay, MPD as `data:` URI | no | `PLAYER_ERROR_INVALID_URI` |
 | AVPlay, MPD as `file://` | no | `PLAYER_ERROR_NOT_SUPPORTED_FILE` |
 | AVPlay, bare `.m4s` | yes | decodes, but video only — no audio track |
 
-So AVPlay does DASH correctly, it just insists the manifest arrive over HTTP, and
-a widget cannot listen on a socket. MSE closes that gap: fetch the DASH
-representations with XHR and append them to two `SourceBuffer`s. `avc1` and
-`mp4a.40.2` both pass `MediaSource.isTypeSupported` here.
+AVPlay does DASH correctly, it just insists the manifest arrive over HTTP, and a
+widget cannot listen on a socket. So DASH means MSE.
+
+**The single-file form is capped at 720p, and sometimes refused entirely.** This
+is the fact that decides the player's architecture:
+
+| form | what it offers |
+|---|---|
+| `fnval=1` (`durl`) | `accept_quality` tops out at `[64, 16]` |
+| `fnval=16` (DASH) | `[116, 112, 80, 64, 32, 16]` on the same video |
+
+Asking progressive first therefore played *everything* at 720P however good the
+source, and for videos carrying a high-tier source the API still returns a durl
+whose CDN answers **403 on every mirror, at every quality** — which presented as
+"some videos just fail". `app.js` now asks both forms and takes the better;
+progressive wins ties because AVPlay beats hand-rolled MSE on buffering, seeking
+and memory.
+
+**`dash.audio` is unsorted, and some entries the account cannot fetch.** One
+video listed bandwidths in the order 105k, 66k, 210k. Taking `audio[0]` is
+therefore a coin flip, and drawing a gated track shows up as the picture
+buffering to four minutes while the sound never arrives and every audio mirror
+answers 403. Sort by bandwidth, and treat exhausted mirrors as a reason to try
+the *next representation*, not to cycle the dead mirrors again.
+
+**Size MSE requests from each representation's bitrate.** A flat 4 MB chunk is
+three minutes of audio but thirteen seconds of 1080p video, so the audio raced
+ahead while the picture — the thing playback actually waits on — trickled in.
+Ask for a fixed number of *seconds* instead, with a deliberately short first
+request so something is playable quickly. Two requests in flight keeps the link
+busy; because a fragmented MP4 is a sequential byte stream, arrivals must go
+through an ordered queue rather than being appended as they land.
 
 > Anything that drives AVPlay repeatedly must guard its callbacks. `setListener`
 > registers on the avplay singleton and swapping the `<object>` element does not
 > detach it, so a stale `onerror` from a previous attempt fires into the current
-> one. `main.js` uses a generation counter for this; without it an experiment
-> that tries several sources in sequence produces results in the wrong order and
-> reads as "everything failed". That happened, and inverted a conclusion.
+> one. `player.js` and `spike/main.js` use a generation counter for this; without
+> it an experiment that tries several sources in sequence produces results in the
+> wrong order and reads as "everything failed". That happened, and inverted a
+> conclusion.
 
 ## Deploying
 
@@ -195,15 +231,43 @@ explained by the first mechanism that fit, designed around, and shipped:
 
 **The move that actually works is a discriminating test** — one experiment whose
 two outcomes point at different causes. For that last one: hand the very url
-AVPlay rejects to a plain `XMLHttpRequest`. It returned `206`, which rules out
-the url and the network and leaves only how AVPlay is asking. The real cause was
-that selecting a video fired the playurl call, `view()`, `related()` and AVPlay's
-own stream connection in the same instant, and AVPlay intermittently lost that
-race. Metadata is now queued until the picture is up.
+AVPlay rejects to a plain `XMLHttpRequest`.
+
+That test is now permanent. `probeUrl()` in `app.js` runs on every playback
+failure and reports one line:
+
+```
+probe: https upos-hz-mirrorakam.akamaized.net avplay=PLAYER_ERROR_CONNECTION_FAILED xhr=403
+probe: https upos-hz-mirrorakam.akamaized.net avplay=PLAYER_ERROR_CONNECTION_FAILED xhr=206
+```
+
+`xhr=403` means bilibili is refusing the stream and no amount of retrying will
+help — switch form. `xhr=206` means the url and the network are fine and the
+fault is in how AVPlay is asking — switch mirror or scheme. Reading the AVPlay
+code alone cannot tell these apart, and guessing between them cost several
+deploys before the probe existed.
+
+The `206` case turned out to be that selecting a video fired the playurl call,
+`view()`, `related()` and AVPlay's own stream connection in the same instant, and
+AVPlay intermittently lost that race. Metadata is queued until the picture is up.
 
 **One error code can mean several things.** `CONNECTION_FAILED` covers "refused",
 "no route" and "could not get a socket"; `InvalidAccessError` accompanies all of
 them. Never reason from the code alone — find something that separates the cases.
+
+**Never edit by replacing text you remember.** Twice in one session an edit was
+applied against an anchor that had already drifted:
+
+- A block delete keyed on two surrounding markers took `playVideo` with it,
+  because that function had been written *between* them. Pressing OK on the home
+  screen then did nothing, and every file still parsed.
+- A rewrite of the playback routing silently matched nothing. The build shipped,
+  the behaviour was unchanged, and the logs showed the old code path — costing a
+  full round of "why didn't that fix it".
+
+Read the region first, then edit. When a change is supposed to alter behaviour,
+confirm it did by looking for its evidence in the collector, not by assuming the
+edit landed.
 
 **`node --check` proves nothing about whether the app works.** A block delete
 removed `playVideo` along with the dead detail screen beside it. Every file
@@ -262,6 +326,11 @@ no known platform blocker left.
    television's own IME, detail with parts and related videos, resume, autoplay
    of the next video, and a player built on AVPlay with progressive `durl`. MSE
    is the fallback for videos with no single-file stream.
+
+**Watch history is local.** Reporting playback to bilibili needs the CSRF token
+`bili_jct`, which this login path never exposes, so nothing this app plays
+reaches the server-side history. `resume.js` keeps its own list and 我的 renders
+that — the only version that reflects what was actually watched here.
 
 **Not possible on this login path.** Like, coin, favourite and watch-later all
 need the CSRF token `bili_jct`. The session lives in the engine's cookie jar
