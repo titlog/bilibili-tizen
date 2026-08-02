@@ -246,13 +246,23 @@
 
             /* A resume point only ever comes from the server, so it has to
              * survive the local card winning on recency — that pair is what
-             * makes a video open where the phone left it. */
-            if ((loser.progressMs || 0) > (winner.progressMs || 0)) {
-                winner.progressMs = loser.progressMs;
-                if (loser.cid) { winner.cid = loser.cid; }
+             * makes a video open where the phone left it.
+             *
+             * Only within the same part, though. On a 24-part upload the two
+             * sides can name different parts, and then "further along" is not
+             * the same question as "more recent": this set reports what it
+             * plays, but the server's copy lags it by up to a report interval,
+             * so for half a minute after watching P3 here the phone's older P7
+             * is still the further of the two. Carrying it over would send the
+             * next press back to P7. Across parts the recent side decides. */
+            var samePart = !winner.cid || !loser.cid || winner.cid === loser.cid;
+            if (samePart) {
+                if ((loser.progressMs || 0) > (winner.progressMs || 0)) {
+                    winner.progressMs = loser.progressMs;
+                }
+                if (!winner.cid && loser.cid) { winner.cid = loser.cid; }
+                if (!winner.page && loser.page) { winner.page = loser.page; }
             }
-            if (!winner.cid && loser.cid) { winner.cid = loser.cid; }
-            if (!winner.page && loser.page) { winner.page = loser.page; }
             byBvid[k] = winner;
         }
         for (var b in byBvid) {

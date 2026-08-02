@@ -313,11 +313,13 @@ var API = (function () {
             }, onFail);
         },
 
-        /* bilibili's own history — what was watched on the phone and the web.
-         * Nothing this app plays reaches it, so it is genuinely "the other
-         * devices" and is shown as its own section. Entries that are not plain
-         * videos (bangumi, live, articles) carry no bvid and cannot be opened
-         * from here, so they are dropped. */
+        /* bilibili's own history: the phone, the web, and — since `report` —
+         * this television too. `app.js` folds it together with the local record
+         * into one list in time order. Entries that are not plain videos
+         * (bangumi, live, articles) carry no bvid and cannot be opened from
+         * here, so they are dropped; `rawCount` still counts them, which is how
+         * "24 entries, none of them openable" stays distinguishable from "the
+         * request failed". */
         history: function (onOk, onFail) {
             getJson(BASE + "/x/web-interface/history/cursor?ps=24", function (d) {
                 var all = d.list || [];
@@ -362,22 +364,26 @@ var API = (function () {
         },
 
         /* Tell bilibili where this television got to, so the phone shows it.
-         *
          * `progress` is seconds, or -1 for watched to the end — the same
-         * convention the history endpoint reports back. Failures are handed to
-         * the caller and go no further than the log: a history write that does
-         * not land is not something to interrupt a video for. */
-        /* The endpoint takes either kind of credential, and this device has a
-         * different one from a browser, so both are tried in order and the log
-         * records which carried it.
+         * convention the history endpoint reports back. Failures go no further
+         * than the caller's log: a history write that does not land is not
+         * something to interrupt a video for.
          *
-         * The web shape — aid/cid/progress/csrf — succeeds from a logged-in
-         * Chrome and comes back -400 请求错误 from the television, with or
-         * without a Referer. What the television cannot produce is a browser's
-         * Origin, and `setRequestHeader` cannot forge one. The TV login's
-         * access token goes in the body instead, signed with the same appkey
-         * the login itself used, and owes nothing to headers. */
+         * The endpoint takes either kind of credential and this device has a
+         * different one from a browser, so both are tried in order and the log
+         * records which carried it. The web shape — aid/cid/progress/csrf —
+         * succeeds from a logged-in Chrome and comes back -400 请求错误 from the
+         * television, with or without a Referer (Chrome without one still
+         * succeeds, so that is not the difference). What the television cannot
+         * produce is an Origin the site recognises, and `setRequestHeader`
+         * cannot forge one. The TV login's access token goes in the body
+         * instead, signed with the same appkey the login itself used, and owes
+         * nothing to headers. */
         report: function (aid, cid, progressSeconds, onOk, onFail) {
+            if (!aid || !cid) {
+                if (onFail) { onFail("缺 aid/cid"); }
+                return;
+            }
             var url = BASE + "/x/v2/history/report";
             var attempts = [];
             var key = Auth.accessKey();
@@ -393,8 +399,8 @@ var API = (function () {
                     aid: aid, cid: cid, progress: progressSeconds, csrf: csrf
                 } });
             }
-            if (!aid || !cid || !attempts.length) {
-                if (onFail) { onFail(attempts.length ? "缺 aid/cid" : "这个账号既没有 access_key 也没有 csrf"); }
+            if (!attempts.length) {
+                if (onFail) { onFail("这个账号既没有 access_key 也没有 csrf"); }
                 return;
             }
 
