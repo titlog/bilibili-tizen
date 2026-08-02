@@ -1863,6 +1863,9 @@
      * the player itself picked, so the badge cannot disagree with the picture. */
     function playDash(dash, qn) {
         playing.route = "dash";
+        /* The latest response in hand, as an invariant of this wrapper rather
+         * than a courtesy of decide() — the in-place replay reaches for it. */
+        playing.dashReady = dash;
         playing.quality = qn;
         setQualityBadge(QUALITY_NAMES[qn] || ("QN " + qn));
         Player.playDash(dash, playing.startMs || 0);
@@ -1901,6 +1904,14 @@
          * instead of after it. */
         Player.stop();
         playing.failed = false;
+
+        /* The fallback's own clock. The 到画面 line for this video has already
+         * been printed — off AVPlay's fake `playing` event, seconds before the
+         * failure — so without this the leg that actually delivers the picture
+         * leaves no timing at all. */
+        Player.startTiming();
+        playing.timed = false;
+        playing.timedLabel = "到画面(兜底)";
 
         var d = playing.detail, cid = playing.cid, session = playing;
 
@@ -2161,7 +2172,12 @@
              * with the same numbers, which reads like four starts. */
             if (playing && !playing.timed) {
                 playing.timed = true;
-                report("player", "到画面 " + Player.timings());
+                /* The fallback and the in-place restart re-arm this with their
+                 * own label and their own clock — the original line has already
+                 * been printed by then, off AVPlay's fake `playing` event, and
+                 * CLAUDE.md had to warn readers not to trust it. Now each leg
+                 * reports its own truth instead. */
+                report("player", (playing.timedLabel || "到画面") + " " + Player.timings());
             }
             loadMetaForPlaying();
             /* The duration is only real once there is a picture, and the marks
@@ -2234,7 +2250,52 @@
              * distance from startMs, never the clock. */
             var watchedMs = lastKnownPosition - (playing.startMs || 0);
             if (watchedMs > 3000) {
-                report("player", "播放中出错但已在播，保持不动：" + data);
+                /* This used to log 「保持不动」 and do exactly that — nothing.
+                 * The guard was written against stale errors restarting a
+                 * healthy video, but stale errors are already filtered by the
+                 * generation guards; every error that can still reach this
+                 * point is terminal. A media element with an error is dead
+                 * until something loads it again, and AVPlay after
+                 * PLAYER_ERROR is stopped. So 「保持不动」 preserved a corpse:
+                 * frozen picture, no toast, and `playing.failed` swallowing
+                 * every later error. The viewer's only exit was the return key
+                 * and nothing on screen said so.
+                 *
+                 * Now: one restart, in place, from where the viewer actually
+                 * is. DASH is preferred whatever route was playing — it is the
+                 * proven-robust path, and if progressive just died mid-play
+                 * there is no case for asking it again. A second terminal
+                 * error mid-play gives up audibly; a silent freeze is the one
+                 * outcome that is never acceptable. */
+                if (!playing.replayed) {
+                    playing.replayed = true;
+                    playing.failed = false;
+                    playing.startMs = lastKnownPosition;
+                    el("player-loading").className = "";
+                    Player.startTiming();
+                    playing.timed = false;
+                    playing.timedLabel = "到画面(重启)";
+                    if (playing.dashReady) {
+                        playing.downgraded = true;
+                        report("player", "播放中出错（" + data + "），从 " +
+                               fmt(lastKnownPosition) + " 用 DASH 原地重启");
+                        var rep2 = Player.pickDashVideo(playing.dashReady);
+                        playDash(playing.dashReady,
+                                 (rep2 && rep2.id) || playing.quality || 0);
+                    } else if (playing.urls && playing.urls.length) {
+                        report("player", "播放中出错（" + data + "），从 " +
+                               fmt(lastKnownPosition) + " 原地重启渐进式");
+                        Player.playProgressive(playing.urls[playing.urlIdx || 0],
+                                               lastKnownPosition);
+                    } else {
+                        toast("播放错误：" + data);
+                        stopPlayback();
+                    }
+                    return;
+                }
+                report("player", "原地重启后仍然出错，退出：" + data);
+                toast("播放错误：" + data);
+                stopPlayback();
                 return;
             }
             /* Only progressive has anywhere to downgrade *to*. Fired on a video

@@ -48,6 +48,7 @@ var Player = (function () {
      * the player's own statistics. */
     var lastStallAt = 0;
     var stallTimer = null;
+    var stallSilenced = false; /* capped out; owed a 恢复播放 line when it ends */
 
     /* One line describing the stall, from Shaka's own statistics. `已卡` is the
      * number to read first: it is cumulative, so if it has not moved since the
@@ -96,8 +97,13 @@ var Player = (function () {
         var left = 12;
         stallTimer = setInterval(function () {
             if (--left <= 0) {
-                stallLine("仍然卡住（不再复述）");
+                stallLine("仍然卡住（一分钟了，不再复述，恢复时会说一声）");
                 stopStallWatch(true);
+                /* After the quiet stop, which clears the flag: a capped-out
+                 * stall still owes the log its ending — without this, a stall
+                 * that outlives the cap and then recovers ends invisibly, the
+                 * exact silence this watch was built to remove. */
+                stallSilenced = true;
                 return;
             }
             stallLine("仍然卡住");
@@ -108,10 +114,18 @@ var Player = (function () {
      * 「恢复播放」 line for a video that is being thrown away is a lie in the one
      * place the log is read most carefully. */
     function stopStallWatch(quiet) {
-        if (!stallTimer) { return; }
-        clearInterval(stallTimer);
-        stallTimer = null;
-        if (!quiet) { stallLine("恢复播放"); }
+        var had = !!stallTimer;
+        if (stallTimer) { clearInterval(stallTimer); stallTimer = null; }
+        if (quiet) { stallSilenced = false; return; }
+        if (had || stallSilenced) {
+            /* Stamped so the flap the element often throws in the first second
+             * after recovery — waiting and canplay back to back as readyState
+             * settles — cannot reopen the watch and print a fake 卡住/恢复播放
+             * pair (seen at 23:16:18: two pairs in the same second). */
+            lastStallAt = new Date().getTime();
+            stallLine("恢复播放");
+        }
+        stallSilenced = false;
     }
 
     /* The playhead has been observed jumping backwards — 1021s to 14s once,
@@ -185,7 +199,20 @@ var Player = (function () {
          * the position it moved away from. */
         v.addEventListener("seeking", function () {
             if (mode !== "mse") { return; }
-            var byApp = new Date().getTime() - lastAppSeekAt < 1500;
+            /* Matched by time OR by target. Time alone mislabelled at least one
+             * seek: when the main thread is busy rebuffering, the gap between
+             * the keypress and the element's `seeking` event can exceed any
+             * reasonable window, and a remote-control seek gets logged as
+             * 「播放器自己」 — the one attribution this line exists to rule out.
+             * The 19:54 "player jumped back 31.4s on its own" sample had
+             * exactly the remote's step size; it was almost certainly this.
+             * Landing within 1.5s of the last target the remote asked for is
+             * the stronger signal, honoured for ten seconds. */
+            var now = new Date().getTime();
+            var sinceApp = now - lastAppSeekAt;
+            var byApp = sinceApp < 1500 ||
+                (sinceApp < 10000 &&
+                 Math.abs(v.currentTime * 1000 - lastAppSeekTo) < 1500);
             var extra = "";
             if (shakaPlayer) {
                 try {
@@ -305,6 +332,9 @@ var Player = (function () {
         lastDecodeFailAt = 0;
         lastDecodeHandled = false;
         criticalRetries = 0;
+        /* The "from" of the first 跳转 line belongs to this video, not the
+         * last one — stale, it reads as a cross-video jump that never happened. */
+        lastTickSec = 0;
         stopStallWatch(true);
     }
 
@@ -377,7 +407,15 @@ var Player = (function () {
 
         var player = new shaka.Player();
         player.attach(el("html5-video"));
-        player.configure(shakaConfig());
+        var cfg = shakaConfig();
+        player.configure(cfg);
+        /* Once per run, right after engine:/account:. A config experiment whose
+         * arms cannot be told apart in the log afterwards is unreadable — every
+         * session stamps which knobs it ran with, from the object actually
+         * handed to the player, so this line cannot drift from the truth. */
+        log("shaka 配置 bufferingGoal=" + cfg.streaming.bufferingGoal +
+            "s rebufferingGoal=" + cfg.streaming.rebufferingGoal +
+            "s bufferBehind=" + cfg.streaming.bufferBehind + "s");
 
         /* Registered once. They act on whatever is playing now, which is what
          * a long-lived player means — there is no generation to check because
@@ -487,21 +525,52 @@ var Player = (function () {
                  * declared unplayable when it is merely unlucky. */
                 retryParameters: { maxAttempts: 7, baseDelay: 600, backoffFactor: 1.6,
                                    fuzzFactor: 0.5, timeout: 20000 },
-                /* Both of these were set when a 1080p stream cost about two
-                 * megabits. On H.265 the same picture measures 606 kbps, so
-                 * thirty seconds of buffer is now a little over two megabytes —
-                 * and the two complaints this app has actually collected are
-                 * "it stalls when I skip ahead" and "it says there is nothing
-                 * cached when I go back". Both are buffer sizes, and at this
-                 * bitrate they cost 4.5 MB forward and 9 MB behind. A
-                 * television has that. */
-                bufferingGoal: 60,
+                /* EXPERIMENT 2026-08-02, single variable: 60 → 30.
+                 *
+                 * The hypothesis under test: our own read-ahead is what trips
+                 * the CDN's per-IP burst limiter, and the limiter is where the
+                 * evening's failures came from. The chain, each link measured:
+                 * every seek makes Shaka fill `bufferingGoal` worth of buffer
+                 * immediately — at this CDN's segment sizing that is a burst of
+                 * range requests on two streams at once; the probe run from the
+                 * dev machine found ~20 requests in a short window is enough to
+                 * start the cooldown, inside which connections are simply cut
+                 * (status 000 — the same empty-status shape as tonight's
+                 * `1002 data[1]={}` errors); and the viewer seeked a dozen times
+                 * tonight, re-arming it each time. Meanwhile the official web
+                 * player on the very same LAN never trips it — so the variable
+                 * is how much we ask for and how fast, not the route.
+                 *
+                 * 60 was itself a fix — "stalls when I skip ahead", "nothing
+                 * cached when I go back" — so this may regress that. bufferBehind
+                 * stays at 120: it retains, it does not fetch.
+                 *
+                 * Read the verdict from the collector, not from feel:
+                 *   fewer `1002 … data[1]={}` per hour of viewing  → keep 30
+                 *   1002s unchanged                                → hypothesis
+                 *     dead, revert to 60, look elsewhere
+                 *   skip-ahead stalls return without fewer 1002s   → revert */
+                bufferingGoal: 30,
                 /* One second, not two. This is how much has to be in hand
                  * before the picture is allowed to start, and it was measured
                  * costing two seconds of black screen after the load had
                  * already finished. */
                 rebufferingGoal: 1,
-                bufferBehind: 120
+                bufferBehind: 120,
+                /* How long Shaka benches a stream whose segment requests keep
+                 * failing, before poking it again. Measured with the default:
+                 * a 1080p tier whose deep ranges this edge has never cached got
+                 * poked every 60-90 seconds for eight minutes straight — seven
+                 * cut connections (1002, empty status), each one a request fed
+                 * to the per-IP limiter and an 800-char error line, while 720p
+                 * played on underneath. Cold ranges stay cold until someone
+                 * streams them; a minute-later retry buys nothing.
+                 *
+                 * Two minutes, not five: the bench is per-stream, not per-range,
+                 * so after a seek into warm territory a longer bench would hold
+                 * the picture at 720p even where 1080p serves fine. This knob
+                 * exists in the vendored build — verified by grep before use. */
+                maxDisabledTime: 120
             }
         };
     }
