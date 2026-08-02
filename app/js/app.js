@@ -15,12 +15,23 @@
 
     /* There is no console on a retail set and dlog is closed, so anything that
      * throws is posted to tools/collect.mjs instead. Silent when unset. */
+    /* The collector lives on whichever machine last ran deploy.sh, so in the
+     * living room it is usually not there at all. An unanswered POST holds its
+     * socket until the stack gives up, and this fires every thirty seconds
+     * while a video plays — so it gets a short timeout and gives up entirely
+     * after a few refusals. A television in normal use should not spend its
+     * evening dialling a laptop that went to the office. */
+    var reportMisses = 0;
+
     function report(kind, detail) {
-        if (!REPORT_TO) { return; }
+        if (!REPORT_TO || reportMisses >= 5) { return; }
         try {
             var xhr = new XMLHttpRequest();
             xhr.open("POST", REPORT_TO, true);
             xhr.setRequestHeader("Content-Type", "text/plain");
+            xhr.timeout = 3000;
+            xhr.onload = function () { reportMisses = 0; };
+            xhr.onerror = xhr.ontimeout = function () { reportMisses++; };
             xhr.send(JSON.stringify({ event: "log", detail: { msg: kind + ": " + detail } }));
         } catch (e) {}
     }
@@ -271,7 +282,16 @@
      */
     function mergeHistory(local, server) {
         var byBvid = {}, out = [];
-        var all = local.concat(server);
+        var all = [];
+        /* Copies, because the merge writes to the cards it keeps and both
+         * inputs outlive it — the server's list is cached for a minute and
+         * handed to this twice, once for the home strip and once for 我的. */
+        for (var c0 = 0; c0 < local.length + server.length; c0++) {
+            var from = c0 < local.length ? local[c0] : server[c0 - local.length];
+            var copy = {};
+            for (var f in from) { if (from.hasOwnProperty(f)) { copy[f] = from[f]; } }
+            all.push(copy);
+        }
         for (var i = 0; i < all.length; i++) {
             var card = all[i], k = card.bvid;
             var held = byBvid[k];

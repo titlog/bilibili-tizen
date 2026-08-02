@@ -123,6 +123,17 @@ var SelfTest = (function () {
             var f = document.querySelector("#screen .card.focused");
             return f ? null : "没有卡片处于选中状态";
         }],
+        /* Absent is allowed — nothing half-watched is a real state. Present and
+         * empty is not: that is the strip having been built from a list that
+         * arrived wrong, which looks from the sofa like a heading with a hole
+         * under it. */
+        ["首页的继续观看那一行", 200, function () {
+            var row = document.getElementById("resume-row");
+            if (!row) { post("首页没有续播行（可能确实没有没看完的）"); return null; }
+            var n = row.querySelectorAll(".card").length;
+            post("续播行 " + n + " 张");
+            return n ? null : "续播行在，但一张卡都没有";
+        }],
         ["探测流地址", 200, function () { probeStream(); probeZones(); return null; }],
         ["等待探测结果", 4000, function () { return null; }],
         ["四个分区都有内容", 100, zoneVerdict],

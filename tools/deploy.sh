@@ -92,6 +92,17 @@ WGT=$(ls -1 ./*.wgt 2>/dev/null | head -1)
 [ -n "$WGT" ] || { echo "packaging produced no wgt"; exit 1; }
 echo "  built $WGT"
 
+# The flag is now inside the package, so put the source back before anything can
+# commit it. It escaped once: `var SELFTEST = true;` reached master and, worse,
+# the television kept a build that walked the whole flow — playing videos and
+# pressing its own buttons — every single time it was opened.
+python3 - <<PY
+import os, re
+p = os.path.join("$APP", "js", "config.js")
+src = open(p).read()
+open(p, "w").write(re.sub(r'var SELFTEST = [a-z]+;', 'var SELFTEST = false;', src))
+PY
+
 # The set only accepts sdb from the address registered in Developer Mode. When
 # DHCP moves this machine, the failure is a silent timeout, so say plainly what
 # happened rather than leaving it to be rediscovered.
@@ -125,3 +136,12 @@ tizen install -n "$(basename "$WGT")" -t "$TARGET" 2>&1 \
 echo "== launching =="
 tizen run -p "$APP_ID" -t "$TARGET" 2>&1 | grep -E "successfully|failed" || true
 echo "== done =="
+
+# Said last, where it cannot be scrolled past. A selftest build is not something
+# to leave on a television somebody is about to use: it starts playing by itself
+# and works the remote for a minute every time the app opens.
+if [ "$SELFTEST" = "true" ]; then
+  echo
+  echo "!! 电视上现在装的是自测构建：每次打开都会自己跑一遍整套流程。"
+  echo "!! 看电视之前先装回正常构建： zsh tools/deploy.sh"
+fi
