@@ -61,6 +61,44 @@ var API = (function () {
         xhr.send();
     }
 
+    /* The one write this app makes. Everything else here reads.
+     *
+     * bilibili's history endpoint wants the CSRF token that came with the
+     * session. The TV login hands it over in the response body, so accounts
+     * added that way can report; the web fallback leaves it in a cookie jar
+     * this engine will not read back, so those accounts silently cannot. That
+     * is why `Auth.csrf()` is checked by the caller rather than here — a write
+     * that cannot be signed is not an error worth surfacing on a television. */
+    function postForm(url, fields, onOk, onFail) {
+        var xhr = new XMLHttpRequest();
+        var settled = false;
+        function fail(why) { if (!settled) { settled = true; if (onFail) { onFail(why); } } }
+        function ok(j) { if (!settled) { settled = true; if (onOk) { onOk(j); } } }
+
+        var body = [];
+        for (var k in fields) {
+            if (!fields.hasOwnProperty(k)) { continue; }
+            body.push(encodeURIComponent(k) + "=" + encodeURIComponent(fields[k]));
+        }
+
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+        applySession(xhr);
+        xhr.timeout = 20000;
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState !== 4) { return; }
+            if (xhr.status !== 200) { fail("HTTP " + xhr.status); return; }
+            var j;
+            try { j = JSON.parse(xhr.responseText); }
+            catch (e) { fail("bad JSON"); return; }
+            if (j.code !== 0) { fail(j.message || ("code " + j.code)); return; }
+            ok(j);
+        };
+        xhr.ontimeout = function () { fail("timeout"); };
+        xhr.onerror = function () { fail("network error"); };
+        xhr.send(body.join("&"));
+    }
+
     /* Thumbnails come back as http:// or protocol-relative, and some are huge.
      * bilibili's image service resizes on demand via the @wxh suffix. */
     function thumb(url, w, h) {
@@ -277,6 +315,10 @@ var API = (function () {
                     else if (secs > 0 && pos > 0) { seen = Math.min(1, pos / secs); }
                     out.push({
                         bvid: x.history.bvid,
+                        /* `oid` is the aid for archive entries, and the report
+                         * endpoint wants an aid — so a video opened from here
+                         * can be reported without a view() round trip first. */
+                        aid: x.history.oid || 0,
                         title: x.title,
                         pic: thumb(x.cover || x.pic),
                         author: x.author_name || "",
@@ -288,11 +330,32 @@ var API = (function () {
                         /* Enough to carry on from the phone: which part, and
                          * how far in. -1 means finished, so start it over. */
                         cid: x.history.cid || null,
-                        progressMs: (pos > 0) ? pos * 1000 : 0
+                        progressMs: (pos > 0) ? pos * 1000 : 0,
+                        /* When, so this can be merged with the local list into
+                         * one run of cards in time order rather than sitting in
+                         * a section of its own. */
+                        at: (x.view_at || 0) * 1000
                     });
                 }
                 onOk(out, all.length);
             }, onFail);
+        },
+
+        /* Tell bilibili where this television got to, so the phone shows it.
+         *
+         * `progress` is seconds, or -1 for watched to the end — the same
+         * convention the history endpoint reports back. Failures are handed to
+         * the caller and go no further than the log: a history write that does
+         * not land is not something to interrupt a video for. */
+        report: function (aid, cid, progressSeconds, onOk, onFail) {
+            var csrf = Auth.csrf();
+            if (!aid || !cid || !csrf) {
+                if (onFail) { onFail(csrf ? "缺 aid/cid" : "这个账号没有 csrf"); }
+                return;
+            }
+            postForm(BASE + "/x/v2/history/report", {
+                aid: aid, cid: cid, progress: progressSeconds, csrf: csrf
+            }, onOk, onFail);
         },
 
         view: function (bvid, onOk, onFail) {

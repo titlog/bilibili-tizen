@@ -1,8 +1,11 @@
 /* Where each video was left off.
  *
- * Kept locally rather than pushed to bilibili's history endpoint: that one wants
- * a CSRF token from the session, and the web login path never exposes one.
- * Local is also what makes the progress bars on cards instant.
+ * Kept locally *as well as* pushed to bilibili's history — see `API.report`.
+ * The local copy is not redundant: it is instant, which is what makes the
+ * progress slivers appear with the cards rather than a request later; it knows
+ * about the last thirty seconds, which the report interval does not; it works
+ * for accounts added through the web fallback, which have no CSRF token to
+ * write with; and it survives a failed request.
  *
  * The television is shared, so this is stored per account — nobody wants their
  * half-watched videos showing up under somebody else's name, and a resume point
@@ -141,10 +144,17 @@ var Resume = (function () {
             return best;
         },
 
-        /* Most-recent-first, for the 我的 screen. bilibili's own history endpoint
-         * needs a CSRF token from the session, and this login path never exposes
-         * one, so nothing this app plays ever reaches the server-side history.
-         * Keeping it locally is the only version that actually works. */
+        /* Most-recent-first, for the 我的 screen.
+         *
+         * The server-side history is now written too — accounts added through
+         * the TV login carry the CSRF token that needs — but this list stays,
+         * and stays first: it is instant, it survives a failed request, and it
+         * knows about the last thirty seconds, which the server does not.
+         *
+         * Each card is copied and stamped with `at`. Copied because the caller
+         * merges these with the server's cards and writes to the winner, and
+         * the originals here are what gets persisted; stamped because a merged
+         * list has to sort by time and a card alone carries none. */
         recent: function (limit) {
             var m = load(), seen = {}, out = [];
             var keys = [];
@@ -155,7 +165,12 @@ var Resume = (function () {
                 if (!e.card) { continue; }
                 if (seen[e.card.bvid]) { continue; }
                 seen[e.card.bvid] = 1;
-                out.push(e.card);
+                var copy = {};
+                for (var f in e.card) {
+                    if (e.card.hasOwnProperty(f)) { copy[f] = e.card[f]; }
+                }
+                copy.at = e.at || 0;
+                out.push(copy);
             }
             return out;
         },

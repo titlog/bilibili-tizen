@@ -219,6 +219,56 @@
         }
     }
 
+    /* The two histories, folded into one run of cards in time order.
+     *
+     * They were two sections for a while, on the theory that "watched here" and
+     * "watched on the phone" are different things. From the sofa they are not:
+     * it is one viewer, one account, and the question is always what was on
+     * last. Two lists meant comparing timestamps by eye across a screen break —
+     * and now that this television reports what it plays, the same video shows
+     * up in both, so keeping them apart would show it twice.
+     *
+     * One card per video, keyed on bvid. The two sides know different things,
+     * so the loser is not discarded outright: the server carries the resume
+     * point from the phone, the local record carries the last thirty seconds
+     * watched here, and dropping either one breaks carrying on where you were.
+     */
+    function mergeHistory(local, server) {
+        var byBvid = {}, out = [];
+        var all = local.concat(server);
+        for (var i = 0; i < all.length; i++) {
+            var card = all[i], k = card.bvid;
+            var held = byBvid[k];
+            if (!held) { byBvid[k] = card; continue; }
+
+            var winner = (card.at || 0) > (held.at || 0) ? card : held;
+            var loser = (winner === card) ? held : card;
+
+            /* A resume point only ever comes from the server, so it has to
+             * survive the local card winning on recency — that pair is what
+             * makes a video open where the phone left it. */
+            if ((loser.progressMs || 0) > (winner.progressMs || 0)) {
+                winner.progressMs = loser.progressMs;
+                if (loser.cid) { winner.cid = loser.cid; }
+            }
+            if (!winner.cid && loser.cid) { winner.cid = loser.cid; }
+            if (!winner.page && loser.page) { winner.page = loser.page; }
+            byBvid[k] = winner;
+        }
+        for (var b in byBvid) {
+            if (!byBvid.hasOwnProperty(b)) { continue; }
+            var c = byBvid[b];
+            /* The sliver: the server's figure and this set's own record disagree
+             * for the length of one report interval, and the further of the two
+             * is the honest one. */
+            c.seen = Math.max((typeof c.seen === "number") ? c.seen : 0,
+                              Resume.fraction(c.bvid));
+            out.push(c);
+        }
+        out.sort(function (a, b2) { return (b2.at || 0) - (a.at || 0); });
+        return out;
+    }
+
     /* Feeds are cached so that coming back from a video lands where the user
      * left off instead of refetching and dumping focus on the first card. */
     var feedCache = {};
@@ -727,28 +777,19 @@
                 '<div class="btn focusable" id="btn-switch">切换账号</div>' +
                 '<div class="btn ghost focusable" id="btn-logout">退出登录</div>' +
                 '</div></div></div>';
-            /* Two lists, because they are two different things and one of them
-             * used to silently destroy the other. Nothing this app plays reaches
-             * bilibili's own history — that needs a write we do not make — so
-             * painting the server's list into the same container meant every
-             * video watched on this television vanished the moment the server
-             * answered.
-             *
-             * The phone's list goes first. It went second once, under as many as
-             * 24 local cards — six rows down, past the bottom of the screen — and
-             * was reported as "my phone's history is not syncing" while the log
-             * showed all 24 entries arriving correctly. Searching happens on the
-             * phone and watching happens here, so that list is what this screen
-             * is opened for; the local one is the reference copy. */
-            html += '<div id="server-hist"></div>' +
-                    '<div class="section">在这台电视上看过</div><div id="hist"></div></div>';
+            /* One list. The local record is painted straight away because it
+             * costs nothing and the screen should not open empty; the server's
+             * arrives a moment later and the two are merged in place. */
+            html += '<div class="section">观看历史</div><div id="hist"></div>' +
+                    '<div id="hist-note"></div></div>';
             screenEl.innerHTML = html;
 
-            var mine = Resume.recent(24);
+            var mine = Resume.recent(40);
+            var shown = mergeHistory(mine, []);
             var h0 = el("hist");
             if (h0) {
-                if (mine.length) { paintCards(h0, mine); }
-                else { h0.innerHTML = '<div class="empty">这台电视上还没有看过什么</div>'; }
+                if (shown.length) { paintCards(h0, shown); }
+                else { h0.innerHTML = '<div class="empty">读取中…</div>'; }
             }
 
             el("btn-switch").onselect = function () { renderAccounts(false); };
@@ -781,20 +822,9 @@
             };
             Nav.reset("#btn-switch");
 
-            /* The heading goes up straight away, with a state under it. It used
-             * to render nothing at all until the answer arrived and nothing
-             * ever if the list came back empty — which is indistinguishable
-             * from "this app does not show my phone's history", and that is
-             * exactly how it was read. */
             if (me.isLogin) {
-                var sh = el("server-hist");
-                if (sh) {
-                    sh.innerHTML =
-                        '<div class="section">接着手机上看（手机 / 网页端的记录）</div>' +
-                        '<div id="server-grid"><div class="empty">读取中…</div></div>';
-                }
                 API.history(function (items, rawCount) {
-                    var h = el("server-grid");
+                    var h = el("hist");
                     if (!h || !stillViewing(token)) { return; }
                     /* The newest title goes in the line too. A count alone says
                      * the request worked, not that the answer is current — and
@@ -803,18 +833,46 @@
                      * One title answers it; the rest is noise. */
                     report("history", "服务端历史 " + rawCount + " 条，可打开的 " + items.length +
                         " 条" + (items.length ? "，最新一条：" + items[0].title.slice(0, 24) : ""));
-                    if (!items.length) {
+
+                    /* Repainting moves the ground under whoever is already
+                     * looking. The card under the ring is found again by bvid,
+                     * because its position in the list is exactly what the merge
+                     * just changed. */
+                    var cur = Nav.current();
+                    var keep = "";
+                    if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null) {
+                        var was = shown[Number(cur.getAttribute("data-i"))];
+                        keep = was ? was.bvid : "";
+                    }
+
+                    shown = mergeHistory(mine, items);
+                    if (!shown.length) {
                         h.innerHTML = '<div class="empty">' + (rawCount
-                            ? "这 " + rawCount + " 条都不是普通视频（番剧/直播/专栏），这里打不开"
-                            : "bilibili 账号上还没有观看记录") + '</div>';
+                            ? "bilibili 上这 " + rawCount + " 条都不是普通视频（番剧/直播/专栏），这里打不开"
+                            : "还没有看过什么") + '</div>';
                         return;
                     }
-                    paintCards(h, items);
+                    paintCards(h, shown);
+                    if (keep) {
+                        for (var ki = 0; ki < shown.length; ki++) {
+                            if (shown[ki].bvid !== keep) { continue; }
+                            Nav.focus(h.querySelectorAll(".card")[ki]);
+                            break;
+                        }
+                    }
                 }, function (why) {
-                    var h = el("server-grid");
-                    if (h && stillViewing(token)) {
-                        report("history", "服务端历史读取失败：" + why);
-                        h.innerHTML = '<div class="empty">读取失败：' + esc(why) + '</div>';
+                    if (!stillViewing(token)) { return; }
+                    report("history", "服务端历史读取失败：" + why);
+                    var h2 = el("hist");
+                    var note = el("hist-note");
+                    /* The local list stands on its own, so a failed request is a
+                     * footnote rather than an error screen — unless there is no
+                     * local list, in which case it is the whole story. */
+                    if (!mine.length && h2) {
+                        h2.innerHTML = '<div class="empty">读取失败：' + esc(why) + '</div>';
+                    } else if (note) {
+                        note.innerHTML = '<div class="empty">手机 / 网页端的记录没读到（' +
+                                         esc(why) + '），下面只是这台电视上的</div>';
                     }
                 });
             }
@@ -908,22 +966,30 @@
      * an uploader reorganised the parts should not send playback somewhere the
      * video no longer has. */
     function resumeCid(detail) {
-        /* A handoff from bilibili's history names the part the phone was on,
-         * and that beats anything this television remembers. */
+        var last = Resume.lastPart(detail.bvid);
+
+        /* A handoff from bilibili's history names the part that account was
+         * last on, and that beats anything this television remembers.
+         *
+         * It only gets to say "手机上" when the two disagree. This set reports
+         * what it plays now, so the server's answer is usually this set's own
+         * last part coming back around — announcing that as the phone's would
+         * be telling the viewer something false about their own evening. */
         if (handoff && handoff.bvid === detail.bvid && handoff.cid) {
+            var elsewhere = !last || last.cid !== handoff.cid;
             var pages0 = detail.pages || [];
             if (!pages0.length) { return handoff.cid; }
             for (var k = 0; k < pages0.length; k++) {
                 if (pages0[k].cid === handoff.cid) {
                     if (pages0[k].page > 1) {
-                        toast("手机上看到 P" + pages0[k].page + "：" + (pages0[k].part || ""));
+                        toast((elsewhere ? "手机上看到 P" : "从 P") + pages0[k].page +
+                              "：" + (pages0[k].part || ""));
                     }
                     return handoff.cid;
                 }
             }
         }
 
-        var last = Resume.lastPart(detail.bvid);
         if (!last || !last.cid || last.cid === detail.cid) { return detail.cid; }
 
         var pages = detail.pages || [];
@@ -963,7 +1029,7 @@
          * the video, since only the panel wants them. */
         if (v.cid) {
             var provisional = {
-                bvid: v.bvid, cid: v.cid, title: v.title, pic: v.pic,
+                bvid: v.bvid, aid: v.aid, cid: v.cid, title: v.title, pic: v.pic,
                 author: v.author, duration: v.duration, play: v.play,
                 desc: "", pages: []
             };
@@ -1562,9 +1628,64 @@
         } catch (e) {}
     }
 
+    /* What this television plays, sent back to bilibili.
+     *
+     * The handoff was one-way for a while — the phone is where things get
+     * searched for, so that is the direction that mattered — but half of it was
+     * missing in a way that showed: a video finished here still sat in the
+     * phone's list at the two minute mark, and the merged history put it in the
+     * wrong place in time.
+     *
+     * bilibili's own web player heartbeats every 15 seconds; this reports every
+     * 30, plus once when playback stops and once when a video ends. Half the
+     * official rate on purpose — this is somebody's real account, and all a
+     * faster clock buys is a history that is fresh to fifteen seconds instead
+     * of thirty. */
+    var lastReport = { key: "", secs: -2, at: 0 };
+    var csrfNoted = false;
+
+    function reportProgress(secs, force) {
+        if (!playing || !Auth.isLoggedIn()) { return; }
+        if (!Auth.csrf()) {
+            /* Accounts restored through the web fallback have no readable CSRF
+             * token, so they cannot write. Said once, because otherwise it is
+             * invisible: the television would simply never appear in the
+             * phone's history and nothing would explain why. */
+            if (!csrfNoted) {
+                csrfNoted = true;
+                report("history", "这个账号没有 csrf（网页扫码进来的），电视上的进度不会同步回 bilibili");
+            }
+            return;
+        }
+        /* Opened and abandoned is not watching. -1 means finished and always
+         * goes. */
+        if (secs >= 0 && secs < 5) { return; }
+
+        var d = playing.detail;
+        /* Cards from the feeds carry an aid; the ones that do not are playing
+         * from a provisional detail while view() is still in flight. Returning
+         * without stamping `lastReport` is the point — otherwise the throttle
+         * would start counting from a report that never went out. */
+        if (!d.aid) { return; }
+
+        var key = d.bvid + ":" + playing.cid;
+        var now = new Date().getTime();
+        if (key === lastReport.key) {
+            if (secs === lastReport.secs) { return; }            /* paused */
+            if (!force && now - lastReport.at < 30000) { return; }
+        }
+        lastReport = { key: key, secs: secs, at: now };
+        API.report(d.aid, playing.cid, secs, null, function (why) {
+            report("history", "上报失败 " + d.bvid + " " + secs + "s：" + why);
+        });
+    }
+
     function stopPlayback() {
         el("player-loading").className = "hidden";
         var was = playing;
+        /* Before `playing` is cleared: this is the position the viewer actually
+         * stopped at, and the one the phone should show. */
+        reportProgress(Math.floor(lastKnownPosition / 1000), true);
         Resume.flush();
         cancelScrub();
         closeOptions();
@@ -1597,12 +1718,13 @@
                     }
                 }
                 Resume.record(d0.bvid, playing.cid, data.position, data.duration, {
-                    bvid: d0.bvid, title: d0.title, pic: d0.pic,
+                    bvid: d0.bvid, aid: d0.aid, title: d0.title, pic: d0.pic,
                     author: d0.author, duration: d0.duration, play: d0.play,
                     cid: playing.cid, page: pg, part: ptitle
                 });
             }
             lastKnownPosition = data.position;
+            reportProgress(Math.floor(data.position / 1000), false);
             /* While scrubbing the bar belongs to the scrub head, not the clock. */
             if (scrub) { return; }
             el("player-pos").textContent = fmt(data.position);
@@ -1631,7 +1753,10 @@
         } else if (kind === "buffering") {
             el("player-hint").textContent = data ? "缓冲中…" : HINT;
         } else if (kind === "ended") {
-            if (playing) { Resume.finished(playing.detail.bvid, playing.cid); }
+            if (playing) {
+                Resume.finished(playing.detail.bvid, playing.cid);
+                reportProgress(-1, true);   /* -1 is bilibili's "watched to the end" */
+            }
             beginAutoNext();
         } else if (kind === "log") {
             report("player", data);
