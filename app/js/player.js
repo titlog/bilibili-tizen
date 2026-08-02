@@ -47,6 +47,72 @@ var Player = (function () {
      * least likely to leave a trace, so it still gets a line — now taken from
      * the player's own statistics. */
     var lastStallAt = 0;
+    var stallTimer = null;
+
+    /* One line describing the stall, from Shaka's own statistics. `已卡` is the
+     * number to read first: it is cumulative, so if it has not moved since the
+     * previous line then whatever happened was not a stall at all — a seek
+     * raises `waiting` exactly as a stall does. */
+    function stallLine(tag) {
+        if (!shakaPlayer) { return; }
+        var v = el("html5-video");
+        try {
+            var st = shakaPlayer.getStats() || {};
+            var ahead = 0;
+            if (v.buffered && v.buffered.length) {
+                for (var b = 0; b < v.buffered.length; b++) {
+                    if (v.currentTime >= v.buffered.start(b) - 0.5 &&
+                        v.currentTime <= v.buffered.end(b)) {
+                        ahead = v.buffered.end(b) - v.currentTime;
+                    }
+                }
+            }
+            log(tag + " t=" + (v.currentTime || 0).toFixed(1) + "s" +
+                " ahead=" + ahead.toFixed(1) + "s" +
+                " seeking=" + v.seeking +
+                " readyState=" + v.readyState +
+                " 估算带宽=" + Math.round((st.estimatedBandwidth || 0) / 1000) + "kbps" +
+                " 当前画质=" + (st.width || "?") + "x" + (st.height || "?") +
+                " 已卡=" + (st.bufferingTime || 0).toFixed(1) + "s" +
+                " 丢帧=" + (st.droppedFrames || 0));
+        } catch (e) {}
+    }
+
+    /* `waiting` fires once when the picture stops and does not fire again while
+     * nothing arrives — so the worse the stall, the quieter the log. A
+     * twenty-nine second freeze left exactly one line, printed at the instant it
+     * began, when there was nothing yet to say; the numbers that would have
+     * explained it (bandwidth collapsing, the tier being dropped, `已卡`
+     * climbing) all happened afterwards, in silence. Restated on a timer until
+     * the picture returns. */
+    function startStallWatch() {
+        if (stallTimer) { return; }
+        stallLine("卡住");
+        /* Capped. Nothing here is guaranteed to end: a viewer who gives up and
+         * hits pause during a stall gets no `playing` and no `canplay`, so the
+         * timer would restate the same frozen numbers every five seconds until
+         * the television was switched off — and every line is an XHR to the
+         * collector. A minute of it says everything a longer stall would. */
+        var left = 12;
+        stallTimer = setInterval(function () {
+            if (--left <= 0) {
+                stallLine("仍然卡住（不再复述）");
+                stopStallWatch(true);
+                return;
+            }
+            stallLine("仍然卡住");
+        }, 5000);
+    }
+
+    /* `quiet` for teardown: reset() stops the watch on its way out, and a
+     * 「恢复播放」 line for a video that is being thrown away is a lie in the one
+     * place the log is read most carefully. */
+    function stopStallWatch(quiet) {
+        if (!stallTimer) { return; }
+        clearInterval(stallTimer);
+        stallTimer = null;
+        if (!quiet) { stallLine("恢复播放"); }
+    }
 
     /* The playhead has been observed jumping backwards — 1021s to 14s once,
      * 383s to 358s later — with nobody touching the remote, and the jump is
@@ -102,6 +168,16 @@ var Player = (function () {
             /* Kept separate from `lastTime`, which seekBy/seekTo also write —
              * this one has to survive as the position *before* a seek. */
             lastTickSec = v.currentTime;
+
+            /* The retry ladder is spent per video and never refilled, so one bad
+             * patch two minutes in left the remaining twenty-eight with no way
+             * out of the next one. This only fires on real progress —
+             * `timeupdate` does not tick while the picture is frozen — so a
+             * minute of actual playback is what buys the budget back. */
+            if (decodeRecoveries && lastDecodeFailAt &&
+                    new Date().getTime() - lastDecodeFailAt > 60000) {
+                decodeRecoveries = 0;
+            }
             emit("time", { position: lastTime, duration: duration });
         });
 
@@ -123,45 +199,27 @@ var Player = (function () {
                 extra + " 时长=" + (v.duration || 0).toFixed(1) + "s");
         });
         v.addEventListener("playing", function () {
-            if (mode === "mse") { mark("playing"); emit("playing", { duration: duration }); }
+            if (mode !== "mse") { return; }
+            stopStallWatch();
+            mark("playing");
+            emit("playing", { duration: duration });
         });
         v.addEventListener("waiting", function () {
             if (mode !== "mse") { return; }
             emit("buffering", true);
 
-            /* A stall still gets described, but from the player's own stats
-             * rather than from a byte pump we no longer own. Rate-limited: a
-             * stall flaps, and one line per flap buries the run it belongs to. */
+            /* Throttled only on the way in: a stall flaps, and one opening line
+             * per flap buries the run it belongs to. Once the watch is running
+             * the timer sets the cadence. */
             var now = new Date().getTime();
-            if (!shakaPlayer || now - lastStallAt < 5000) { return; }
+            if (stallTimer || now - lastStallAt < 5000) { return; }
             lastStallAt = now;
-            try {
-                var st = shakaPlayer.getStats() || {};
-                var ahead = 0;
-                if (v.buffered && v.buffered.length) {
-                    for (var b = 0; b < v.buffered.length; b++) {
-                        if (v.currentTime >= v.buffered.start(b) - 0.5 &&
-                            v.currentTime <= v.buffered.end(b)) {
-                            ahead = v.buffered.end(b) - v.currentTime;
-                        }
-                    }
-                }
-                log("卡住 t=" + (v.currentTime || 0).toFixed(1) + "s" +
-                    " ahead=" + ahead.toFixed(1) + "s" +
-                    /* `waiting` fires for a seek as readily as for a stall, and
-                     * without this every seek was filed as 卡住 — which is how
-                     * a playhead jumping backwards stayed invisible for a whole
-                     * session behind a line that said "stalling". */
-                    " seeking=" + v.seeking +
-                    " readyState=" + v.readyState +
-                    " 估算带宽=" + Math.round((st.estimatedBandwidth || 0) / 1000) + "kbps" +
-                    " 当前画质=" + (st.width || "?") + "x" + (st.height || "?") +
-                    " 已卡=" + (st.bufferingTime || 0).toFixed(1) + "s" +
-                    " 丢帧=" + (st.droppedFrames || 0));
-            } catch (e) {}
+            startStallWatch();
         });
         v.addEventListener("canplay", function () {
-            if (mode === "mse") { emit("buffering", false); }
+            if (mode !== "mse") { return; }
+            emit("buffering", false);
+            stopStallWatch();
         });
         v.addEventListener("ended", function () {
             if (mode === "mse") { emit("ended"); }
@@ -173,7 +231,7 @@ var Player = (function () {
              * from the element instead of from Shaka. Whichever arrives first
              * gets one shot at H.264; `lastDash.retried` stops the other from
              * taking a second. */
-            if (code === 3 && retryOnAvc1("video element error 3")) { return; }
+            if (code === 3 && recoverFromDecodeFailure("video element error 3")) { return; }
             emit("error", "video element error " + (code || "?"));
         });
     }
@@ -240,8 +298,14 @@ var Player = (function () {
         duration = 0;
         lastTime = 0;
         /* Belongs to the video being torn down. Left behind, a decode failure on
-         * the next one would replay the previous one's manifest. */
+         * the next one would replay the previous one's manifest, and the retry
+         * budget would already be spent before it started. */
         lastDash = null;
+        decodeRecoveries = 0;
+        lastDecodeFailAt = 0;
+        lastDecodeHandled = false;
+        criticalRetries = 0;
+        stopStallWatch(true);
     }
 
     /* ---------------- AVPlay ---------------- */
@@ -325,12 +389,51 @@ var Player = (function () {
              * refused for the same reason the moment they arrive; the answer to
              * a codec this set claimed and then could not decode is H.264. */
             if (err && err.category === 3 && err.severity === 2 &&
-                    retryOnAvc1(describeShakaError(err))) {
+                    recoverFromDecodeFailure(describeShakaError(err))) {
                 return;
             }
-            if (err && (err.category === 1 || err.category === 3)) {
+            /* Only what Shaka itself calls recoverable gets retried in silence.
+             * severity 2 is CRITICAL — the player has given up — and sending
+             * that through retryStreaming() meant a failure it had already
+             * abandoned was answered with a line reading 「可恢复错误…重试取流」
+             * and then nothing at all: no toast, no way back, a black screen
+             * whose last log line claimed a retry was under way. `emit("error")`
+             * was unreachable for categories 1 and 3, so a network or media
+             * failure could never reach the viewer by any path.
+             *
+             * Not what bit tonight — every 1002 measured came in at severity 1
+             * and did recover, by dropping a tier — but a fault with no way to
+             * announce itself is the shape of every expensive bug in this
+             * codebase. */
+            if (err && err.severity !== 2 &&
+                    (err.category === 1 || err.category === 3)) {
                 log("shaka 可恢复错误 " + describeShakaError(err) + "，重试取流");
                 try { player.retryStreaming(); } catch (e2) {}
+                return;
+            }
+
+            /* CRITICAL, but not fatal on the first showing. Every stall measured
+             * on this link came back on its own — the CDN cuts a connection, the
+             * player retries, the tier drops, the picture returns half a minute
+             * later. Bailing out on the first critical error would have thrown
+             * the viewer back to the grid in the middle of exactly that, which
+             * is worse than the wait it replaces.
+             *
+             * So: one silent retry, then speak. What must not happen is the
+             * old shape, where category 1 and 3 were retried in silence forever
+             * and `emit("error")` below was unreachable code — no toast, no way
+             * back, a black screen whose last log line claimed a retry was under
+             * way. Once is patience; twice is a fault, and a fault the viewer is
+             * never told about is the most expensive kind in this codebase. */
+            if (err && err.severity === 2 &&
+                    (err.category === 1 || err.category === 3)) {
+                criticalRetries++;
+                if (criticalRetries <= 1) {
+                    log("shaka 严重错误 " + describeShakaError(err) + "，先试一次重取");
+                    try { player.retryStreaming(); } catch (e2) {}
+                    return;
+                }
+                emit("error", "shaka 严重错误反复出现 " + describeShakaError(err));
                 return;
             }
             emit("error", "shaka error " + describeShakaError(err));
@@ -413,18 +516,68 @@ var Player = (function () {
      *   CHUNK_DEMUXER_ERROR_APPEND_FAILED: Failed to prepare video sample for decode
      * followed by media element error 3 — several seconds in, long after load
      * had resolved. `isTypeSupported` said yes to that stream. */
-    var lastDash = null;      /* {dash, startMs, family, retried} */
+    var lastDash = null;      /* {dash, startMs, family} */
+    var decodeRecoveries = 0; /* per video; reset() clears it */
+    var lastDecodeFailAt = 0;
+    var lastDecodeHandled = false;
+    var criticalRetries = 0;  /* per video; reset() clears it */
 
-    function retryOnAvc1(why) {
-        if (!lastDash || lastDash.family === "avc1" || lastDash.retried) { return false; }
-        lastDash.retried = true;
+    /* Reload the same codec *first*, and only change family if that did not
+     * settle it.
+     *
+     * The first version of this went straight to H.264, on the reasoning that a
+     * codec probe had lied. The device said otherwise: every decode failure
+     * measured arrived a second or two after a segment request had failed at the
+     * transport level — Shaka 1002 with an empty `data[1]`, no status code at
+     * all, which is this CDN cutting the connection when it decides the client
+     * is asking for too much. That leaves a hole in the buffer and the demuxer
+     * refuses the next sample. What repairs it is *reloading*; the codec switch
+     * was riding along, taking the credit.
+     *
+     * And it was not free. H.264 carries the same picture at 1771 kbps where
+     * H.265 needs 502, so the "fix" tripled the bytes on a link that was being
+     * throttled precisely for asking too much — then lasted 25 seconds where
+     * H.265 had managed 32. Bytes are the one thing this set cannot spare. */
+    function recoverFromDecodeFailure(why) {
+        if (!lastDash) { return false; }
+
+        /* One failure, announced twice. The media element raises `error 3` and
+         * Shaka raises CHUNK_DEMUXER_ERROR_APPEND_FAILED for the same refused
+         * sample, milliseconds apart. Counted as two, they burned both rungs of
+         * the ladder inside a single second: the same-family reload was
+         * declared "没解决" before it had issued one request, and the H.264
+         * switch it was meant to replace happened anyway — so the experiment
+         * this ladder exists to run never actually ran. Whichever channel
+         * arrives first owns the failure; the other is the same event, and gets
+         * the same answer. */
+        var now = new Date().getTime();
+        if (now - lastDecodeFailAt < 3000) { return lastDecodeHandled; }
+        lastDecodeFailAt = now;
+
         /* From where the viewer actually got to, not from the original start —
          * this failure arrives mid-playback, and restarting the episode is a
          * worse answer than the stall was. */
         var from = lastTime || lastDash.startMs || 0;
-        log("解码失败（" + why + "），从 " + Math.round(from / 1000) + "s 退回 avc1 重来一次");
-        playDashWithShaka(lastDash.dash, from, true, "avc1");
-        return true;
+        var at = Math.round(from / 1000);
+        decodeRecoveries++;
+        lastDecodeHandled = true;
+
+        if (decodeRecoveries === 1) {
+            log("解码失败（" + why + "），从 " + at + "s 用 " + lastDash.family +
+                " 原样重载一次");
+            playDashWithShaka(lastDash.dash, from, true, lastDash.family);
+            return true;
+        }
+        /* Same codec, twice, still refused — now the probe is the suspect after
+         * all, and H.264 is one reload away. */
+        if (decodeRecoveries === 2 && lastDash.family !== "avc1") {
+            log("解码失败（" + why + "），同族重载没解决，从 " + at + "s 退回 avc1");
+            playDashWithShaka(lastDash.dash, from, true, "avc1");
+            return true;
+        }
+        log("解码失败（" + why + "），已重载 " + decodeRecoveries + " 次仍然失败，交给上层");
+        lastDecodeHandled = false;
+        return false;
     }
 
     function playDashWithShaka(dash, startMs, isRetry, prefer) {
@@ -443,8 +596,7 @@ var Player = (function () {
         }
         var usedFamily = Mpd.chosen();
         log("编码 " + usedFamily + (prefer ? "（指定）" : ""));
-        lastDash = { dash: dash, startMs: startMs, family: usedFamily,
-                     retried: usedFamily === "avc1" };
+        lastDash = { dash: dash, startMs: startMs, family: usedFamily };
         var player = ensureShaka();
         if (!player) {
             emit("error", "这台设备的浏览器内核不支持 DASH 播放");

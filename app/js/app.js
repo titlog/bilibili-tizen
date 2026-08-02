@@ -1921,7 +1921,15 @@
             report("player", "dash 兜底：" + how + " qn=" + ((vrep && vrep.id) || 0) +
                    "，交给播放器");
             playing.route = "dash";
-            Player.playDash(dash, Resume.positionMs(d.bvid, cid));
+            /* `playing.startMs`, not a fresh Resume lookup. play() already
+             * settled where this video starts, and that answer folds in things
+             * the local list has never heard of: a handoff from the phone, and
+             * bilibili's own `player/v2` position for this account. Reading
+             * Resume again here silently discarded both — so a video picked up
+             * from the phone at forty minutes restarted wherever this television
+             * last left it, but *only* when the progressive attempt failed
+             * first, which is why it never looked like a rule. */
+            Player.playDash(dash, playing.startMs || 0);
         }
 
         /* play() asked for both forms at once, and this is the other one. */
