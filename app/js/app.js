@@ -1793,6 +1793,13 @@
             }
             Player.mark("playurl");
 
+            /* Kept on the session even when progressive wins the routing: this
+             * is the fallback, and it has already been paid for. Asking playurl
+             * for it again at the moment progressive gives up costs a round trip
+             * on a screen that has been black for twenty seconds, and adds a way
+             * to fail that a response already in hand cannot. */
+            if (dash) { playing.dashReady = dash; }
+
             if (dash && (!prog || dashQn > prog.quality)) { playDash(dash, dashQn); return; }
             if (prog) { startProgressive(prog); return; }
             toast("播放失败：拿不到播放地址");
@@ -1892,11 +1899,12 @@
         playing.failed = false;
 
         var d = playing.detail, cid = playing.cid, session = playing;
-        API.playurlDash(d.bvid, cid, PREFERRED_QN, function (dash) {
-            /* All three exits here used to be silent, which is why the log
-             * could say "switching to dash" and then say nothing at all —
-             * a dead session, a refused request and a manifest that was never
-             * built are three different faults and they read identically. */
+
+        /* All three exits here used to be silent, which is why the log could
+         * say "switching to dash" and then say nothing at all — a dead session,
+         * a refused request and a manifest that was never built are three
+         * different faults and they read identically. */
+        function startDash(dash, how) {
             if (playing !== session) {
                 report("player", "dash 兜底：清单到了但会话已经没了，丢弃");
                 return;
@@ -1906,8 +1914,19 @@
                 playing.quality = vrep.id;
                 setQualityBadge(QUALITY_NAMES[vrep.id] || ("QN " + vrep.id));
             }
-            report("player", "dash 兜底：拿到清单 qn=" + ((vrep && vrep.id) || 0) + "，交给播放器");
+            report("player", "dash 兜底：" + how + " qn=" + ((vrep && vrep.id) || 0) +
+                   "，交给播放器");
             Player.playDash(dash, Resume.positionMs(d.bvid, cid));
+        }
+
+        /* play() asked for both forms at once, and this is the other one. */
+        if (playing.dashReady) {
+            startDash(playing.dashReady, "复用开播时取到的清单");
+            return;
+        }
+
+        API.playurlDash(d.bvid, cid, PREFERRED_QN, function (dash) {
+            startDash(dash, "重新取到清单");
         }, function (w2) {
             report("player", "dash 兜底：playurl 失败（" + w2 + "）" +
                    (playing !== session ? "，而且会话已经没了" : ""));
@@ -2152,9 +2171,30 @@
             playing.failed = true;
             el("player-loading").className = "hidden";
             report("player", data);
-            if (playing.urls && playing.urlIdx + 1 < playing.urls.length) {
-                var failedUrl = playing.urls[playing.urlIdx];
-                probeUrl(failedUrl, data);
+            /* The probe runs on every failure, not only the ones that rotate.
+             * It is the line that separates "bilibili refused this stream" from
+             * "AVPlay could not ask for it", and that distinction has been worth
+             * several deploys. */
+            var failedUrl = playing.urls && playing.urls[playing.urlIdx];
+            if (failedUrl) { probeUrl(failedUrl, data); }
+
+            /* Mirror rotation is for when progressive is the only route there
+             * is. With a manifest already in hand it is a poor way to spend the
+             * next six seconds — which is how long AVPlay takes to fail — and
+             * measured on this set, three mirrors cost about twenty seconds of
+             * black screen before the fallback that actually worked.
+             *
+             * The candidates do not deserve the time either: bilibili's own
+             * `mirrorcosov` spare answers 403 on its own host for every video
+             * tried, and the http twins are the same two hosts listed again for
+             * AVPlay's older TLS stack, so a full rotation hits each host twice.
+             * And when the probe comes back 206 the url and the network were
+             * fine and the fault is in how AVPlay asks — which the same player
+             * asking a different host does not fix. That is exactly what the
+             * 越狱 report turned out to be. */
+            var dashWaiting = playing.canDowngrade && !playing.downgraded &&
+                              !!playing.dashReady;
+            if (!dashWaiting && playing.urls && playing.urlIdx + 1 < playing.urls.length) {
                 playing.urlIdx++;
                 playing.failed = false;
                 el("player-loading").className = "";

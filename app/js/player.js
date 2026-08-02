@@ -48,6 +48,27 @@ var Player = (function () {
      * the player's own statistics. */
     var lastStallAt = 0;
 
+    /* The playhead has been observed jumping backwards — 1021s to 14s once,
+     * 383s to 358s later — with nobody touching the remote, and the jump is
+     * what destroys the resume point: `Resume.record` files anything under
+     * thirty seconds as "nothing worth resuming" and writes the stored position
+     * away. It could not be chased because `waiting` fires for a seek exactly as
+     * it does for a stall, so every one of these was logged as 卡住 while
+     * Shaka's own bufferingTime sat unchanged — the one number that said no
+     * stall had happened at all.
+     *
+     * So: seeks get their own line, and it says who asked. A seek this code
+     * issued and a seek the player performed on its own are the same event to
+     * the element, and telling them apart is the entire question. */
+    var lastAppSeekAt = 0;
+    var lastAppSeekTo = 0;
+    var lastTickSec = 0;      /* playhead as of the last timeupdate — the "from" */
+
+    function noteAppSeek(targetMs) {
+        lastAppSeekAt = new Date().getTime();
+        lastAppSeekTo = targetMs;
+    }
+
     function startTiming() {
         marks = { t0: new Date().getTime() };
         markOrder = [];
@@ -78,7 +99,28 @@ var Player = (function () {
         v.addEventListener("timeupdate", function () {
             if (mode !== "mse") { return; }
             lastTime = v.currentTime * 1000;
+            /* Kept separate from `lastTime`, which seekBy/seekTo also write —
+             * this one has to survive as the position *before* a seek. */
+            lastTickSec = v.currentTime;
             emit("time", { position: lastTime, duration: duration });
+        });
+
+        /* Fires after currentTime has already moved, so `lastTickSec` is still
+         * the position it moved away from. */
+        v.addEventListener("seeking", function () {
+            if (mode !== "mse") { return; }
+            var byApp = new Date().getTime() - lastAppSeekAt < 1500;
+            var extra = "";
+            if (shakaPlayer) {
+                try {
+                    var r = shakaPlayer.seekRange();
+                    extra = " 可跳转区间=" + r.start.toFixed(1) + "…" + r.end.toFixed(1) + "s";
+                } catch (e) {}
+            }
+            log("跳转 " + lastTickSec.toFixed(1) + "s → " + v.currentTime.toFixed(1) + "s" +
+                " 发起=" + (byApp ? "遥控器(目标 " + (lastAppSeekTo / 1000).toFixed(1) + "s)"
+                                  : "播放器自己") +
+                extra + " 时长=" + (v.duration || 0).toFixed(1) + "s");
         });
         v.addEventListener("playing", function () {
             if (mode === "mse") { mark("playing"); emit("playing", { duration: duration }); }
@@ -106,6 +148,11 @@ var Player = (function () {
                 }
                 log("卡住 t=" + (v.currentTime || 0).toFixed(1) + "s" +
                     " ahead=" + ahead.toFixed(1) + "s" +
+                    /* `waiting` fires for a seek as readily as for a stall, and
+                     * without this every seek was filed as 卡住 — which is how
+                     * a playhead jumping backwards stayed invisible for a whole
+                     * session behind a line that said "stalling". */
+                    " seeking=" + v.seeking +
                     " readyState=" + v.readyState +
                     " 估算带宽=" + Math.round((st.estimatedBandwidth || 0) / 1000) + "kbps" +
                     " 当前画质=" + (st.width || "?") + "x" + (st.height || "?") +
@@ -570,6 +617,7 @@ var Player = (function () {
         seekBy: function (deltaMs) {
             var target = Math.max(0, lastTime + deltaMs);
             if (duration) { target = Math.min(target, duration - 2000); }
+            noteAppSeek(target);
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
             else if (mode === "mse") { el("html5-video").currentTime = target / 1000; }
             lastTime = target;
@@ -579,6 +627,7 @@ var Player = (function () {
         seekTo: function (ms) {
             var target = Math.max(0, ms);
             if (duration) { target = Math.min(target, duration - 2000); }
+            noteAppSeek(target);
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
             else if (mode === "mse") { el("html5-video").currentTime = target / 1000; }
             lastTime = target;
