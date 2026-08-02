@@ -1729,9 +1729,26 @@
         var session = playing;
         Player.startTiming();
         /* Named, so that "one video would not play" can be chased to a bvid
-         * instead of guessing which of the evening's videos it was. */
+         * instead of guessing which of the evening's videos it was.
+         *
+         * The bvid alone stops being enough on a multi-part upload: "P10 will
+         * not play" and "P10 quietly opened P1" are different faults with the
+         * same description from the sofa, and this line could not tell them
+         * apart — a run was read three times over before anyone noticed the
+         * title in the log ended in "1". The cid is what playback was actually
+         * asked for; `P?` means `resumeCid` handed back one that is not in this
+         * video's part list at all, which is worth seeing on its own. */
+        var partTag = " cid=" + cid;
+        if (detail.pages && detail.pages.length) {
+            var pIdx = -1;
+            for (var qi = 0; qi < detail.pages.length; qi++) {
+                if (detail.pages[qi].cid === cid) { pIdx = qi; break; }
+            }
+            partTag += " " + (pIdx < 0 ? "P?" : "P" + (pIdx + 1)) +
+                       "/" + detail.pages.length;
+        }
         report("player", detail.bvid + " " + String(detail.title || "").slice(0, 24) +
-               " — requesting qn=" + PREFERRED_QN);
+               partTag + " — requesting qn=" + PREFERRED_QN);
 
         /* Both forms at once. Asking DASH first and progressive from inside its
          * callback put two full round trips to bilibili back to back before a
@@ -1848,20 +1865,52 @@
     function downgrade(why) {
         if (!playing || playing.downgraded) { stopPlayback(); return; }
         playing.downgraded = true;
-        playing.failed = false;
         el("player-loading").className = "";
         report("player", "progressive refused (" + why + "), switching to dash");
 
+        /* Tear AVPlay down *here*, before asking for the manifest — not inside
+         * Player.playDash a round trip later.
+         *
+         * Its listener is registered on the avplay singleton and close() does
+         * not detach it, so the tail of the attempt that just failed keeps
+         * arriving for seconds afterwards; the log shows those errors landing
+         * after this very line. With `failed` cleared they were handled as if
+         * they were fresh, found every route already tried, and called
+         * stopPlayback() — which nulls `playing` and walks back to the grid. So
+         * when the manifest finally arrived it landed on a dead session and was
+         * dropped without a word. Four attempts in a row reached "switching to
+         * dash" and not one ever built a manifest; from the sofa that is a long
+         * spinner and then the home screen.
+         *
+         * reset() bumps the generation counter, and that is the thing that
+         * actually silences the old listener — the standing rule in this
+         * codebase, missed at exactly the point where one route hands over to
+         * the other. It also moves AVPlay's stop/close off the critical path:
+         * they cost about 570ms and now run alongside the playurl round trip
+         * instead of after it. */
+        Player.stop();
+        playing.failed = false;
+
         var d = playing.detail, cid = playing.cid, session = playing;
         API.playurlDash(d.bvid, cid, PREFERRED_QN, function (dash) {
-            if (playing !== session) { return; }
+            /* All three exits here used to be silent, which is why the log
+             * could say "switching to dash" and then say nothing at all —
+             * a dead session, a refused request and a manifest that was never
+             * built are three different faults and they read identically. */
+            if (playing !== session) {
+                report("player", "dash 兜底：清单到了但会话已经没了，丢弃");
+                return;
+            }
             var vrep = Player.pickDashVideo(dash);
             if (vrep && vrep.id) {
                 playing.quality = vrep.id;
                 setQualityBadge(QUALITY_NAMES[vrep.id] || ("QN " + vrep.id));
             }
+            report("player", "dash 兜底：拿到清单 qn=" + ((vrep && vrep.id) || 0) + "，交给播放器");
             Player.playDash(dash, Resume.positionMs(d.bvid, cid));
         }, function (w2) {
+            report("player", "dash 兜底：playurl 失败（" + w2 + "）" +
+                   (playing !== session ? "，而且会话已经没了" : ""));
             if (playing !== session) { return; }
             toast("播放失败：" + w2);
             stopPlayback();
@@ -2115,8 +2164,23 @@
             /* Downgrading restarts the video from the top in the other form.
              * That is right when nothing ever played, and wrong once the viewer
              * is watching — a dropped connection at four minutes in used to
-             * throw them back to the beginning. */
-            if (lastKnownPosition > 3000) {
+             * throw them back to the beginning.
+             *
+             * Measured from where this video was *asked* to start, not from
+             * zero. `lastKnownPosition` is seeded with `startMs` at the top of
+             * play(), so on anything with a saved resume point it was already
+             * past 3000 before a single frame decoded — and every progressive
+             * failure on a half-watched video was swallowed here instead of
+             * falling through to DASH. It presented as a spinner that never
+             * resolved, and only on videos far enough in to have a position,
+             * which is why it read as "some videos, sometimes": the same video
+             * downgraded correctly on the next try, once the failed attempt had
+             * reset the position to zero.
+             *
+             * Same distinction the progress report already makes — progress is
+             * distance from startMs, never the clock. */
+            var watchedMs = lastKnownPosition - (playing.startMs || 0);
+            if (watchedMs > 3000) {
                 report("player", "播放中出错但已在播，保持不动：" + data);
                 return;
             }
