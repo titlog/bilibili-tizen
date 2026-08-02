@@ -255,19 +255,43 @@ var API = (function () {
             }, onFail);
         },
 
+        /* bilibili's own history — what was watched on the phone and the web.
+         * Nothing this app plays reaches it, so it is genuinely "the other
+         * devices" and is shown as its own section. Entries that are not plain
+         * videos (bangumi, live, articles) carry no bvid and cannot be opened
+         * from here, so they are dropped. */
         history: function (onOk, onFail) {
             getJson(BASE + "/x/web-interface/history/cursor?ps=24", function (d) {
-                onOk((d.list || []).filter(function (x) { return x.history && x.history.bvid; })
-                    .map(function (x) {
-                        return {
-                            bvid: x.history.bvid,
-                            title: x.title,
-                            pic: thumb(x.cover || x.pic),
-                            author: x.author_name || "",
-                            duration: duration(x.duration),
-                            play: ""
-                        };
-                    }));
+                var all = d.list || [];
+                var out = [];
+                for (var i = 0; i < all.length; i++) {
+                    var x = all[i];
+                    if (!x.history || !x.history.bvid) { continue; }
+                    /* `progress` is seconds watched, -1 when finished. The card
+                     * draws the same sliver it draws for local history, so the
+                     * two sections read alike. */
+                    var secs = x.duration || 0;
+                    var pos = x.progress;
+                    var seen = 0;
+                    if (pos === -1) { seen = 1; }
+                    else if (secs > 0 && pos > 0) { seen = Math.min(1, pos / secs); }
+                    out.push({
+                        bvid: x.history.bvid,
+                        title: x.title,
+                        pic: thumb(x.cover || x.pic),
+                        author: x.author_name || "",
+                        duration: duration(secs),
+                        play: "",
+                        seen: seen,
+                        /* Multi-part entries say which part, same as ours. */
+                        page: (x.history.page && x.history.page > 1) ? x.history.page : 0,
+                        /* Enough to carry on from the phone: which part, and
+                         * how far in. -1 means finished, so start it over. */
+                        cid: x.history.cid || null,
+                        progressMs: (pos > 0) ? pos * 1000 : 0
+                    });
+                }
+                onOk(out, all.length);
             }, onFail);
         },
 

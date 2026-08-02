@@ -166,7 +166,9 @@
     /* ---------------- grid of videos ---------------- */
 
     function cardHtml(v, i) {
-        var seen = Resume.fraction(v.bvid);
+        /* Server-side history carries its own progress; everything else asks
+         * the local record. */
+        var seen = (typeof v.seen === "number") ? v.seen : Resume.fraction(v.bvid);
         return '<div class="card focusable" data-i="' + i + '">' +
                '<div class="thumb"><img src="' + esc(v.pic) + '" alt="">' +
                '<span class="dur">' + esc(v.duration) + '</span>' +
@@ -730,9 +732,16 @@
              * bilibili's own history — that needs a write we do not make — so
              * painting the server's list into the same container meant every
              * video watched on this television vanished the moment the server
-             * answered. */
-            html += '<div class="section">在这台电视上看过</div><div id="hist"></div>' +
-                    '<div id="server-hist"></div></div>';
+             * answered.
+             *
+             * The phone's list goes first. It went second once, under as many as
+             * 24 local cards — six rows down, past the bottom of the screen — and
+             * was reported as "my phone's history is not syncing" while the log
+             * showed all 24 entries arriving correctly. Searching happens on the
+             * phone and watching happens here, so that list is what this screen
+             * is opened for; the local one is the reference copy. */
+            html += '<div id="server-hist"></div>' +
+                    '<div class="section">在这台电视上看过</div><div id="hist"></div></div>';
             screenEl.innerHTML = html;
 
             var mine = Resume.recent(24);
@@ -772,18 +781,40 @@
             };
             Nav.reset("#btn-switch");
 
+            /* The heading goes up straight away, with a state under it. It used
+             * to render nothing at all until the answer arrived and nothing
+             * ever if the list came back empty — which is indistinguishable
+             * from "this app does not show my phone's history", and that is
+             * exactly how it was read. */
             if (me.isLogin) {
-                API.history(function (items) {
-                    var h = el("server-hist");
-                    if (!h || !stillViewing(token) || !items.length) { return; }
-                    h.innerHTML = '<div class="section">bilibili 账号的历史（其他设备）</div>' +
-                                  '<div id="server-grid"></div>';
-                    paintCards(el("server-grid"), items);
+                var sh = el("server-hist");
+                if (sh) {
+                    sh.innerHTML =
+                        '<div class="section">接着手机上看（手机 / 网页端的记录）</div>' +
+                        '<div id="server-grid"><div class="empty">读取中…</div></div>';
+                }
+                API.history(function (items, rawCount) {
+                    var h = el("server-grid");
+                    if (!h || !stillViewing(token)) { return; }
+                    /* The newest title goes in the line too. A count alone says
+                     * the request worked, not that the answer is current — and
+                     * "is what the television has the same as what my phone
+                     * shows" is the only question this log line ever gets asked.
+                     * One title answers it; the rest is noise. */
+                    report("history", "服务端历史 " + rawCount + " 条，可打开的 " + items.length +
+                        " 条" + (items.length ? "，最新一条：" + items[0].title.slice(0, 24) : ""));
+                    if (!items.length) {
+                        h.innerHTML = '<div class="empty">' + (rawCount
+                            ? "这 " + rawCount + " 条都不是普通视频（番剧/直播/专栏），这里打不开"
+                            : "bilibili 账号上还没有观看记录") + '</div>';
+                        return;
+                    }
+                    paintCards(h, items);
                 }, function (why) {
-                    var h = el("server-hist");
+                    var h = el("server-grid");
                     if (h && stillViewing(token)) {
-                        h.innerHTML = '<div class="section">bilibili 账号的历史</div>' +
-                                      '<div class="empty">读取失败：' + esc(why) + '</div>';
+                        report("history", "服务端历史读取失败：" + why);
+                        h.innerHTML = '<div class="empty">读取失败：' + esc(why) + '</div>';
                     }
                 });
             }
@@ -877,6 +908,21 @@
      * an uploader reorganised the parts should not send playback somewhere the
      * video no longer has. */
     function resumeCid(detail) {
+        /* A handoff from bilibili's history names the part the phone was on,
+         * and that beats anything this television remembers. */
+        if (handoff && handoff.bvid === detail.bvid && handoff.cid) {
+            var pages0 = detail.pages || [];
+            if (!pages0.length) { return handoff.cid; }
+            for (var k = 0; k < pages0.length; k++) {
+                if (pages0[k].cid === handoff.cid) {
+                    if (pages0[k].page > 1) {
+                        toast("手机上看到 P" + pages0[k].page + "：" + (pages0[k].part || ""));
+                    }
+                    return handoff.cid;
+                }
+            }
+        }
+
         var last = Resume.lastPart(detail.bvid);
         if (!last || !last.cid || last.cid === detail.cid) { return detail.cid; }
 
@@ -899,6 +945,15 @@
 
     function playVideo(v, fromPanel) {
         if (!fromPanel) { rememberPosition(); }
+
+        /* A card from bilibili's own history carries where the phone got to.
+         * Picking it up is the whole point of showing that section: the phone
+         * is where things get searched for, the television is where they get
+         * watched. */
+        if (v.bvid && v.cid && v.progressMs) {
+            handoff = { bvid: v.bvid, cid: v.cid, positionMs: v.progressMs };
+        }
+
         if (v.pages) { play(v, resumeCid(v)); return; }
 
         /* 推荐, 热门 and 排行 already carry the cid, which is all playback needs.
@@ -1281,6 +1336,12 @@
         if (on) { showChrome(); }
     }
 
+    /* Where a video should start when the position did not come from this
+     * television. Set just before play() by whoever knows better — today that
+     * is a card from bilibili's own history, so a video left half-watched on
+     * the phone carries on here rather than starting again. Consumed once. */
+    var handoff = null;
+
     function play(detail, cid) {
         /* Every per-video piece of player state is cleared here. Leaving any of
          * it behind is invisible until the exact moment it matters: the scrub
@@ -1289,10 +1350,25 @@
         closeOptions();
         cancelScrub();
         playing = { detail: detail, cid: cid };
+
         var startMs = Resume.positionMs(detail.bvid, cid);
+        var fromPhone = false;
+        if (handoff && handoff.bvid === detail.bvid && handoff.cid === cid &&
+                handoff.positionMs > startMs) {
+            /* Take the further of the two. Watching on the phone after watching
+             * here should win, and the reverse should not be undone by a stale
+             * server entry. */
+            startMs = handoff.positionMs;
+            fromPhone = true;
+        }
+        handoff = null;
+
         lastKnownPosition = startMs;
         playing.startMs = startMs;
-        if (startMs) { toast("从 " + fmt(startMs) + " 继续播放"); }
+        if (startMs) {
+            toast((fromPhone ? "接着手机上的进度，从 " : "从 ") +
+                  fmt(startMs) + " 继续播放");
+        }
         el("player-title").textContent = detail.title;
         var partLabel = "";
         if (detail.pages && detail.pages.length > 1) {
