@@ -394,6 +394,43 @@ var Player = (function () {
      * `data` carries the part that matters — the url and the HTTP status for a
      * network error, the offending codec for an unsupported one — and without
      * it a 1001 is just "something was refused somewhere". */
+    /* Host, path and the handful of query parameters that decide whether a
+     * stream url is accepted. Deliberately does NOT include `upsig` or the
+     * Akamai `hdnts` token: those are credentials for the stream, they are
+     * enormous, and knowing they are present is all a log needs. */
+    var URL_PARAMS_WORTH_SEEING =
+        ["os", "platform", "mid", "uipk", "deadline", "trid", "og", "bvc",
+         "nettype", "gen", "buvid", "orderid", "agrr"];
+
+    function summariseStreamUrl(u) {
+        var out;
+        try {
+            var noScheme = u.replace(/^https?:\/\//, "");
+            var slash = noScheme.indexOf("/");
+            var host = slash < 0 ? noScheme : noScheme.slice(0, slash);
+            var rest = slash < 0 ? "" : noScheme.slice(slash);
+            var q = rest.indexOf("?");
+            var path = q < 0 ? rest : rest.slice(0, q);
+            var query = q < 0 ? "" : rest.slice(q + 1);
+
+            out = host + " " + path;
+            var seen = {};
+            var pairs = query.split("&");
+            for (var i = 0; i < pairs.length; i++) {
+                var eq = pairs[i].indexOf("=");
+                if (eq <= 0) { continue; }
+                seen[pairs[i].slice(0, eq)] = pairs[i].slice(eq + 1);
+            }
+            for (var j = 0; j < URL_PARAMS_WORTH_SEEING.length; j++) {
+                var k = URL_PARAMS_WORTH_SEEING[j];
+                if (seen[k] !== undefined) { out += " " + k + "=" + seen[k]; }
+            }
+            out += " upsig=" + (seen.upsig ? "有" : "无") +
+                   " hdnts=" + (seen.hdnts ? "有" : "无");
+        } catch (e) { out = u.slice(0, 80); }
+        return out;
+    }
+
     function describeShakaError(e) {
         if (!e) { return "(no error object)"; }
         var out = "code=" + e.code + " category=" + e.category +
@@ -407,9 +444,14 @@ var Player = (function () {
                     catch (e2) { part = "[object]"; }
                 } else {
                     part = String(part);
-                    /* Stream urls are enormous; the host and status are the
-                     * informative bits. */
-                    if (part.length > 120) {
+                    /* A stream url is 800 characters of which about ten matter.
+                     * Truncating it hid exactly the ten — three rounds of
+                     * "why does the television get 403 where a browser gets
+                     * 206" went unanswered because the parameters that differ
+                     * were past the cut. */
+                    if (part.indexOf("http") === 0 && part.indexOf("upgcxcode") > 0) {
+                        part = summariseStreamUrl(part);
+                    } else if (part.length > 120) {
                         part = part.slice(0, 60) + "…(" + part.length + " chars)";
                     }
                 }
