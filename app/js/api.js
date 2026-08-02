@@ -88,7 +88,20 @@ var API = (function () {
             if (host.indexOf("mcdn") >= 0 || host.indexOf("szbdyd") >= 0) { iffy.push(all[i]); }
             else { good.push(all[i]); }
         }
-        return good.concat(iffy);
+        var ordered = good.concat(iffy);
+
+        /* AVPlay has its own HTTP stack, far older than WebKit's, and it fails
+         * the TLS handshake with some CDN nodes while an XHR to the very same
+         * url succeeds. The plaintext variant is the same file on the same host,
+         * so append one per mirror as a last resort rather than giving up. */
+        var withPlain = [];
+        for (var j = 0; j < ordered.length; j++) { withPlain.push(ordered[j]); }
+        for (var k = 0; k < ordered.length; k++) {
+            if (ordered[k].indexOf("https://") === 0) {
+                withPlain.push("http://" + ordered[k].slice(8));
+            }
+        }
+        return withPlain;
     }
 
     function normalise(v) {
@@ -135,9 +148,9 @@ var API = (function () {
 
         /* search/all/v2 needs no WBI signature, unlike search/type which
          * answers with an HTML challenge page when called bare. */
-        search: function (keyword, onOk, onFail) {
+        search: function (keyword, page, onOk, onFail) {
             var url = BASE + "/x/web-interface/search/all/v2?keyword=" +
-                      encodeURIComponent(keyword);
+                      encodeURIComponent(keyword) + "&page=" + (page || 1);
             getJson(url, function (d) {
                 var groups = d.result || [], out = [];
                 for (var i = 0; i < groups.length; i++) {

@@ -188,16 +188,24 @@ var Player = (function () {
          * it, killing the live pump and reviving the dead one. */
         var gen = ++mseGeneration;
         var video = pickDashVideo(dash);
-        var audio = (dash.audio || [])[0];
+        /* dash.audio comes back unsorted, and on some videos the first entry is
+         * a tier the account cannot fetch — every mirror then answers 403 and
+         * the video buffers fine while the sound never arrives. Prefer a modest
+         * standard track, and keep the rest as fallbacks. */
+        var audioReps = (dash.audio || []).slice().sort(function (a, b) {
+            return (a.bandwidth || 0) - (b.bandwidth || 0);
+        });
+        var audio = audioReps[0];
         if (!video || !audio) { emit("error", "no usable dash pair"); return; }
 
         var vType = 'video/mp4; codecs="' + video.codecs + '"';
         var aType = 'audio/mp4; codecs="' + audio.codecs + '"';
-        if (!window.MediaSource || !MediaSource.isTypeSupported(vType) ||
-            !MediaSource.isTypeSupported(aType)) {
-            emit("error", "MSE cannot handle " + video.codecs + " / " + audio.codecs);
-            return;
-        }
+        log("dash id=" + video.id + " " + video.codecs + " " + video.width + "x" + video.height +
+            " audio=" + audio.codecs +
+            " mirrors=" + ((video.urls || []).length || 1));
+        if (!window.MediaSource) { emit("error", "MediaSource unavailable"); return; }
+        if (!MediaSource.isTypeSupported(vType)) { emit("error", "codec unsupported: " + vType); return; }
+        if (!MediaSource.isTypeSupported(aType)) { emit("error", "codec unsupported: " + aType); return; }
 
         var v = el("html5-video");
         bindMediaElement();
@@ -213,10 +221,22 @@ var Player = (function () {
                 ab = ms.addSourceBuffer(aType);
             } catch (e) { emit("error", "addSourceBuffer: " + e.message); return; }
 
-            var CHUNK = 4 * 1024 * 1024;
+            /* A flat chunk size is wrong for both streams at once: 4 MB is three
+             * minutes of audio but thirteen seconds of 1080p video, so the audio
+             * raced far ahead while the picture — the thing playback waits on —
+             * trickled in. Size each request by its own bitrate instead, and ask
+             * for a short one first so something is playable almost at once. */
+            function chunkFor(rep, seconds) {
+                var bps = (rep.bandwidth || 1200000) / 8;
+                return Math.max(192 * 1024, Math.round(bps * seconds));
+            }
+            var FIRST_SECONDS = 5, NEXT_SECONDS = 20;
+
             var streams = [
-                { rep: video, sb: vb, at: 0, done: false, inflight: false, host: 0 },
-                { rep: audio, sb: ab, at: 0, done: false, inflight: false, host: 0 }
+                { rep: video, sb: vb, at: 0, done: false, inflight: 0, host: 0,
+                  kind: "video", pending: {}, appendAt: 0 },
+                { rep: audio, sb: ab, at: 0, done: false, inflight: 0, host: 0,
+                  kind: "audio", pending: {}, appendAt: 0 }
             ];
             /* Waiting for QuotaExceededError is too late on a feature-length
              * video; drop what is well behind the playhead as we go. */
@@ -233,11 +253,36 @@ var Player = (function () {
                 } catch (e) {}
             }
 
+            function drain(s) {
+                if (gen !== mseGeneration || !ms || ms.readyState !== "open") { return; }
+                if (s.sb.updating) { return; }   /* updateend calls back in */
+                var buf = s.pending[s.appendAt];
+                if (!buf) { return; }
+                delete s.pending[s.appendAt];
+                try { s.sb.appendBuffer(buf); } catch (e) {
+                    if (e.name === "QuotaExceededError") {
+                        /* Put it back and make room; the next tick retries. */
+                        s.pending[s.appendAt] = buf;
+                        try {
+                            var keep = Math.max(0, (v.currentTime || 0) - 20);
+                            if (keep > 0 && !s.sb.updating) { s.sb.remove(0, keep); }
+                        } catch (e2) {}
+                        return;
+                    }
+                    emit("error", "append: " + e.message);
+                    return;
+                }
+                s.appendAt += buf.byteLength;
+                if (s.eof && s.appendAt >= s.eof) { s.done = true; }
+            }
+
             function pump(s) {
                 /* inflight matters as much as updating: a 4 MB fetch outlives
                  * several ticks of the timer, and without this the same range is
                  * requested again and again and appended on top of itself. */
-                if (s.done || s.inflight || s.sb.updating) { return; }
+                /* Two requests in flight keeps the link busy while one is being
+                 * appended; more than that only queues behind the first. */
+                if (s.done || s.inflight >= 2 || s.sb.updating) { return; }
                 if (gen !== mseGeneration || !ms || ms.readyState !== "open") { return; }
                 /* Stay a couple of chunks ahead of the playhead, no further. */
                 var buffered = 0;
@@ -248,49 +293,53 @@ var Player = (function () {
                 } catch (e) {}
                 if (buffered - (v.currentTime || 0) > 60) { return; }
 
-                var to = s.at + CHUNK - 1;
-                s.inflight = true;
+                var want = chunkFor(s.rep, s.at === 0 ? FIRST_SECONDS : NEXT_SECONDS);
+                var to = s.at + want - 1;
+                s.inflight++;
                 var urls = s.rep.urls || [s.rep.baseUrl];
-                fetchRange(urls[s.host || 0], s.at, to, function (buf) {
-                    s.inflight = false;
+                var from = s.at;
+                s.at = to + 1;   /* claim the range so the second request follows it */
+                fetchRange(urls[s.host || 0], from, to, function (buf) {
+                    s.inflight--;
                     if (gen !== mseGeneration || !ms || ms.readyState !== "open") { return; }
                     if (!buf || buf.byteLength === 0) { s.done = true; return; }
-                    try { s.sb.appendBuffer(buf); } catch (e) {
-                        /* Back-pressure, not a failure: drop the chunk and let
-                         * the next tick retry once playback has drained. */
-                        if (e.name === "QuotaExceededError") {
-                            /* Evict what has already been played; a feature
-                             * length video will otherwise exhaust the buffer. */
-                            try {
-                                var keepFrom = Math.max(0, (v.currentTime || 0) - 20);
-                                if (keepFrom > 0 && !s.sb.updating) { s.sb.remove(0, keepFrom); }
-                            } catch (e2) {}
-                            return;
-                        }
-                        emit("error", "append: " + e.message);
-                        return;
-                    }
-                    s.at += buf.byteLength;
-                    s.misses = 0;   /* this mirror is working again */
-                    if (buf.byteLength < CHUNK) { s.done = true; }
+                    s.misses = 0;                 /* this mirror is working again */
+                    if (buf.byteLength < want) { s.eof = from + buf.byteLength; }
+                    /* Held until its turn: two requests are in flight to keep the
+                     * link busy, but a fragmented MP4 is a sequential byte
+                     * stream, and appending the second range before the first
+                     * hands the parser garbage. */
+                    s.pending[from] = buf;
+                    drain(s);
                 }, function (why) {
-                    s.inflight = false;
+                    s.inflight--;
+                    s.at = from;                  /* nothing arrived; still owed */
                     if (gen !== mseGeneration) { return; }
-                    /* A refusing host is not a broken video: step to the next
-                     * mirror and carry on from the same byte offset. */
-                    /* Rotate on repeated failure, not on the first hiccup, and
-                     * wrap around: a single timeout forty minutes in should not
-                     * exhaust the mirror list and end the video. */
+
                     s.misses = (s.misses || 0) + 1;
-                    if (s.misses < 3) { return; }
+                    if (s.misses < 2) { return; }
                     s.misses = 0;
-                    s.rotations = (s.rotations || 0) + 1;
-                    if (s.rotations > urls.length * 2) {
-                        emit("error", "fetch: " + why + "（镜像全部无响应）");
+
+                    if ((s.host || 0) + 1 < urls.length) {
+                        s.host = s.host + 1;
+                        log("mirror " + s.host + " for " + s.kind + " after " + why);
                         return;
                     }
-                    s.host = ((s.host || 0) + 1) % urls.length;
-                    log("mirror " + s.host + " for " + (s.rep.codecs || "stream") + " after " + why);
+
+                    /* Out of mirrors. Cycling them again is pointless when the
+                     * refusal is about the track itself, so move to the next
+                     * representation before giving up — some videos list an
+                     * audio tier this account cannot fetch, and the picture then
+                     * buffers happily while the sound never arrives. */
+                    if (s.kind === "audio" && audioReps.length > (s.repIdx || 0) + 1) {
+                        s.repIdx = (s.repIdx || 0) + 1;
+                        s.rep = audioReps[s.repIdx];
+                        s.host = 0; s.at = 0; s.appendAt = 0;
+                        s.pending = {}; s.done = false; s.eof = 0;
+                        log("audio track " + s.rep.id + " after " + why);
+                        return;
+                    }
+                    emit("error", "fetch: " + why + "（" + s.kind + " 所有镜像与音轨均被拒）");
                 });
             }
 
@@ -314,9 +363,16 @@ var Player = (function () {
                 return true;
             };
 
+            for (var d0 = 0; d0 < streams.length; d0++) {
+                (function (st) {
+                    st.sb.addEventListener("updateend", function () { drain(st); });
+                })(streams[d0]);
+            }
+
             var timer = setInterval(function () {
                 if (mode !== "mse" || gen !== mseGeneration) { clearInterval(timer); return; }
                 for (var i = 0; i < streams.length; i++) { evict(streams[i]); }
+                for (var i = 0; i < streams.length; i++) { drain(streams[i]); }
                 for (var i = 0; i < streams.length; i++) { pump(streams[i]); }
                 if (streams[0].done && streams[1].done &&
                     !streams[0].inflight && !streams[1].inflight &&
@@ -327,10 +383,29 @@ var Player = (function () {
             }, 250);
 
             for (var i = 0; i < streams.length; i++) { pump(streams[i]); }
+
+            /* If nothing is buffered after a reasonable wait, say so instead of
+             * spinning: a silent stall was indistinguishable from a slow link. */
+            setTimeout(function () {
+                if (gen !== mseGeneration) { return; }
+                var vb2 = 0, ab2 = 0;
+                try { vb2 = vb.buffered.length ? vb.buffered.end(vb.buffered.length - 1) : 0; } catch (e) {}
+                try { ab2 = ab.buffered.length ? ab.buffered.end(ab.buffered.length - 1) : 0; } catch (e) {}
+                log("dash after 12s: video buffered " + vb2.toFixed(1) + "s, audio " + ab2.toFixed(1) +
+                    "s, bytes v=" + streams[0].at + " a=" + streams[1].at +
+                    ", readyState=" + v.readyState);
+                if (vb2 === 0 && ab2 === 0) { emit("error", "dash 无法缓冲任何数据"); }
+            }, 12000);
         });
 
         if (startMs) { v.currentTime = startMs / 1000; }
-        v.play().catch(function (e) { emit("error", "play(): " + e.message); });
+        v.play().catch(function (e) {
+            /* Backing out mid-start rejects the promise; that is a race being
+             * resolved correctly, not a playback failure. */
+            if (gen !== mseGeneration) { return; }
+            if (/interrupted|aborted/i.test(e.message || "")) { return; }
+            emit("error", "play(): " + e.message);
+        });
     }
 
     return {

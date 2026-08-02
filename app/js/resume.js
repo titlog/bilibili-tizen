@@ -47,7 +47,7 @@ var Resume = (function () {
 
     return {
         /* Called on every time update, so it only touches storage now and then. */
-        record: function (bvid, cid, positionMs, durationMs) {
+        record: function (bvid, cid, positionMs, durationMs, card) {
             if (!bvid || !positionMs) { return; }
             var pos = positionMs / 1000, dur = (durationMs || 0) / 1000;
             var m = load();
@@ -57,7 +57,11 @@ var Resume = (function () {
                 if (m[key]) { delete m[key]; dirty = true; flush(); }
                 return;
             }
-            m[key] = { pos: Math.floor(pos), dur: Math.floor(dur), at: new Date().getTime() };
+            var prev = m[key] || {};
+            m[key] = {
+                pos: Math.floor(pos), dur: Math.floor(dur), at: new Date().getTime(),
+                card: card || prev.card    /* enough to redraw it in 我的 */
+            };
             dirty = true;
         },
 
@@ -82,6 +86,25 @@ var Resume = (function () {
                 if (e.dur) { best = Math.max(best, Math.min(1, e.pos / e.dur)); }
             }
             return best;
+        },
+
+        /* Most-recent-first, for the 我的 screen. bilibili's own history endpoint
+         * needs a CSRF token from the session, and this login path never exposes
+         * one, so nothing this app plays ever reaches the server-side history.
+         * Keeping it locally is the only version that actually works. */
+        recent: function (limit) {
+            var m = load(), seen = {}, out = [];
+            var keys = [];
+            for (var k in m) { if (m.hasOwnProperty(k)) { keys.push(k); } }
+            keys.sort(function (a, b) { return (m[b].at || 0) - (m[a].at || 0); });
+            for (var i = 0; i < keys.length && out.length < (limit || 24); i++) {
+                var e = m[keys[i]];
+                if (!e.card) { continue; }
+                if (seen[e.card.bvid]) { continue; }
+                seen[e.card.bvid] = 1;
+                out.push(e.card);
+            }
+            return out;
         },
 
         forget: function (bvid, cid) {

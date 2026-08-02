@@ -181,12 +181,21 @@ body {
     background: #ff6699;
 }
 
-/* The system IME needs a genuine focused input to attach to. Parked offscreen
-   rather than display:none, which would make it unfocusable. */
-#ime {
-    position: absolute; left: -4000px; top: 0;
-    width: 600px; height: 60px; font-size: 30px;
+/* The system IME attaches to a focused input, but it will not offer candidates
+   for one parked off screen — it has nowhere to anchor the candidate strip. So
+   the field is shown for real, centred, while it has focus. */
+#ime-wrap {
+    position: absolute; left: 0; top: 0; width: 1920px; height: 1080px;
+    background: rgba(0,0,0,0.82);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 24px;
 }
+#ime {
+    width: 1100px; height: 92px; font-size: 40px;
+    padding: 0 28px; border-radius: 12px;
+    border: 4px solid #ff6699; background: #182029; color: #fff;
+}
+#ime-hint { font-size: 24px; color: #9aa4ad; }
 
 .suggests { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }
 .suggest {

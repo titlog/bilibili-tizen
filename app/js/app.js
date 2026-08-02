@@ -292,28 +292,43 @@
     /* The on-screen letter grid cannot type Chinese. Focusing a real input
      * hands over to the television's own IME, which can — and which also gives
      * the user their usual keyboard rather than one invented here. */
+    var imeOpen = false;
+
+    function closeIme(commit) {
+        if (!imeOpen) { return; }
+        imeOpen = false;
+        var input = el("ime");
+        if (commit) { state.query = input.value || ""; }
+        input.onkeydown = input.onchange = input.oninput = null;
+        try { input.blur(); } catch (e) {}
+        el("ime-wrap").className = "hidden";
+        var box = el("qbox");
+        if (box) { box.textContent = state.query || "输入关键词"; }
+        /* Focus has to come back explicitly: while the input held it, Nav had no
+         * idea where the cursor was, and leaving it that way is what made the
+         * remote stop responding entirely. */
+        Nav.reset(".key");
+    }
+
     function openIme() {
         var input = el("ime");
+        imeOpen = true;
+        el("ime-wrap").className = "";
         input.value = state.query;
-        input.onchange = input.onblur = function () {
-            state.query = input.value || "";
-            var box = el("qbox");
-            if (box) { box.textContent = state.query || "输入关键词"; }
-            loadSuggestions();
-        };
+
+        input.oninput = function () { state.query = input.value || ""; };
         input.onkeydown = function (e) {
-            if (e.keyCode === 13) {          /* enter closes the IME and searches */
-                state.query = input.value || "";
-                input.blur();
-                var box = el("qbox");
-                if (box) { box.textContent = state.query || "输入关键词"; }
-                runSearch();
-            } else if (e.keyCode === 10009) { /* return key backs out of the IME */
-                input.blur();
-                Nav.reset(".key");
-            }
+            var k = e.keyCode;
+            if (k === 13) { closeIme(true); loadSuggestions(); runSearch(); }
+            else if (k === 10009) { closeIme(false); }
+            else { return; }   /* everything else belongs to the IME */
+            /* Only the two keys handled here are swallowed. Stopping every key
+             * meant that once the keyboard closed, Nav never saw another press
+             * and the remote appeared dead. */
             e.stopPropagation();
+            e.preventDefault();
         };
+
         input.focus();
         try { input.setSelectionRange(input.value.length, input.value.length); } catch (e) {}
     }
@@ -353,7 +368,38 @@
         }, 300);
     }
 
-    function paintResults(items) {
+    /* Search stopped at whatever one page returned. It pages like the feeds do,
+     * from the same focus-nears-the-end trigger. */
+    function maybeLoadMoreSearch(focused) {
+        if (loadingMore || playing || optionsOpen || state.screen !== "search") { return; }
+        if (!state.results || !focused || !focused.getAttribute) { return; }
+        if (focused.getAttribute("data-i") === null) { return; }
+        if (Number(focused.getAttribute("data-i")) < state.results.length - 6) { return; }
+
+        loadingMore = true;
+        var next = (state.searchPage || 1) + 1;
+        var term = state.query.trim();
+        API.search(term, next, function (more) {
+            loadingMore = false;
+            if (state.screen !== "search" || state.query.trim() !== term) { return; }
+            var seen = {};
+            for (var i = 0; i < state.results.length; i++) { seen[state.results[i].bvid] = 1; }
+            var fresh = [];
+            for (var j = 0; j < more.length; j++) {
+                if (more[j].bvid && !seen[more[j].bvid]) { fresh.push(more[j]); }
+            }
+            if (!fresh.length) { return; }
+            state.searchPage = next;
+            state.results = state.results.concat(fresh);
+            paintResults(state.results, true);
+        }, function () { loadingMore = false; });
+    }
+
+    function paintResults(items, keepFocus) {
+        var cur = Nav.current();
+        var focusedIndex = (keepFocus && cur && cur.getAttribute &&
+                            cur.getAttribute("data-i") !== null)
+            ? Number(cur.getAttribute("data-i")) : null;
         var results = el("results");
         if (!results) { return null; }
         var html = '<div class="grid">';
@@ -368,6 +414,9 @@
             (function (card, v) { card.onselect = function () { playVideo(v); }; })(
                 cards[j], items[Number(cards[j].getAttribute("data-i"))]);
         }
+        if (keepFocus && focusedIndex !== null && cards[focusedIndex]) {
+            Nav.focus(cards[focusedIndex]);
+        }
         return cards[0];
     }
 
@@ -376,7 +425,8 @@
         var token = viewToken;
         var results = el("results");
         results.innerHTML = '<div class="empty">搜索中…</div>';
-        API.search(state.query.trim(), function (items) {
+        state.searchPage = 1;
+        API.search(state.query.trim(), 1, function (items) {
             if (!stillViewing(token)) { return; }
             results = el("results");
             if (!results) { return; }
@@ -416,6 +466,21 @@
                 '</div></div>';
             html += '<div class="section">观看历史</div><div id="hist"></div></div>';
             screenEl.innerHTML = html;
+
+            /* Local first, because it is the only record of what this app has
+             * played — the server-side list needs a CSRF token we never see. */
+            var mine = Resume.recent(24);
+            var h0 = el("hist");
+            if (mine.length && h0) {
+                var g0 = '<div class="grid">';
+                for (var m0 = 0; m0 < mine.length; m0++) { g0 += cardHtml(mine[m0], m0); }
+                h0.innerHTML = g0 + "</div>";
+                var lc = h0.querySelectorAll(".card");
+                for (var li = 0; li < lc.length; li++) {
+                    (function (card, vv) { card.onselect = function () { playVideo(vv); }; })(
+                        lc[li], mine[Number(lc[li].getAttribute("data-i"))]);
+                }
+            }
 
             el("btn-logout").onselect = function () {
                 Auth.logout();
@@ -521,6 +586,15 @@
             if (!stillViewing(token)) { return; }
             toast("打开失败：" + why);
         });
+    }
+
+    function startProgressive(r) {
+        playing.quality = r.quality;
+        playing.accept = r.accept || [];
+        playing.urls = r.urls || [r.url];
+        playing.urlIdx = 0;
+        setQualityBadge(QUALITY_NAMES[r.quality] || ("QN " + r.quality));
+        Player.playProgressive(playing.urls[0], playing.startMs || 0);
     }
 
     /* The part label can only be drawn once the page list has arrived. */
@@ -878,6 +952,7 @@
         playing = { detail: detail, cid: cid };
         var startMs = Resume.positionMs(detail.bvid, cid);
         lastKnownPosition = startMs;
+        playing.startMs = startMs;
         if (startMs) { toast("从 " + fmt(startMs) + " 继续播放"); }
         el("player-title").textContent = detail.title;
         var partLabel = "";
@@ -910,61 +985,81 @@
         el("player-loading").className = "";
         status("");
 
-        /* Progressive is the better route when it exists; DASH is the fallback
-         * for videos bilibili no longer offers as a single file. */
-        /* Progressive first, always. The stream url is pre-signed, so AVPlay
-         * needs no session to fetch it — only the playurl call does, and that
-         * goes over XHR with the cookie jar. Routing signed-in playback through
-         * MSE instead was a mistake: it bought nothing and gave up native
-         * buffering, seeking and hardware decode. */
+        /* Route by what each form can actually deliver.
+         *
+         * bilibili caps the single-file (durl) form at 720p and, for anything
+         * with a high-tier source, refuses it outright — the API still returns a
+         * url and the CDN answers 403 on every mirror. DASH carries the real
+         * quality ladder. So ask DASH what it has first, and take progressive
+         * only when it is no worse, because AVPlay's native path beats
+         * hand-rolled MSE on buffering, seeking and memory. */
         playing.canDowngrade = true;
         var session = playing;
-        API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
-            /* Backing out while the url resolves used to start playback with no
-             * way to stop it — audio under the browse UI, deaf to the remote. */
+        report("player", "requesting qn=" + PREFERRED_QN);
+
+        API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
             if (playing !== session) { return; }
-            playing.quality = r.quality;
-            playing.urls = r.urls || [r.url];
-            playing.urlIdx = 0;
-            playing.startMs = startMs;
-            setQualityBadge(QUALITY_NAMES[r.quality] || ("QN " + r.quality));
-            Player.playProgressive(playing.urls[0], startMs);
-        }, function (why) {
+            var best = Player.pickDashVideo(dash);
+            var dashQn = (best && best.id) || 0;
+            report("player", "dash offers qn=" + dashQn +
+                   " accept=" + (dash.acceptQuality || []).join(","));
+
+            API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
+                if (playing !== session) { return; }
+                report("player", "progressive gave qn=" + r.quality +
+                       " accept=" + (r.accept || []).join(","));
+                if (dashQn > r.quality) { playDash(dash, dashQn); }
+                else { startProgressive(r); }
+            }, function (why) {
+                if (playing !== session) { return; }
+                report("player", "no durl (" + why + ")");
+                if (dashQn) { playDash(dash, dashQn); }
+                else { toast("播放失败：" + why); stopPlayback(); }
+            });
+        }, function (dashWhy) {
             if (playing !== session) { return; }
-            /* No single-file stream for this video: DASH through MSE is the
-             * only remaining route. */
-            report("player", "no durl (" + why + "), falling back to dash");
-            API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
+            report("player", "no dash (" + dashWhy + ")");
+            API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
                 if (playing !== session) { return; }
-                /* Ask the player which representation it will actually decode:
-                 * reading dash.video[0] named whatever came first in the list,
-                 * which is frequently an hev1 entry the player then skips. */
-                var vrep = Player.pickDashVideo(dash);
-                if (vrep && vrep.id) {
-                    playing.quality = vrep.id;
-                    setQualityBadge(QUALITY_NAMES[vrep.id] || ("QN " + vrep.id));
-                }
-                Player.playDash(dash, startMs);
-            }, function (w2) {
+                report("player", "progressive gave qn=" + r.quality);
+                startProgressive(r);
+            }, function (why) {
                 if (playing !== session) { return; }
-                toast("播放失败：" + w2);
+                toast("播放失败：" + why);
                 stopPlayback();
             });
         });
     }
 
-    /* Every CDN mirror refused, or DASH would not start. Rather than dead-end
-     * on an error, drop to the progressive stream, which is served from the
-     * plain hosts and has always worked here. */
+    /* Hand a DASH response to the player and label it with the representation
+     * the player itself picked, so the badge cannot disagree with the picture. */
+    function playDash(dash, qn) {
+        playing.quality = qn;
+        setQualityBadge(QUALITY_NAMES[qn] || ("QN " + qn));
+        Player.playDash(dash, playing.startMs || 0);
+    }
+
+    /* Every progressive mirror refused. Retrying progressive at a lower quality
+     * is pointless: for videos that carry a 4K source, bilibili refuses the
+     * MP4 form outright — the API still hands back a url and the CDN answers 403
+     * on every tier. DASH for the same video serves fine, so that is the
+     * fallback. This is why "some videos" failed while most were fine. */
     function downgrade(why) {
         if (!playing || playing.downgraded) { stopPlayback(); return; }
         playing.downgraded = true;
         playing.failed = false;
-        toast(why + "，改用标清");
+        el("player-loading").className = "";
+        report("player", "progressive refused (" + why + "), switching to dash");
+
         var d = playing.detail, cid = playing.cid, session = playing;
-        API.playurlProgressive(d.bvid, cid, 64, function (r) {
+        API.playurlDash(d.bvid, cid, PREFERRED_QN, function (dash) {
             if (playing !== session) { return; }
-            Player.playProgressive(r.url, Resume.positionMs(d.bvid, cid));
+            var vrep = Player.pickDashVideo(dash);
+            if (vrep && vrep.id) {
+                playing.quality = vrep.id;
+                setQualityBadge(QUALITY_NAMES[vrep.id] || ("QN " + vrep.id));
+            }
+            Player.playDash(dash, Resume.positionMs(d.bvid, cid));
         }, function (w2) {
             if (playing !== session) { return; }
             toast("播放失败：" + w2);
@@ -996,6 +1091,29 @@
         }
     }
 
+    /* Ask a plain XHR for the same bytes AVPlay just refused. A 206 here means
+     * the url and the network are fine and the fault is in how AVPlay asks —
+     * which is the distinction that took several deploys to establish the first
+     * time, so it is now answered automatically on every failure. */
+    function probeUrl(url, why) {
+        var host = String(url).split("/")[2] || "?";
+        var scheme = String(url).slice(0, 5);
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", url, true);
+            xhr.setRequestHeader("Range", "bytes=0-1023");
+            xhr.timeout = 10000;
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState !== 4) { return; }
+                report("probe", scheme + " " + host + " avplay=" + why +
+                       " xhr=" + xhr.status);
+            };
+            xhr.ontimeout = function () { report("probe", host + " xhr=timeout"); };
+            xhr.onerror = function () { report("probe", host + " xhr=error"); };
+            xhr.send();
+        } catch (e) {}
+    }
+
     function stopPlayback() {
         el("player-loading").className = "hidden";
         var was = playing;
@@ -1018,7 +1136,11 @@
     Player.on(function (kind, data) {
         if (kind === "time") {
             if (playing) {
-                Resume.record(playing.detail.bvid, playing.cid, data.position, data.duration);
+                var d0 = playing.detail;
+                Resume.record(d0.bvid, playing.cid, data.position, data.duration, {
+                    bvid: d0.bvid, title: d0.title, pic: d0.pic,
+                    author: d0.author, duration: d0.duration, play: d0.play
+                });
             }
             lastKnownPosition = data.position;
             /* While scrubbing the bar belongs to the scrub head, not the clock. */
@@ -1052,10 +1174,11 @@
             el("player-loading").className = "hidden";
             report("player", data);
             if (playing.urls && playing.urlIdx + 1 < playing.urls.length) {
+                var failedUrl = playing.urls[playing.urlIdx];
+                probeUrl(failedUrl, data);
                 playing.urlIdx++;
                 playing.failed = false;
                 el("player-loading").className = "";
-                report("player", "mirror " + playing.urlIdx + " after " + data);
                 Player.playProgressive(playing.urls[playing.urlIdx], playing.startMs || 0);
                 return;
             }
@@ -1113,6 +1236,7 @@
     });
 
     Nav.onBack(function () {
+        if (imeOpen) { closeIme(false); return; }
         if (playing) { stopPlayback(); return; }
         Auth.cancelQrLogin();
         if (state.screen !== "rcmd") { loadFeed("rcmd"); return; }
@@ -1127,7 +1251,7 @@
         toastEl = el("toast");
 
         Nav.registerKeys();
-        Nav.onFocus(maybeLoadMore);
+        Nav.onFocus(function (elm) { maybeLoadMore(elm); maybeLoadMoreSearch(elm); });
         /* Settings were only consulted from inside 我的, so a quality picked in
          * the panel was forgotten on the next launch. */
 
