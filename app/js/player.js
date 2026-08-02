@@ -168,7 +168,13 @@ var Player = (function () {
         });
         v.addEventListener("error", function () {
             if (mode !== "mse") { return; }
-            emit("error", "video element error " + (v.error ? v.error.code : "?"));
+            var code = v.error ? v.error.code : 0;
+            /* 3 is MEDIA_ERR_DECODE — the same failure the demuxer reports, seen
+             * from the element instead of from Shaka. Whichever arrives first
+             * gets one shot at H.264; `lastDash.retried` stops the other from
+             * taking a second. */
+            if (code === 3 && retryOnAvc1("video element error 3")) { return; }
+            emit("error", "video element error " + (code || "?"));
         });
     }
 
@@ -233,6 +239,9 @@ var Player = (function () {
         mode = null;
         duration = 0;
         lastTime = 0;
+        /* Belongs to the video being torn down. Left behind, a decode failure on
+         * the next one would replay the previous one's manifest. */
+        lastDash = null;
     }
 
     /* ---------------- AVPlay ---------------- */
@@ -311,6 +320,14 @@ var Player = (function () {
          * there is only ever one session. */
         player.addEventListener("error", function (e) {
             var err = e && e.detail;
+            /* A *critical* media error is the decoder refusing the stream, not
+             * a blip on the wire. retryStreaming() re-fetches bytes that will be
+             * refused for the same reason the moment they arrive; the answer to
+             * a codec this set claimed and then could not decode is H.264. */
+            if (err && err.category === 3 && err.severity === 2 &&
+                    retryOnAvc1(describeShakaError(err))) {
+                return;
+            }
             if (err && (err.category === 1 || err.category === 3)) {
                 log("shaka 可恢复错误 " + describeShakaError(err) + "，重试取流");
                 try { player.retryStreaming(); } catch (e2) {}
@@ -386,6 +403,30 @@ var Player = (function () {
         };
     }
 
+    /* The last DASH request, kept so a decode failure can be answered by
+     * replaying it on H.264 without app.js having to hold the response.
+     *
+     * The avc1 net at the bottom of playDashWithShaka only catches a `load()`
+     * that rejects. A codec probe that lied does not always fail that early:
+     * this set accepted an H.265 stream, loaded it, played it, and then the
+     * demuxer refused a sample —
+     *   CHUNK_DEMUXER_ERROR_APPEND_FAILED: Failed to prepare video sample for decode
+     * followed by media element error 3 — several seconds in, long after load
+     * had resolved. `isTypeSupported` said yes to that stream. */
+    var lastDash = null;      /* {dash, startMs, family, retried} */
+
+    function retryOnAvc1(why) {
+        if (!lastDash || lastDash.family === "avc1" || lastDash.retried) { return false; }
+        lastDash.retried = true;
+        /* From where the viewer actually got to, not from the original start —
+         * this failure arrives mid-playback, and restarting the episode is a
+         * worse answer than the stall was. */
+        var from = lastTime || lastDash.startMs || 0;
+        log("解码失败（" + why + "），从 " + Math.round(from / 1000) + "s 退回 avc1 重来一次");
+        playDashWithShaka(lastDash.dash, from, true, "avc1");
+        return true;
+    }
+
     function playDashWithShaka(dash, startMs, isRetry, prefer) {
         mode = "mse";
         var gen = ++mseGeneration;
@@ -402,6 +443,8 @@ var Player = (function () {
         }
         var usedFamily = Mpd.chosen();
         log("编码 " + usedFamily + (prefer ? "（指定）" : ""));
+        lastDash = { dash: dash, startMs: startMs, family: usedFamily,
+                     retried: usedFamily === "avc1" };
         var player = ensureShaka();
         if (!player) {
             emit("error", "这台设备的浏览器内核不支持 DASH 播放");

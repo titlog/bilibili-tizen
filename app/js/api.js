@@ -165,6 +165,24 @@ var API = (function () {
         }
         var ordered = good.concat(iffy);
 
+        /* bilibili's own designated spare, `upos-sz-mirrorcosov`, answers 403 on
+         * its own host for every video tried — long documented, and caught twice
+         * more inside a DASH manifest, where Shaka spent a retry cycle on it
+         * while a working host sat beside it in the same AdaptationSet. Dropped
+         * rather than pushed to the back like the mcdn nodes: it is *already*
+         * last, being the backup bilibili lists second, so reordering changes
+         * nothing and the player still reaches it.
+         *
+         * Kept when it is all there is, on the same reasoning as the mcdn hosts:
+         * a url that usually fails still beats no url at all. */
+        var alive = [];
+        for (var m = 0; m < ordered.length; m++) {
+            if (String(ordered[m]).indexOf("upos-sz-mirrorcosov") < 0) {
+                alive.push(ordered[m]);
+            }
+        }
+        if (alive.length) { ordered = alive; }
+
         /* AVPlay has its own HTTP stack, far older than WebKit's, and it fails
          * the TLS handshake with some CDN nodes while an XHR to the very same
          * url succeeds. The plaintext variant is the same file on the same host,

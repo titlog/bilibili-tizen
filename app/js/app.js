@@ -1205,6 +1205,9 @@
     }
 
     function startProgressive(r) {
+        /* Which route is actually carrying this video. `downgrade()` only means
+         * anything coming off progressive, and there was nothing to ask. */
+        playing.route = "progressive";
         playing.quality = r.quality;
         playing.accept = r.accept || [];
         playing.urls = r.urls || [r.url];
@@ -1859,6 +1862,7 @@
     /* Hand a DASH response to the player and label it with the representation
      * the player itself picked, so the badge cannot disagree with the picture. */
     function playDash(dash, qn) {
+        playing.route = "dash";
         playing.quality = qn;
         setQualityBadge(QUALITY_NAMES[qn] || ("QN " + qn));
         Player.playDash(dash, playing.startMs || 0);
@@ -1916,6 +1920,7 @@
             }
             report("player", "dash 兜底：" + how + " qn=" + ((vrep && vrep.id) || 0) +
                    "，交给播放器");
+            playing.route = "dash";
             Player.playDash(dash, Resume.positionMs(d.bvid, cid));
         }
 
@@ -2224,7 +2229,19 @@
                 report("player", "播放中出错但已在播，保持不动：" + data);
                 return;
             }
-            if (playing.canDowngrade && !playing.downgraded) { downgrade(String(data)); return; }
+            /* Only progressive has anywhere to downgrade *to*. Fired on a video
+             * that was already playing DASH, this restarted the identical
+             * manifest — same codec family, same mirrors — and announced
+             * "progressive refused" about a route that had never been used.
+             * Caught on P13: a decode failure on DASH went round this way and
+             * failed again three seconds later for exactly the same reason,
+             * because nothing about the second attempt was different. A DASH
+             * stream that will not decode is answered inside the player, by
+             * coming back on H.264 — not here. */
+            if (playing.route === "progressive" &&
+                    playing.canDowngrade && !playing.downgraded) {
+                downgrade(String(data)); return;
+            }
             /* Every route has been tried. If the probes came back 403 the
              * content itself is being withheld — reuploads of films get their
              * streams pulled while the page stays up — and "播放错误：
