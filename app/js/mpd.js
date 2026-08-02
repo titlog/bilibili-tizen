@@ -46,20 +46,91 @@ var Mpd = (function () {
                "      </Representation>\n";
     }
 
+    /* bilibili offers every tier three times over — H.264, H.265 and AV1 — and
+     * exactly one of them belongs in the manifest: a DASH AdaptationSet is a
+     * set of alternatives the player may switch between mid-stream, and codecs
+     * are not that.
+     *
+     * H.265 first, because it carries the same picture in roughly two thirds of
+     * the bytes, and on this link the difference between riding out a slow
+     * minute and stalling is bytes. AV1 last: this panel says it can decode it,
+     * but nothing says it does so in hardware, and a software decoder on a TV
+     * SoC is how you turn a bandwidth problem into a dropped-frames problem.
+     *
+     * The set is asked rather than assumed — `isTypeSupported` with the codec
+     * string bilibili actually sent, not a guess at what a 2024 Samsung ought
+     * to manage. Where there is nothing to ask (the verifier runs this file
+     * under node), only H.264 is taken: it is the one every engine has. */
+    var FAMILIES = ["hev1", "hvc1", "avc1", "av01"];
+
+    function family(codecs) { return String(codecs || "").split(".")[0]; }
+
+    function playable(codecs) {
+        if (typeof MediaSource === "undefined" || !MediaSource.isTypeSupported) {
+            return family(codecs) === "avc1";
+        }
+        try { return MediaSource.isTypeSupported('video/mp4; codecs="' + codecs + '"'); }
+        catch (e) { return false; }
+    }
+
+    var chosen = "";
+
+    function chooseVideos(all, maxId, prefer) {
+        var usable = [];
+        for (var i = 0; i < (all || []).length; i++) {
+            var r = all[i];
+            if (r && r.codecs && r.segments && (!maxId || r.id <= maxId)) { usable.push(r); }
+        }
+
+        /* H.264 is the baseline this has to beat. A family that cannot reach
+         * the same tier is not an improvement however few bytes it uses —
+         * trading 1080p for 720p is a downgrade dressed as an optimisation. */
+        function topOf(fam) {
+            var top = 0;
+            for (var j = 0; j < usable.length; j++) {
+                if (family(usable[j].codecs) === fam) { top = Math.max(top, usable[j].id || 0); }
+            }
+            return top;
+        }
+        var baseline = topOf("avc1");
+
+        var order = prefer ? [prefer] : FAMILIES;
+        for (var k = 0; k < order.length; k++) {
+            var fam = order[k], reps = [], allOk = true;
+            for (var m = 0; m < usable.length; m++) {
+                if (family(usable[m].codecs) !== fam) { continue; }
+                if (!playable(usable[m].codecs)) { allOk = false; break; }
+                reps.push(usable[m]);
+            }
+            if (!allOk || !reps.length) { continue; }
+            if (fam !== "avc1" && topOf(fam) < baseline) { continue; }
+            chosen = fam;
+            return reps;
+        }
+        chosen = "";
+        return [];
+    }
+
     return {
+        /* Which codec family the last `build` settled on, for the log — "why is
+         * this stalling" and "what is it actually decoding" are the same
+         * question often enough. */
+        chosen: function () { return chosen; },
+
         /* `maxId` caps the quality ladder — bilibili happily offers 4K and 8K
          * tiers this set has no business fetching over a domestic link. Passing
          * every tier below it in lets the player adapt downwards on its own,
          * which is the whole reason a deep seek into a long video no longer has
          * to stall: it drops a tier rather than waiting on bytes the CDN has
-         * never cached. */
-        build: function (dash, maxId) {
+         * never cached.
+         *
+         * `prefer` pins the codec family; the player uses it to come back on
+         * H.264 when a first attempt failed for anything but the network. */
+        build: function (dash, maxId, prefer) {
             if (!dash) { return ""; }
 
-            var videos = (dash.video || []).filter(function (r) {
-                return r.codecs && r.codecs.indexOf("avc1") === 0 &&
-                       r.segments && (!maxId || r.id <= maxId);
-            }).sort(function (a, b) { return (b.bandwidth || 0) - (a.bandwidth || 0); });
+            var videos = chooseVideos(dash.video, maxId, prefer)
+                .sort(function (a, b) { return (b.bandwidth || 0) - (a.bandwidth || 0); });
 
             var audios = (dash.audio || []).filter(function (r) {
                 return r.segments;

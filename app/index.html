@@ -61,7 +61,14 @@
         <div id="player-track">
             <div id="player-buffer"></div>
             <div id="player-fill"></div>
+            <div id="player-chapters"></div>
             <div id="player-scrub" class="hidden"></div>
+            <!-- Where the scrub head is pointing, as a picture. Guessing from a
+                 timestamp is the slow half of crossing a long video. -->
+            <div id="scrub-preview" class="hidden">
+                <div id="scrub-thumb"></div>
+                <div id="scrub-chapter"></div>
+            </div>
         </div>
         <span id="player-dur">0:00</span>
         <span id="player-quality"></span>

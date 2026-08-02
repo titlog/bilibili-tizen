@@ -319,16 +319,22 @@ var Player = (function () {
         };
     }
 
-    function playDashWithShaka(dash, startMs, isRetry) {
+    function playDashWithShaka(dash, startMs, isRetry, prefer) {
         mode = "mse";
         var gen = ++mseGeneration;
         var retriedLoad = !!isRetry;
 
-        var manifest = Mpd.build(dash, PREFERRED_QN);
+        var manifest = Mpd.build(dash, PREFERRED_QN, prefer);
+        if (!manifest && !prefer) {
+            /* The preferred family had nothing usable. H.264 is always there. */
+            manifest = Mpd.build(dash, PREFERRED_QN, "avc1");
+        }
         if (!manifest) {
             emit("error", "拼不出播放清单（缺少分段索引）");
             return;
         }
+        var usedFamily = Mpd.chosen();
+        log("编码 " + usedFamily + (prefer ? "（指定）" : ""));
         var player = ensureShaka();
         if (!player) {
             emit("error", "这台设备的浏览器内核不支持 DASH 播放");
@@ -382,8 +388,19 @@ var Player = (function () {
                 log("首次加载被拒（" + describeShakaError(e) + "），3 秒后重来一次");
                 setTimeout(function () {
                     if (gen !== mseGeneration) { return; }
-                    playDashWithShaka(dash, startMs, true);
+                    playDashWithShaka(dash, startMs, true, prefer);
                 }, 3000);
+                return;
+            }
+
+            /* Anything that is not the network, on a stream this set said it
+             * could decode, is the set having been wrong. H.264 is the answer
+             * to that and it is one reload away — far better than a viewer
+             * meeting a black screen because a codec probe lied. Straight away,
+             * with no pause: nothing out there needs time to change its mind. */
+            if (usedFamily && usedFamily !== "avc1" && (!e || e.category !== 1)) {
+                log("走 " + usedFamily + " 时失败（" + describeShakaError(e) + "），退回 avc1");
+                playDashWithShaka(dash, startMs, retriedLoad, "avc1");
                 return;
             }
             emit("error", "shaka load 失败 " + describeShakaError(e));

@@ -374,9 +374,47 @@ var API = (function () {
          * it costs no time on the way to a picture. */
         playerV2: function (bvid, cid, onOk, onFail) {
             getJson(BASE + "/x/player/v2?bvid=" + bvid + "&cid=" + cid, function (d) {
+                /* Chapters ride along on the same answer, so marking the bar
+                 * costs no extra request. Most uploads have none. */
+                var vp = [];
+                var raw = d.view_points || [];
+                for (var i = 0; i < raw.length; i++) {
+                    if (!raw[i] || raw[i].from === undefined) { continue; }
+                    vp.push({
+                        from: raw[i].from, to: raw[i].to,
+                        title: raw[i].content || ""
+                    });
+                }
                 onOk({
                     cid: d.last_play_cid || 0,
-                    positionMs: d.last_play_time || 0
+                    positionMs: d.last_play_time || 0,
+                    chapters: vp
+                });
+            }, onFail);
+        },
+
+        /* The sprite sheets behind the scrub preview.
+         *
+         * Frames are laid out cols × rows per sheet. `index` gives each frame's
+         * second — when bilibili omits it, and on long uploads it does, the
+         * frames are evenly spaced and the caller works the position out from
+         * the duration instead. */
+        videoshot: function (bvid, cid, onOk, onFail) {
+            getJson(BASE + "/x/player/videoshot?index=1&bvid=" + bvid + "&cid=" + cid,
+                    function (d) {
+                var sheets = [];
+                var raw = d.image || [];
+                for (var i = 0; i < raw.length; i++) {
+                    if (!raw[i]) { continue; }
+                    sheets.push(String(raw[i]).indexOf("//") === 0
+                        ? "https:" + raw[i] : String(raw[i]).replace(/^http:/, "https:"));
+                }
+                if (!sheets.length) { onFail("没有缩略图"); return; }
+                onOk({
+                    sheets: sheets,
+                    cols: d.img_x_len || 10,
+                    rows: d.img_y_len || 10,
+                    index: (d.index && d.index.length) ? d.index : []
                 });
             }, onFail);
         },

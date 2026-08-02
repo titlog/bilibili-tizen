@@ -1192,12 +1192,88 @@
         return Math.max(60000, Math.floor(dur / 30));
     }
 
+    /* Chapter marks, when the uploader defined any. They arrive with the resume
+     * point on the same request, so a marked bar costs nothing extra. */
+    function paintChapters() {
+        var box = el("player-chapters");
+        if (!box) { return; }
+        box.innerHTML = "";
+        var dur = Player.durationMs() || 0;
+        var marks = (playing && playing.chapters) || [];
+        if (!dur || marks.length < 2) { return; }
+        var html = "";
+        for (var i = 0; i < marks.length; i++) {
+            var pct = (marks[i].from * 1000) / dur * 100;
+            if (!(pct > 0) || pct >= 100) { continue; }   /* 0 is the start, not a mark */
+            html += '<div class="tick" style="left:' + pct.toFixed(3) + '%"></div>';
+        }
+        box.innerHTML = html;
+    }
+
+    function chapterAt(ms) {
+        var marks = (playing && playing.chapters) || [];
+        var t = ms / 1000, best = "";
+        for (var i = 0; i < marks.length; i++) {
+            if (marks[i].from <= t && (!marks[i].to || t < marks[i].to)) { best = marks[i].title; }
+        }
+        return best;
+    }
+
+    /* Sprite sheets for the scrub preview, fetched the first time a viewer
+     * actually scrubs. Most videos are watched straight through, and this is a
+     * request and three quarters of a megabyte of images that those videos
+     * should never pay for. */
+    function loadShots() {
+        if (!playing || playing.shots !== undefined) { return; }
+        playing.shots = null;                    /* in flight; asked once */
+        var session = playing, d = playing.detail;
+        API.videoshot(d.bvid, playing.cid, function (s) {
+            if (playing !== session) { return; }
+            playing.shots = s;
+            if (scrub) { paintScrub(); }
+        }, function () {});
+    }
+
+    /* Which frame of which sheet covers `ms`, as a background-position.
+     *
+     * `index` names every frame's second when bilibili sends it. On long
+     * uploads it does not, and then the frames are evenly spaced — the count
+     * has to be assumed full, so the last sheet of a video whose final page is
+     * only part filled can show a blank tile at the very end. */
+    function paintShot(ms) {
+        var thumb = el("scrub-thumb");
+        var s = playing && playing.shots;
+        if (!thumb) { return; }
+        if (!s || !s.sheets.length) { thumb.style.backgroundImage = "none"; return; }
+
+        var per = s.cols * s.rows;
+        var i;
+        if (s.index.length) {
+            var t = ms / 1000;
+            i = 0;
+            while (i + 1 < s.index.length && s.index[i + 1] <= t) { i++; }
+        } else {
+            var dur = Player.durationMs() || 1;
+            i = Math.round((ms / dur) * (s.sheets.length * per - 1));
+        }
+        i = Math.max(0, Math.min(s.sheets.length * per - 1, i));
+
+        var sheet = Math.floor(i / per), within = i % per;
+        var col = within % s.cols, row = Math.floor(within / s.cols);
+        var W = 384, H = 216;
+        thumb.style.backgroundImage = "url(" + s.sheets[sheet] + ")";
+        thumb.style.backgroundSize = (s.cols * W) + "px " + (s.rows * H) + "px";
+        thumb.style.backgroundPosition = (-col * W) + "px " + (-row * H) + "px";
+    }
+
     function enterScrub() {
         if (scrub) { return; }
         if (!Player.durationMs()) { return; }
         scrub = { target: lastKnownPosition, presses: 0, timer: null };
         el("playerui").className = "scrubbing";
         el("player-scrub").className = "";
+        el("scrub-preview").className = "";
+        loadShots();
         if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
     }
 
@@ -1227,6 +1303,17 @@
         el("player-fill").style.width = pct + "%";
         el("player-scrub").style.left = "calc(" + pct + "% - 3px)";
         el("player-pos").textContent = fmt(scrub.target);
+
+        /* Clamped in pixels rather than percent: at either end of a long video
+         * a centred preview would hang off the panel, and half a thumbnail is
+         * worse than none. */
+        var track = el("player-track");
+        var box = el("scrub-preview");
+        var w = (track && track.clientWidth) || 1;
+        var half = 192;
+        box.style.left = Math.max(half, Math.min(w - half, (pct / 100) * w)) + "px";
+        el("scrub-chapter").textContent = chapterAt(scrub.target);
+        paintShot(scrub.target);
     }
 
     function commitScrub() {
@@ -1242,6 +1329,7 @@
         scrub = null;
         el("playerui").className = "";
         el("player-scrub").className = "hidden";
+        el("scrub-preview").className = "hidden";
         showChrome();
     }
 
@@ -1542,6 +1630,7 @@
              * Same floor as everywhere else — under 30 seconds there is nothing
              * worth resuming, and starting ten seconds in reads as a glitch. */
             var r = got.resume;
+            if (r) { playing.chapters = r.chapters || []; }
             if (r && r.cid === cid && r.positionMs >= 30000 &&
                     r.positionMs > playing.startMs) {
                 playing.startMs = r.positionMs;
@@ -1863,6 +1952,9 @@
              * no way to tell them apart from the sofa. */
             report("player", "到画面 " + Player.timings());
             loadMetaForPlaying();
+            /* The duration is only real once there is a picture, and the marks
+             * are placed as a fraction of it. */
+            paintChapters();
         } else if (kind === "buffering") {
             el("player-hint").textContent = data ? "缓冲中…" : HINT;
         } else if (kind === "ended") {

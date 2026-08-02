@@ -325,6 +325,28 @@ body {
 }
 #playerui.scrubbing #player-pos { color: #fff; font-size: 30px; }
 
+/* Chapter marks sit above the fill so they stay visible on the played side. */
+#player-chapters { position: absolute; left: 0; top: 0; height: 8px; width: 100%; }
+#player-chapters .tick {
+    position: absolute; top: -3px; width: 3px; height: 14px;
+    margin-left: -1px; background: rgba(255,255,255,0.9); border-radius: 2px;
+}
+
+/* The preview hangs above the bar, centred on the head and clamped to the
+ * track by app.js — a thumbnail half off the screen is worse than none. */
+#scrub-preview { position: absolute; bottom: 30px; width: 384px; margin-left: -192px; }
+#scrub-thumb {
+    width: 384px; height: 216px; border-radius: 10px;
+    background: #000 no-repeat; background-size: cover;
+    border: 3px solid rgba(255,255,255,0.92);
+    box-shadow: 0 10px 34px rgba(0,0,0,0.75);
+}
+#scrub-chapter {
+    margin-top: 10px; font-size: 22px; color: #fff; text-align: center;
+    text-shadow: 0 2px 8px #000;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+
 #player-part { font-size: 24px; color: #ff6699; margin-bottom: 10px; letter-spacing: 1px; }
 
 /* A paused video should look paused from across the room. */

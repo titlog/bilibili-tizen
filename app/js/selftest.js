@@ -169,6 +169,21 @@ var SelfTest = (function () {
             key(KEY.RIGHT); key(KEY.RIGHT);
             return null;
         }],
+        /* The head commits 700ms after the last press and takes the preview
+         * down with it, and every step here waits longer than that — so this
+         * one presses for itself and checks in the same tick. `paintScrub` is
+         * synchronous, so by the time the press returns the thumbnail is either
+         * there or it never was. The sheets are a separate request, which is
+         * what this catches: a preview box that appears and stays black. */
+        ["拖动时有缩略图预览", 1200, function () {
+            key(KEY.RIGHT);
+            var box = document.getElementById("scrub-preview");
+            if (!box || box.className.indexOf("hidden") >= 0) { return "拖动时没有出现预览框"; }
+            var bg = document.getElementById("scrub-thumb").style.backgroundImage;
+            if (!bg || bg === "none") { return "预览框出来了但没有取到缩略图"; }
+            post("预览：" + bg.replace(/^url\(["']?|["']?\)$/g, "").split("/").pop());
+            return null;
+        }],
         ["拖动生效并落点", 2500, function () {
             var t = document.getElementById("player-pos").textContent;
             return (t && t !== "0:00") ? null : "拖动之后进度仍是 0:00";

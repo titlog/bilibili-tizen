@@ -77,7 +77,12 @@ eq("on-demand profile", doc.MPD["@profiles"], "urn:mpeg:dash:profile:isoff-on-de
 eq("4K is capped out by maxId", vreps.length, 2);
 eq("best remaining tier is 1080p", vreps[0]["@id"], 80);
 eq("and the ladder descends", vreps[1]["@id"], 32);
-ok("hevc is excluded", !vreps.some((r) => String(r["@codecs"]).startsWith("hev")));
+/* Without a MediaSource to ask — which is this harness, and any engine too old
+ * to have one — only H.264 is assumed. Every other family has to be measured on
+ * the set before it is used. */
+ok("hevc is excluded when nothing can be asked",
+   !vreps.some((r) => String(r["@codecs"]).startsWith("hev")));
+eq("and the chosen family says so", Mpd.chosen(), "avc1");
 ok("a representation without SegmentBase is excluded",
    !vreps.some((r) => r["@id"] === 64));
 
@@ -107,6 +112,34 @@ eq("no video means no manifest", Mpd.build({ duration: 10, video: [], audio: das
 eq("no audio means no manifest", Mpd.build({ duration: 10, video: dash.video, audio: [] }, 80), "");
 eq("nothing at all means no manifest", Mpd.build(null, 80), "");
 eq("a cap below every tier means no manifest", Mpd.build(dash, 1), "");
+
+/* Now with a set that says it decodes H.265 — which the real one does, measured
+ * 2026-08-02. The manifest has to switch families wholesale: an AdaptationSet is
+ * a set of alternatives a player may swap between mid-stream, and two codecs are
+ * not that. */
+sandbox.MediaSource = { isTypeSupported: (t) => !/av01/.test(t) };
+const hevcDoc = new XMLParser(PARSE).parse(Mpd.build(dash, 80));
+const hevcReps = [].concat(
+  hevcDoc.MPD.Period.AdaptationSet.find((s) => s["@contentType"] === "video").Representation);
+eq("with hevc support the family switches", Mpd.chosen(), "hev1");
+ok("and every video representation is hevc",
+   hevcReps.every((r) => String(r["@codecs"]).startsWith("hev")));
+eq("pinning avc1 overrides the preference", (() => {
+  Mpd.build(dash, 80, "avc1"); return Mpd.chosen();
+})(), "avc1");
+
+/* A family that cannot reach the tier H.264 reaches is not an improvement:
+ * fewer bytes for a smaller picture is a downgrade wearing a disguise. */
+const shortHevc = {
+  duration: 10, audio: dash.audio,
+  video: [
+    { id: 80, codecs: "avc1.640032", bandwidth: 3000000, segments: { init: "0-1", index: "2-3" }, baseUrl: AMPY },
+    { id: 32, codecs: "hev1.1.6.L120.90", bandwidth: 500000, segments: { init: "0-1", index: "2-3" }, baseUrl: AMPY }
+  ]
+};
+Mpd.build(shortHevc, 80);
+eq("a shorter hevc ladder is refused", Mpd.chosen(), "avc1");
+sandbox.MediaSource = undefined;
 
 if (failed) { console.log(`\n${failed} of ${checks} checks failed`); process.exit(1); }
 console.log(`✓ mpd: well-formed, escaped, laddered and capped — ${checks} checks`);
