@@ -363,6 +363,24 @@ var API = (function () {
             }, onFail);
         },
 
+        /* Where this account left this particular video, straight from
+         * bilibili — `last_play_cid` and `last_play_time` (milliseconds).
+         *
+         * The history list only carries the last two dozen entries, so the
+         * handoff built on it works for a video opened from 我的 and for
+         * nothing else. This answers for any video, however it was found: a
+         * search result, a card in 推荐, a part deep inside a series. It is one
+         * small GET and it is fired alongside playurl rather than before it, so
+         * it costs no time on the way to a picture. */
+        playerV2: function (bvid, cid, onOk, onFail) {
+            getJson(BASE + "/x/player/v2?bvid=" + bvid + "&cid=" + cid, function (d) {
+                onOk({
+                    cid: d.last_play_cid || 0,
+                    positionMs: d.last_play_time || 0
+                });
+            }, onFail);
+        },
+
         /* Tell bilibili where this television got to, so the phone shows it.
          * `progress` is seconds, or -1 for watched to the end — the same
          * convention the history endpoint reports back. Failures go no further

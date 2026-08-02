@@ -1469,10 +1469,11 @@
         lastKnownPosition = startMs;
         lastKnownDuration = 0;      /* the previous video's length is not this one's */
         playing.startMs = startMs;
-        if (startMs) {
-            toast((fromPhone ? "接着手机上的进度，从 " : "从 ") +
-                  fmt(startMs) + " 继续播放");
-        }
+        playing.fromPhone = fromPhone;
+        /* The toast waits for `decide()`. bilibili's own record for this video
+         * is still in flight at this point and may put the start somewhere
+         * else, and announcing a position that is about to change is worse than
+         * announcing it a third of a second later. */
         el("player-title").textContent = detail.title;
         var partLabel = "";
         if (detail.pages && detail.pages.length > 1) {
@@ -1525,11 +1526,34 @@
          * single byte of media was requested — and the answer to one has never
          * had any bearing on how to ask the other. `undefined` means still in
          * flight, `null` means it failed; the decision waits for both. */
-        var got = { dash: undefined, prog: undefined };
+        var got = { dash: undefined, prog: undefined, resume: undefined };
 
         function decide() {
             if (playing !== session) { return; }
-            if (got.dash === undefined || got.prog === undefined) { return; }
+            if (got.dash === undefined || got.prog === undefined ||
+                    got.resume === undefined) { return; }
+
+            /* bilibili's own record for this video, which knows about every
+             * device including this one. It only moves the position within the
+             * part already chosen: naming a different part is a decision that
+             * belongs upstream, in `resumeCid`, and switching here would mean
+             * throwing away the two stream requests already in flight.
+             *
+             * Same floor as everywhere else — under 30 seconds there is nothing
+             * worth resuming, and starting ten seconds in reads as a glitch. */
+            var r = got.resume;
+            if (r && r.cid === cid && r.positionMs >= 30000 &&
+                    r.positionMs > playing.startMs) {
+                playing.startMs = r.positionMs;
+                lastKnownPosition = r.positionMs;
+                playing.fromPhone = false;
+                playing.fromAccount = true;
+            }
+            if (playing.startMs) {
+                toast((playing.fromPhone ? "接着手机上的进度，从 "
+                        : (playing.fromAccount ? "接着上次的进度，从 " : "从 ")) +
+                      fmt(playing.startMs) + " 继续播放");
+            }
 
             var dash = got.dash, prog = got.prog;
             var dashQn = 0;
@@ -1569,6 +1593,28 @@
             if (playing !== session) { return; }
             report("player", "no durl (" + why + ")");
             got.prog = null;
+            decide();
+        });
+
+        /* Third of the three, and the only one playback can start without —
+         * hence the timer. A resume point is worth a third of a second of
+         * waiting and not a second more; a slow or hung answer must not hold a
+         * picture that both stream requests are already ready to paint. */
+        var resumeTimer = setTimeout(function () {
+            if (playing !== session || got.resume !== undefined) { return; }
+            got.resume = null;
+            decide();
+        }, 1200);
+
+        API.playerV2(detail.bvid, cid, function (r) {
+            clearTimeout(resumeTimer);
+            if (playing !== session || got.resume !== undefined) { return; }
+            got.resume = r;
+            decide();
+        }, function () {
+            clearTimeout(resumeTimer);
+            if (playing !== session || got.resume !== undefined) { return; }
+            got.resume = null;
             decide();
         });
     }
@@ -1970,12 +2016,29 @@
             catch (e) { es6 = false; }
             try { blobUrl = !!(window.Blob && URL.createObjectURL(new Blob(["x"]))); }
             catch (e) { blobUrl = false; }
+            /* Which codecs this panel will actually accept through MSE.
+             *
+             * bilibili offers every tier in H.265 and AV1 as well as H.264, and
+             * `mpd.js` keeps only the H.264 ones. H.265 carries the same picture
+             * in roughly two thirds of the bytes, which is the difference
+             * between riding out a slow minute and stalling — so whether that
+             * filter is costing anything is worth knowing rather than assuming.
+             * Asked here because the answer belongs to the set, not to a
+             * guess about what a 2024 Samsung ought to support. */
+            var can = function (c) {
+                try { return MediaSource.isTypeSupported('video/mp4; codecs="' + c + '"'); }
+                catch (e) { return false; }
+            };
             report("engine", navigator.userAgent +
                    " | ES6=" + es6 +
                    " | MSE=" + (typeof MediaSource !== "undefined") +
                    " | Blob URL=" + blobUrl +
                    " | Promise=" + (typeof Promise !== "undefined") +
-                   " | fetch=" + (typeof fetch !== "undefined"));
+                   " | fetch=" + (typeof fetch !== "undefined") +
+                   " | avc1=" + can("avc1.640028") +
+                   " | hev1=" + can("hev1.1.6.L120.90") +
+                   " | hvc1=" + can("hvc1.1.6.L120.90") +
+                   " | av01=" + can("av01.0.08M.08"));
         } catch (e) { report("engine", "probe failed: " + e.message); }
 
         /* A set with more than one person on it asks before showing anyone's

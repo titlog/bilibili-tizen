@@ -55,7 +55,7 @@ CDN 拒绝一切。表现和「这个流坏了」一模一样，而且只在用�
 | 路径 | 可用 | 备注 |
 |---|---|---|
 | AVPlay + 渐进式 `durl` | 是 | 原生缓冲、原生 seek、内存恒定 —— 但受下面的画质上限所限 |
-| `<video>` + MSE | 是 | 这里播 DASH 的唯一途径，现由 Shaka 驱动；`avc1` 与 `mp4a.40.2` 都过 `isTypeSupported` |
+| `<video>` + MSE | 是 | 这里播 DASH 的唯一途径，现由 Shaka 驱动；`avc1`/`hev1`/`hvc1`/`av01` 与 `mp4a.40.2` **全部**过 `isTypeSupported`（2026-08-02 设备实测，见启动那行 `engine:`） |
 | AVPlay + HTTP 上的 MPD | 是 | 证明我们生成的清单本身是合法的 |
 | AVPlay + `data:` URI 的 MPD | 否 | `PLAYER_ERROR_INVALID_URI` |
 | AVPlay + `file://` 的 MPD | 否 | `PLAYER_ERROR_NOT_SUPPORTED_FILE` |
@@ -586,6 +586,14 @@ CDN 的首次连接。
 本地列表没有因此变成冗余：它是即时的（进度条随卡片一起出现，不用等一个请求）、
 它知道最后 30 秒（上报间隔不知道）、它对网页扫码进来的账号仍然有效、请求失败时
 它还在。
+
+**续播点还有第三个来源：`/x/player/v2`**（`API.playerV2()`），给这个账号在这个视频上的
+`last_play_cid` 和 `last_play_time`（**毫秒**）。历史列表只有最近二十几条，所以基于它的
+接力只在从「我的」点进去时有效；`player/v2` 对任何一条路进来的视频都答得上 —— 搜索
+结果、推荐里的卡片、系列里深处的某一 P。它和两条 playurl **并排发**（`play()` 里
+`got.dash/prog/resume` 三个都到齐才 `decide()`），所以不占到画面的时间；实测
+`playurl=277ms` 没变。**它只在已经选定的那一 P 内挪位置** —— 选哪一 P 是
+`resumeCid()` 的事，在这里改会把两个已经在飞的取流请求作废。超时 1200 毫秒后不等它。
 
 有四件事合起来让这个列表看起来是坏的，而且全都是静默的：
 
