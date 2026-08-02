@@ -149,6 +149,8 @@
         Resume.flush();          /* into the outgoing account's namespace */
         Accounts.switchTo(id);
         feedCache = {};
+        /* Another account, another history. */
+        serverHistory = { at: 0, items: null };
         state.query = "";
         state.results = null;
         paintAccount();
@@ -184,16 +186,50 @@
                '</div>';
     }
 
+    /* What is half-watched, newest first, for the strip across the top of the
+     * home screen.
+     *
+     * Four, because four is one row at this card width — a "continue watching"
+     * that takes two rows has stopped being a strip and started being a screen.
+     * Finished videos are dropped: the row exists to answer "what was I in the
+     * middle of", and something watched to the end is not an answer to that. */
+    function resumeRowItems() {
+        var merged = mergeHistory(Resume.recent(20), serverHistory.items || []);
+        var out = [];
+        for (var i = 0; i < merged.length && out.length < 4; i++) {
+            if ((merged[i].seen || 0) >= 0.95) { continue; }
+            out.push(merged[i]);
+        }
+        return out;
+    }
+
     function renderGrid(items, emptyText) {
         if (!items.length) {
             screenEl.innerHTML = '<div class="empty">' + esc(emptyText || "没有内容") + '</div>';
             return;
         }
-        var html = '<div class="grid">';
+
+        /* Only on the home tab, and only when there is something to carry on
+         * with. Turning the television on and finding the half-watched thing
+         * already under the cursor is what a television is supposed to do; the
+         * alternative was 我的, two presses and a wait away. */
+        var resume = (state.screen === "rcmd") ? resumeRowItems() : [];
+
+        var html = "";
+        if (resume.length) {
+            html += '<div class="section">继续观看</div><div id="resume-row"></div>' +
+                    '<div class="section">推荐</div>';
+        }
+        html += '<div class="grid" id="feed-grid">';
         for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], i); }
         screenEl.innerHTML = html + "</div>";
 
-        var cards = screenEl.querySelectorAll(".card");
+        if (resume.length) { paintCards(el("resume-row"), resume); }
+
+        /* Scoped to the feed's own grid. The resume cards carry a `data-i` too,
+         * into a different array — reading them as feed indices would open the
+         * wrong video. */
+        var cards = screenEl.querySelectorAll("#feed-grid .card");
         for (var j = 0; j < cards.length; j++) {
             (function (card, v) {
                 card.onselect = function () { playVideo(v); };
@@ -279,6 +315,24 @@
         return out;
     }
 
+    /* bilibili's own history, held briefly. Two screens want it — the home
+     * strip and 我的 — and asking twice inside a minute for the same two dozen
+     * entries is a request a television has no reason to make. Fetched once at
+     * startup so the home screen has it by the time the feed paints, rather
+     * than inserting a row under someone who has already started navigating. */
+    var serverHistory = { at: 0, items: null };
+
+    function fetchServerHistory(onOk, onFail) {
+        if (serverHistory.items && (new Date().getTime() - serverHistory.at) < 60000) {
+            onOk(serverHistory.items, serverHistory.items.length, true);
+            return;
+        }
+        API.history(function (items, rawCount) {
+            serverHistory = { at: new Date().getTime(), items: items };
+            onOk(items, rawCount, false);
+        }, onFail || function () {});
+    }
+
     /* Feeds are cached so that coming back from a video lands where the user
      * left off instead of refetching and dumping focus on the first card. */
     var feedCache = {};
@@ -360,7 +414,7 @@
     }
 
     function appendCards(items, offset) {
-        var grid = screenEl.querySelector(".grid");
+        var grid = el("feed-grid") || screenEl.querySelector(".grid");
         if (!grid) { return; }
         var html = "";
         for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], offset + i); }
@@ -384,7 +438,7 @@
         var cached = feedCache[kind];
         if (restore && cached) {
             renderGrid(cached.items);
-            var cards = screenEl.querySelectorAll(".card");
+            var cards = screenEl.querySelectorAll("#feed-grid .card");
             var target = cards[Math.min(cached.index || 0, cards.length - 1)];
             Nav.focus(target || cards[0]);
             screenEl.scrollTop = cached.scrollTop || 0;
@@ -411,6 +465,22 @@
         });
     }
 
+    /* The history usually lands with the feed and the strip is simply part of
+     * the first paint. When it is slower it may still be added, but only while
+     * the viewer has not moved: a row appearing above the cursor after someone
+     * has started reading pushes everything down under their eyes, and that is
+     * worse than no row at all. */
+    function maybeAddResumeRow() {
+        if (state.screen !== "rcmd" || el("resume-row")) { return; }
+        var cache = feedCache.rcmd;
+        if (!cache || !cache.items.length) { return; }
+        if (!resumeRowItems().length) { return; }
+        var first = screenEl.querySelector("#feed-grid .card");
+        if (!first || Nav.current() !== first) { return; }
+        renderGrid(cache.items);
+        Nav.reset(".card");
+    }
+
     function rememberPosition() {
         var c = feedCache[state.screen];
         if (!c) { return; }
@@ -419,7 +489,11 @@
          * an unrelated card. */
         if (optionsOpen) { return; }
         var cur = Nav.current();
-        if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null) {
+        /* And the resume strip's cards carry one too, into a different array —
+         * remembering their index would land the viewer on an unrelated card in
+         * the feed when they came back. */
+        if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null &&
+                cur.parentNode && cur.parentNode.id === "feed-grid") {
             c.index = Number(cur.getAttribute("data-i"));
         }
         c.scrollTop = screenEl.scrollTop;
@@ -479,7 +553,11 @@
                 };
             })(keys[i]);
         }
-        Nav.reset(".key");
+        /* On 中文输入, not on "A". The letter grid cannot type Chinese at all,
+         * so for the person this app is for it is the secondary keyboard —
+         * landing on it meant four presses down before the first character of
+         * every search. */
+        Nav.reset('[data-act="ime"]');
     }
 
     /* The on-screen letter grid cannot type Chinese. Focusing a real input
@@ -758,6 +836,8 @@
             /* Whether or not the removed account was the active one, the cached
              * feeds may be theirs — remove() promotes somebody else. */
             feedCache = {};
+            /* Another account, another history. */
+            serverHistory = { at: 0, items: null };
             state.query = "";
             state.results = null;
             toast("已移除「" + label + "」");
@@ -787,6 +867,77 @@
         var token = newView();
         var accId = Accounts.activeId();
         screenEl.innerHTML = '<div class="mine"><div class="empty">检查登录状态…</div></div>';
+
+        /* Started here rather than from inside the nav callback. The two have
+         * nothing to say to each other, and one after the other meant this
+         * screen — which is opened to look at a list — spent two round trips
+         * showing "检查登录状态…" and then "读取中…". Usually it is already in
+         * hand, because startup fetched it. */
+        var mine = null, shown = null;
+        var hist = { done: false, items: null, raw: 0, why: "" };
+
+        function paintHistory() {
+            if (!hist.done || !shown || !stillViewing(token)) { return; }
+            var h = el("hist");
+            if (!h) { return; }
+
+            if (!hist.items) {
+                report("history", "服务端历史读取失败：" + hist.why);
+                var note = el("hist-note");
+                /* The local list stands on its own, so a failed request is a
+                 * footnote rather than an error screen — unless there is no
+                 * local list, in which case it is the whole story. */
+                if (!mine.length) {
+                    h.innerHTML = '<div class="empty">读取失败：' + esc(hist.why) + '</div>';
+                } else if (note) {
+                    note.innerHTML = '<div class="empty">手机 / 网页端的记录没读到（' +
+                                     esc(hist.why) + '），下面只是这台电视上的</div>';
+                }
+                return;
+            }
+
+            /* The newest title goes in the line too. A count alone says the
+             * request worked, not that the answer is current — and "is what the
+             * television has the same as what my phone shows" is the only
+             * question this log line ever gets asked. */
+            report("history", "服务端历史 " + hist.raw + " 条，可打开的 " + hist.items.length +
+                " 条" + (hist.items.length ? "，最新一条：" + hist.items[0].title.slice(0, 24) : ""));
+
+            /* Repainting moves the ground under whoever is already looking. The
+             * card under the ring is found again by bvid, because its position
+             * in the list is exactly what the merge just changed. */
+            var cur = Nav.current();
+            var keep = "";
+            if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null) {
+                var was = shown[Number(cur.getAttribute("data-i"))];
+                keep = was ? was.bvid : "";
+            }
+
+            shown = mergeHistory(mine, hist.items);
+            if (!shown.length) {
+                h.innerHTML = '<div class="empty">' + (hist.raw
+                    ? "bilibili 上这 " + hist.raw + " 条都不是普通视频（番剧/直播/专栏），这里打不开"
+                    : "还没有看过什么") + '</div>';
+                return;
+            }
+            paintCards(h, shown);
+            if (keep) {
+                for (var ki = 0; ki < shown.length; ki++) {
+                    if (shown[ki].bvid !== keep) { continue; }
+                    Nav.focus(h.querySelectorAll(".card")[ki]);
+                    break;
+                }
+            }
+        }
+
+        fetchServerHistory(function (items, raw) {
+            hist.done = true; hist.items = items; hist.raw = raw;
+            paintHistory();
+        }, function (why) {
+            hist.done = true; hist.items = null; hist.why = why;
+            paintHistory();
+        });
+
         API.nav(function (me) {
             /* A slow nav landing after the viewer switched account or tab used
              * to repaint the screen they had left, under the wrong name. */
@@ -810,8 +961,8 @@
                     '<div id="hist-note"></div></div>';
             screenEl.innerHTML = html;
 
-            var mine = Resume.recent(40);
-            var shown = mergeHistory(mine, []);
+            mine = Resume.recent(40);
+            shown = mergeHistory(mine, []);
             var h0 = el("hist");
             if (h0) {
                 if (shown.length) { paintCards(h0, shown); }
@@ -823,6 +974,9 @@
                         ? "读取中…" : "这台电视上还没有看过什么") + '</div>';
                 }
             }
+            /* The list may already be waiting — it is fetched in parallel with
+             * this, and startup usually has it in hand before either. */
+            if (me.isLogin) { paintHistory(); }
 
             el("btn-switch").onselect = function () { renderAccounts(false); };
 
@@ -843,6 +997,8 @@
                 el("btn-remove").onselect = function () {
                     Auth.logout();
                     feedCache = {};
+                    /* Another account, another history. */
+                    serverHistory = { at: 0, items: null };
                     state.query = "";
                     state.results = null;
                     paintAccount();
@@ -854,60 +1010,6 @@
             };
             Nav.reset("#btn-switch");
 
-            if (me.isLogin) {
-                API.history(function (items, rawCount) {
-                    var h = el("hist");
-                    if (!h || !stillViewing(token)) { return; }
-                    /* The newest title goes in the line too. A count alone says
-                     * the request worked, not that the answer is current — and
-                     * "is what the television has the same as what my phone
-                     * shows" is the only question this log line ever gets asked.
-                     * One title answers it; the rest is noise. */
-                    report("history", "服务端历史 " + rawCount + " 条，可打开的 " + items.length +
-                        " 条" + (items.length ? "，最新一条：" + items[0].title.slice(0, 24) : ""));
-
-                    /* Repainting moves the ground under whoever is already
-                     * looking. The card under the ring is found again by bvid,
-                     * because its position in the list is exactly what the merge
-                     * just changed. */
-                    var cur = Nav.current();
-                    var keep = "";
-                    if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null) {
-                        var was = shown[Number(cur.getAttribute("data-i"))];
-                        keep = was ? was.bvid : "";
-                    }
-
-                    shown = mergeHistory(mine, items);
-                    if (!shown.length) {
-                        h.innerHTML = '<div class="empty">' + (rawCount
-                            ? "bilibili 上这 " + rawCount + " 条都不是普通视频（番剧/直播/专栏），这里打不开"
-                            : "还没有看过什么") + '</div>';
-                        return;
-                    }
-                    paintCards(h, shown);
-                    if (keep) {
-                        for (var ki = 0; ki < shown.length; ki++) {
-                            if (shown[ki].bvid !== keep) { continue; }
-                            Nav.focus(h.querySelectorAll(".card")[ki]);
-                            break;
-                        }
-                    }
-                }, function (why) {
-                    if (!stillViewing(token)) { return; }
-                    report("history", "服务端历史读取失败：" + why);
-                    var h2 = el("hist");
-                    var note = el("hist-note");
-                    /* The local list stands on its own, so a failed request is a
-                     * footnote rather than an error screen — unless there is no
-                     * local list, in which case it is the whole story. */
-                    if (!mine.length && h2) {
-                        h2.innerHTML = '<div class="empty">读取失败：' + esc(why) + '</div>';
-                    } else if (note) {
-                        note.innerHTML = '<div class="empty">手机 / 网页端的记录没读到（' +
-                                         esc(why) + '），下面只是这台电视上的</div>';
-                    }
-                });
-            }
         }, function (why) {
             if (!stillViewing(token)) { return; }
             screenEl.innerHTML = '<div class="empty">无法检查登录状态：' + esc(why) + '</div>';
@@ -973,6 +1075,8 @@
             } else if (s.kind === "done") {
                 toast("登录成功");
                 feedCache = {};
+                /* Another account, another history. */
+                serverHistory = { at: 0, items: null };
                 state.query = "";
                 state.results = null;
                 paintAccount();
@@ -2149,6 +2253,14 @@
                         typeof SelfTest !== "undefined");
         if (shared && !selftest) { renderAccounts(true); }
         else { loadFeed("rcmd"); }
+
+        /* Alongside the feed, not after it. Both take about the same time, and
+         * having the history in hand when the grid paints is the difference
+         * between the resume strip being part of the first screen and being a
+         * row that appears afterwards. */
+        if (Auth.isLoggedIn()) {
+            fetchServerHistory(function () { maybeAddResumeRow(); });
+        }
 
         /* Constructing Shaka measured about seven hundred milliseconds, and it
          * is built once and kept — so the only thing in question is when. Doing
