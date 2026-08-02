@@ -1950,7 +1950,14 @@
             /* Where the seconds before a picture actually went. Without this,
              * "it takes a few seconds" has at least five candidate causes and
              * no way to tell them apart from the sofa. */
-            report("player", "到画面 " + Player.timings());
+            /* Once per video. The element fires `playing` again after every
+             * seek and every resume, and `mark()` only records the first of
+             * each — so the line was being printed four or five times per video
+             * with the same numbers, which reads like four starts. */
+            if (playing && !playing.timed) {
+                playing.timed = true;
+                report("player", "到画面 " + Player.timings());
+            }
             loadMetaForPlaying();
             /* The duration is only real once there is a picture, and the marks
              * are placed as a fraction of it. */
@@ -2142,6 +2149,16 @@
                         typeof SelfTest !== "undefined");
         if (shared && !selftest) { renderAccounts(true); }
         else { loadFeed("rcmd"); }
+
+        /* Constructing Shaka measured about seven hundred milliseconds, and it
+         * is built once and kept — so the only thing in question is when. Doing
+         * it here spends it while the viewer is looking at the grid instead of
+         * at the black screen before their first video. Late enough that the
+         * feed has painted first: a busy main thread during that paint is worse
+         * than a slow first play. */
+        setTimeout(function () {
+            try { Player.prewarm(); } catch (e) {}
+        }, 1200);
 
         if (selftest) { SelfTest.run(); }
     };

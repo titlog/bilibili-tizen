@@ -145,10 +145,22 @@ var Player = (function () {
     function reset() {
         mseGeneration++;
         avGeneration++;
-        try { webapis.avplay.stop(); } catch (e) {}
-        try { webapis.avplay.close(); } catch (e) {}
-        if (obj && obj.parentNode) { obj.parentNode.removeChild(obj); }
-        obj = null;
+
+        /* Only when AVPlay was actually used. `obj` is created by
+         * `ensureObject()` on that path and nowhere else, so a null one means
+         * there is nothing native to tear down — and `stop()` and `close()` are
+         * not free when there is nothing to stop: they measured **570ms**
+         * together on this set, sitting between the playurl answer and the
+         * manifest, on every DASH start. That is most of a second of black
+         * screen spent closing a player that was never opened. Found by
+         * splitting the `到画面` line with a `teardown` mark rather than by
+         * guessing, which is the only reason it was ever visible. */
+        if (obj) {
+            try { webapis.avplay.stop(); } catch (e) {}
+            try { webapis.avplay.close(); } catch (e) {}
+            if (obj.parentNode) { obj.parentNode.removeChild(obj); }
+            obj = null;
+        }
 
         var v = el("html5-video");
 
@@ -308,13 +320,21 @@ var Player = (function () {
                  * declared unplayable when it is merely unlucky. */
                 retryParameters: { maxAttempts: 7, baseDelay: 600, backoffFactor: 1.6,
                                    fuzzFactor: 0.5, timeout: 20000 },
-                bufferingGoal: 30,
+                /* Both of these were set when a 1080p stream cost about two
+                 * megabits. On H.265 the same picture measures 606 kbps, so
+                 * thirty seconds of buffer is now a little over two megabytes —
+                 * and the two complaints this app has actually collected are
+                 * "it stalls when I skip ahead" and "it says there is nothing
+                 * cached when I go back". Both are buffer sizes, and at this
+                 * bitrate they cost 4.5 MB forward and 9 MB behind. A
+                 * television has that. */
+                bufferingGoal: 60,
                 /* One second, not two. This is how much has to be in hand
                  * before the picture is allowed to start, and it was measured
                  * costing two seconds of black screen after the load had
                  * already finished. */
                 rebufferingGoal: 1,
-                bufferBehind: 30
+                bufferBehind: 120
             }
         };
     }
@@ -508,8 +528,25 @@ var Player = (function () {
         mark: mark,
         timings: timings,
 
+        /* Build the player before anyone asks for it. It is kept for the life
+         * of the app, so this is paid exactly once either way — the only
+         * question is whether it is paid while the viewer is reading the grid
+         * or while they are staring at a black screen waiting for the first
+         * video. Called on a timer rather than at init so it lands after the
+         * feed has painted. */
+        prewarm: function () { ensureShaka(); },
+
         playProgressive: function (url, startMs) { reset(); playAvplay(url, startMs); },
-        playDash: function (dash, startMs) { reset(); playDashWithShaka(dash, startMs); },
+        playDash: function (dash, startMs) {
+            reset();
+            /* Half a second goes missing between `playurl` and `manifest` and
+             * has done since before Shaka. `reset()` is the only thing in
+             * there besides building the manifest, and it calls into AVPlay —
+             * whose stop/close are native and are not free even when nothing
+             * is playing. Split the mark rather than guess at it. */
+            mark("teardown");
+            playDashWithShaka(dash, startMs);
+        },
 
         pause: function () {
             if (mode === "avplay") { try { webapis.avplay.pause(); } catch (e) {} }

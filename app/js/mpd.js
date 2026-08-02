@@ -65,12 +65,23 @@ var Mpd = (function () {
 
     function family(codecs) { return String(codecs || "").split(".")[0]; }
 
+    /* Memoised: the same handful of codec strings come back for every video,
+     * and `isTypeSupported` is not guaranteed to be a table lookup — on some
+     * engines it goes and asks the decoder. This sits on the path between
+     * pressing a button and seeing a picture, so it gets asked once. */
+    var supportCache = {};
+
     function playable(codecs) {
         if (typeof MediaSource === "undefined" || !MediaSource.isTypeSupported) {
             return family(codecs) === "avc1";
         }
-        try { return MediaSource.isTypeSupported('video/mp4; codecs="' + codecs + '"'); }
-        catch (e) { return false; }
+        if (supportCache[codecs] === undefined) {
+            try {
+                supportCache[codecs] =
+                    MediaSource.isTypeSupported('video/mp4; codecs="' + codecs + '"');
+            } catch (e) { supportCache[codecs] = false; }
+        }
+        return supportCache[codecs];
     }
 
     var chosen = "";
