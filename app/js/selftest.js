@@ -221,7 +221,10 @@ var SelfTest = (function () {
              * 2026-08-03). Backwards from there is just as far outside the
              * buffer: bufferBehind keeps 120s and this jumps 210. */
             var canForward = dur - now >= 300;
-            var canBack = now >= 330;
+            /* 345, not 330: the jump is 210s and the landing check demands
+             * strictly more than 120s, so 330 lands exactly on the boundary
+             * and fails a healthy player. */
+            var canBack = now >= 345;
             if (!canForward && !canBack) {
                 post("拖动：位置 " + now + "s/" + dur + "s 两头都不够远，跳过远距离拖动");
                 return null;
