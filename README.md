@@ -10,6 +10,13 @@
 >
 > **与 bilibili、三星均无关联。** 个人项目。
 
+|  |  |
+|---|---|
+| ![首页](docs/screenshots/01-home.jpg) | ![播放](docs/screenshots/03-player-scrub.jpg) |
+| 首页推荐,焦点是几何的 —— 参差不齐的网格也不用声明列数 | 1080P H.265 播放,进度条 / 画质角标 / 操作提示 |
+| ![相关](docs/screenshots/04-panel.jpg) | ![搜索](docs/screenshots/02-search.jpg) |
+| 播放中按下键拉出简介与相关推荐,**视频不停** | 搜索,可切到电视自带的中文输入法 |
+
 ## 现在能用的
 
 推荐 / 热门 / 排行 / 四个分区 / 动态 / 用电视自带输入法搜索,扫码登录(任意多个
@@ -125,6 +132,7 @@ tools/
   setup.sh            只跑一次:你的电视、你的证书
   deploy.sh           检查、签名、安装、启动
   samsung-cert.mjs    无 GUI 签发三星证书
+  devserver.mjs       在桌面浏览器里跑客户端（截图、改界面不用部署）
   collect.mjs         :8099 上的诊断收集器
   lint.mjs            抓「调用了不存在的东西」
   *-verify.mjs        清单 / 账号 / md5 / 二维码 —— 任何一个失败都拒绝发布
