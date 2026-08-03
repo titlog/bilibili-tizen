@@ -11,17 +11,42 @@
  */
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import http from "http";
 import https from "https";
 import { execFile } from "child_process";
 import forge from "node-forge";
 
 const HOME = process.env.HOME;
-const OUT = path.join(HOME, "tizen-studio-data", "SamsungCertificate", "BiliSpike");
+const PROFILE = process.env.CERT_PROFILE || "BiliSpike";
+const OUT = path.join(HOME, "tizen-studio-data", "SamsungCertificate", PROFILE);
 const CA_DIR = path.join(HOME, "tizen-studio-data", "samsung-ca");
 
-const DUID = process.env.TV_DUID || "YOURDUIDHERE";
-const PASSWORD = process.env.CERT_PASSWORD || "CHANGEME";
+/* The DUID identifies one television and is printed by Developer Mode; there is
+ * no sensible default, and a wrong one yields a certificate that installs
+ * nothing. tools/setup.sh reads it once into ~/.bilibili-tizen.conf. */
+const DUID = process.env.TV_DUID;
+if (!DUID) {
+  console.error("需要 TV_DUID —— 电视上「开发者模式」面板里显示的那串。");
+  console.error("先跑一次 zsh tools/setup.sh，或者临时指定：TV_DUID=XXXX node tools/samsung-cert.mjs");
+  process.exit(1);
+}
+
+/* This protects the private keys that sign every build. It used to default to a
+ * literal in this file, which is fine for one machine and indefensible in a
+ * public repository — a shared default password is no password. Generated when
+ * unset, and written to the same file deploy.sh reads. */
+const PW_FILE = process.env.CERT_PASSWORD_FILE ||
+  path.join(HOME, ".bilibili-tizen-cert-password");
+let PASSWORD = process.env.CERT_PASSWORD;
+if (!PASSWORD && fs.existsSync(PW_FILE)) {
+  PASSWORD = fs.readFileSync(PW_FILE, "utf8").trim();
+}
+if (!PASSWORD) {
+  PASSWORD = crypto.randomBytes(18).toString("base64url");
+  fs.writeFileSync(PW_FILE, PASSWORD + "\n", { mode: 0o600 });
+  console.log(`生成了新的证书密码，写入 ${PW_FILE}（仅本人可读）`);
+}
 const PRIVILEGE = "Public";
 
 const AUTHOR_URL = "https://svdca.samsungqbe.com/apis/v3/authors";

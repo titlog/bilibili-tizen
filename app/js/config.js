@@ -12,7 +12,7 @@ var PREFERRED_QN = 80;
 
 /* Dev only: the app posts errors here so a run can be read from the terminal
  * instead of off the screen. Empty disables it. */
-var REPORT_TO = "http://192.168.1.10:8099/report";
+var REPORT_TO = "";
 
 /* Set by tools/deploy.sh --selftest: walks the whole flow on the device and
  * reports each step to the collector. Never on in a normal build. */

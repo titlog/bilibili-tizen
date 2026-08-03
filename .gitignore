@@ -4,3 +4,4 @@ node_modules/
 author-signature.xml
 signature*.xml
 .DS_Store
+.gstack/

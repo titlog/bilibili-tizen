@@ -14,7 +14,7 @@ SELFTEST=false
 
 export PATH="$HOME/tizen-studio/tools:$HOME/tizen-studio/tools/ide/bin:$PATH"
 
-CERT_DIR="$HOME/tizen-studio-data/SamsungCertificate/BiliSpike"
+CERT_DIR="$HOME/tizen-studio-data/SamsungCertificate/${CERT_PROFILE:-BiliSpike}"
 CA_DIR="$HOME/tizen-studio-data/samsung-ca"
 PROFILES="$HOME/tizen-studio-data/profile/profiles.xml"
 # The certificate password lives outside the repo. The p12 files it protects are
@@ -23,16 +23,36 @@ PROFILES="$HOME/tizen-studio-data/profile/profiles.xml"
 PW_FILE="$HOME/.bilibili-tizen-cert-password"
 [ -f "$PW_FILE" ] || { echo "missing $PW_FILE — see CLAUDE.md"; exit 1; }
 PW=$(cat "$PW_FILE")
-PROFILE="SamsungBili"
-TV_IP="192.168.1.100"
+# Everything below describes one particular television on one particular LAN, so
+# none of it is hardcoded any more: `tools/setup.sh` writes ~/.bilibili-tizen.conf
+# once, and every value can still be overridden per-invocation from the
+# environment. The defaults are only what a first run guesses before setup has
+# been done — the aim is that somebody else's TV needs no edit to this file.
+CONF="${BILI_TIZEN_CONF:-$HOME/.bilibili-tizen.conf}"
+[ -f "$CONF" ] && source "$CONF"
+
+PROFILE="${BILI_PROFILE:-SamsungBili}"
+TV_IP="${BILI_TV_IP:-}"
+TARGET="${BILI_TV_TARGET:-}"
+APP_ID="${BILI_APP_ID:-BiLiSpiKe0.BiliSpike}"
+
+if [ -z "$TV_IP" ]; then
+  echo "没有配置电视地址。先跑一次：zsh tools/setup.sh"
+  echo "（或临时指定：BILI_TV_IP=<电视地址> zsh tools/deploy.sh）"
+  exit 1
+fi
 TV="$TV_IP:26101"
-TARGET="UE65XXXXXXXXXX"
-APP_ID="BiLiSpiKe0.BiliSpike"
+
+# The interface the television reports back over. On a laptop with both Wi-Fi and
+# a dock this is not always en0, and a wrong guess sends diagnostics into a void
+# with no error anywhere — the failure this project has burned the most hours on.
+NET_IF="${BILI_NET_IF:-en0}"
 
 # The client fetches its own stream urls at runtime, so nothing needs pinning
 # any more; only the dev reporting address is injected.
 echo "== pointing reporting at this machine =="
-HOST_IP=$(ipconfig getifaddr en0)
+HOST_IP=$(ipconfig getifaddr "$NET_IF")
+[ -n "$HOST_IP" ] || { echo "拿不到 $NET_IF 的地址 — 用 BILI_NET_IF 指定网卡"; exit 1; }
 APP="$APP" HOST_IP="$HOST_IP" SELFTEST="$SELFTEST" python3 - <<'PY'
 import os, re
 p = os.path.join(os.environ["APP"], "js", "config.js")
@@ -106,13 +126,16 @@ PY
 # The set only accepts sdb from the address registered in Developer Mode. When
 # DHCP moves this machine, the failure is a silent timeout, so say plainly what
 # happened rather than leaving it to be rediscovered.
-EXPECTED_HOST="192.168.1.10"
-if [ "$HOST_IP" != "$EXPECTED_HOST" ]; then
+# Recorded by setup.sh as the address that was registered on the TV. Empty on a
+# machine that has not run setup, in which case there is nothing to compare and
+# the warning simply does not fire.
+EXPECTED_HOST="${BILI_HOST_IP:-}"
+if [ -n "$EXPECTED_HOST" ] && [ "$HOST_IP" != "$EXPECTED_HOST" ]; then
   echo "!! this machine is now $HOST_IP, but the TV is set to allow $EXPECTED_HOST"
   echo "   sdb will time out until they match. Either:"
   echo "     - TV: Apps > press 12345 > set Host PC IP to $HOST_IP, then full power cycle"
   echo "     - or give this machine a DHCP reservation for $EXPECTED_HOST on the router"
-  echo "   and update EXPECTED_HOST in this script if you settle on a new address."
+  echo "   and re-run tools/setup.sh if you settle on a new address."
 fi
 
 echo "== connecting =="

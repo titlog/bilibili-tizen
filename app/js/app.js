@@ -2482,6 +2482,25 @@
             try { Player.prewarm(); } catch (e) {}
         }, 1200);
 
+        /* Well after the feed and the prewarm, and never during a selftest run:
+         * this fires off-device requests, and the one thing already measured
+         * here is that boot-time fetches lose races to the player. It answers a
+         * distribution question, not a playback one — nothing on screen waits
+         * for it. */
+        if (!selftest) {
+            /* Announced on arrival, before anything can go wrong. A timer that
+             * never fires and a timer that fires and throws produce the same
+             * silence otherwise, and telling those apart is the whole reason
+             * this probe exists — an empty catch here would have been the very
+             * fault this codebase keeps paying for. */
+            setTimeout(function () {
+                if (playing) { report("update", "定时器到点，但正在播放，跳过"); return; }
+                report("update", "定时器到点，开始探测");
+                try { Updater.probe(); }
+                catch (e) { report("update", "探测抛异常：" + (e && e.message)); }
+            }, 6000);
+        }
+
         if (selftest) { SelfTest.run(); }
     };
 })();

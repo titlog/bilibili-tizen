@@ -13,10 +13,27 @@ import vm from "vm";
 
 const APP = new URL("../app/js/", import.meta.url).pathname;
 
-/* Load order matters: the app is a series of plain scripts sharing globals. */
-const ORDER = ["config.js", "md5.js", "mpd.js", "qr.js", "accounts.js",
-               "auth.js", "resume.js", "settings.js", "api.js", "nav.js",
-               "player.js", "app.js"];
+/* Load order matters: the app is a series of plain scripts sharing globals.
+ *
+ * Read from index.html rather than listed here. The hand-kept list had silently
+ * fallen two files behind — `selftest.js` and `updater.js` shipped unchecked,
+ * which is precisely the gap this tool exists to close: a call to something
+ * that does not exist parses fine and fails only on the sofa. Same lesson as
+ * deploy.sh deriving the wgt name from the build instead of hardcoding it. */
+const INDEX = new URL("../app/index.html", import.meta.url).pathname;
+const ORDER = [...fs.readFileSync(INDEX, "utf8")
+  .matchAll(/<script\s+src="js\/([^"]+)"><\/script>/g)].map((m) => m[1]);
+
+if (!ORDER.length) {
+  console.error("✗ index.html 里没找到任何 js/ 脚本标签 — lint 什么都没检查");
+  process.exit(1);
+}
+for (const f of ORDER) {
+  if (!fs.existsSync(path.join(APP, f))) {
+    console.error(`✗ index.html 引用了 js/${f}，但文件不存在`);
+    process.exit(1);
+  }
+}
 
 /* Browser and Tizen surface the app is allowed to assume. */
 const HOST = [

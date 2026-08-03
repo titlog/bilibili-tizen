@@ -65,6 +65,31 @@ AVPlay 的 DASH 实现是对的，它只是坚持清单必须走 HTTP 到达，�
 端口。所以 DASH 走 MSE —— 由 Shaka 承担，清单以 `blob:` URL 交给它，不需要任何
 服务端。
 
+**这个 widget 可以自己更新自己 —— 五条路全通，2026-08-03 设备实测。**
+分发只能靠侧载（三星商店不收第三方客户端，见「开源与分发」一节），而侧载要一台
+同网段的电脑、Tizen 工具链和一张三星分发证书。让观众为每个修复重做一遍，等于让
+他们别用。`app/js/updater.js` 的探测回答了这件事可不可行：
+
+| 能力 | 结果 |
+|---|---|
+| `new Function`（CSP `unsafe-eval`） | 可用 |
+| `blob:` 脚本注入 | 可用 |
+| 远程 `https` script 标签 | 可用，95ms |
+| `wgt-private` 写入→读回 | 可用，回环一致 |
+| jsdelivr / raw.githubusercontent / codeload | 206 / 206 / 200，55–335ms |
+
+三条执行路径任选其一即可跑新代码。**关键是第四条**：能落盘就意味着更新可以存下来
+下次直接用，而不是像社区版 Twitch 那样每次启动都必须联网 —— 断网时电视照样开得起来。
+jsdelivr 最快（55ms），三个托管都可达。
+
+> 这个探测本身踩了两个坑，都值得记。**一是 `FileStream` 没有 `readText()`**，
+> 只有 `read(charCount)`；写错的那次抛了未捕获的 TypeError，把探测拦腰打断，而
+> **唯一说出这件事的是 `window.onerror`**。二是最初写成
+> `try { Updater.probe(); } catch (e) {}` —— 静默吞掉异常，于是「定时器没响」和
+> 「探测崩了」在日志里长得一模一样。现在到点先无条件报一行再开始探测，正是这一行
+> 让「电视睡着了」这个诊断能够成立：同步的 `engine:` 发得出去，而 1.2 秒和 6 秒的
+> 定时器一个都不响。
+
 **单文件形式封顶 720P，而且有时干脆被拒。** 这条决定了播放器的架构：
 
 | 形式 | 能给什么 |
@@ -228,10 +253,17 @@ Referer」来重新论证这件事，试过了。
 ## 部署
 
 ```bash
+zsh tools/setup.sh              # 只跑一次：这台电视、这台电脑、证书
 node tools/collect.mjs          # 终端 1，一直开着
 zsh tools/deploy.sh             # 终端 2：检查、签名、安装、启动（约 15 秒）
 zsh tools/deploy.sh --selftest  # 同上，但构建会自己走一遍全流程并上报
 ```
+
+**电视地址、型号、DUID、网卡不再写死在脚本里** —— `setup.sh` 把它们写进
+`~/.bilibili-tizen.conf`（仓库外，权限 600），`deploy.sh` 每次读取，环境变量可以
+临时覆盖（`BILI_TV_IP=… zsh tools/deploy.sh`）。这么改是为了公开发布：原来的形态
+要求陌生人去改三个文件里的常量，而其中任何一个改错都表现成别的故障 —— 主机地址错
+是 sdb 静默超时，DUID 错是证书签得出来、装不上去。
 
 `deploy.sh` 先对每个文件跑 `node --check`，然后依次跑 `tools/lint.mjs`、
 `tools/md5-verify.mjs`、`tools/accounts-verify.mjs`、`tools/mpd-verify.mjs`，
