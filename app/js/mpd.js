@@ -51,17 +51,25 @@ var Mpd = (function () {
      * set of alternatives the player may switch between mid-stream, and codecs
      * are not that.
      *
-     * H.265 first, because it carries the same picture in roughly two thirds of
-     * the bytes, and on this link the difference between riding out a slow
-     * minute and stalling is bytes. AV1 last: this panel says it can decode it,
-     * but nothing says it does so in hardware, and a software decoder on a TV
-     * SoC is how you turn a bandwidth problem into a dropped-frames problem.
+     * AV1 first as of 2026-08-03 evening, matching the official web player's
+     * default — and that parity is the argument: the CDN treats each codec's
+     * file on its own terms, and the av01 copies ride whatever path bilibili's
+     * own player keeps healthy. The night this flipped, one video's hev1 and
+     * avc1 1080p files were starved to 25-50 KB/s (403 for the TV's tokens)
+     * while av01 served at full speed, and the web player never felt it.
+     * H.265 next: same picture in ~15% fewer bytes than av01 on these files,
+     * so it stays the fallback for the many uploads with no av01 tracks.
+     *
+     * The old fear — that this panel might software-decode AV1 and trade a
+     * bandwidth problem for a dropped-frames problem — was never measured.
+     * The 丢帧 counter in the 卡住/恢复播放 lines is the judge now that av01
+     * actually plays; if it climbs, the revert is putting hev1 back in front.
      *
      * The set is asked rather than assumed — `isTypeSupported` with the codec
      * string bilibili actually sent, not a guess at what a 2024 Samsung ought
      * to manage. Where there is nothing to ask (the verifier runs this file
      * under node), only H.264 is taken: it is the one every engine has. */
-    var FAMILIES = ["hev1", "hvc1", "avc1", "av01"];
+    var FAMILIES = ["av01", "hev1", "hvc1", "avc1"];
 
     function family(codecs) { return String(codecs || "").split(".")[0]; }
 

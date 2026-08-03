@@ -532,8 +532,14 @@ var API = (function () {
         },
 
         playurlDash: function (bvid, cid, qn, onOk, onFail) {
+            /* 2064 = 16 (DASH) | 2048 (AV1). fnval gates which codec families
+             * the response carries at all: with plain 16 the answer holds avc
+             * and hev tracks only, and the av01-first preference in mpd.js was
+             * discovered selecting from a list with zero av01 entries — the
+             * web player's av01 default works because its fnval asks for it.
+             * Only the AV1 bit is added; HDR/DoVi/8K stay unrequested. */
             var url = BASE + "/x/player/playurl?bvid=" + bvid + "&cid=" + cid +
-                      "&qn=" + (qn || 64) + "&fnval=16&fnver=0&fourk=1";
+                      "&qn=" + (qn || 64) + "&fnval=2064&fnver=0&fourk=1";
             getJson(url, function (d) {
                 if (!d.dash) { onFail("no dash streams"); return; }
 
