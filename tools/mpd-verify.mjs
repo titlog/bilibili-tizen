@@ -37,6 +37,15 @@ const dash = {
     { id: 120, codecs: "avc1.640033", bandwidth: 20000000, width: 3840, height: 2160,
       frameRate: "60", urls: [AMPY, "http://backup.example/a.m4s?x=1&y=2"],
       segments: { init: "0-944", index: "945-3976" } },
+    /* av01 with the long parameter form bilibili really sends — the default
+     * family since 2026-08-03, and the string a platform isTypeSupported has
+     * to be re-asked about with the 4-part prefix. */
+    { id: 80, codecs: "av01.0.08M.08.0.110.01.01.01.0", bandwidth: 756000,
+      width: 1920, height: 1080, urls: [AMPY],
+      segments: { init: "0-900", index: "901-1200" } },
+    { id: 32, codecs: "av01.0.04M.08.0.110.01.01.01.0", bandwidth: 240000,
+      width: 852, height: 480, urls: [AMPY],
+      segments: { init: "0-900", index: "901-1200" } },
     { id: 80, codecs: "avc1.640032", bandwidth: 2997485, width: 1920, height: 1080,
       frameRate: "25", urls: [AMPY], segments: { init: "0-944", index: "945-3976" } },
     { id: 32, codecs: "avc1.640033", bandwidth: 523565, width: 852, height: 480,
@@ -132,6 +141,33 @@ ok("and every video representation is hevc",
 eq("pinning avc1 overrides the preference", (() => {
   Mpd.build(dash, 80, "avc1"); return Mpd.chosen();
 })(), "avc1");
+
+/* Fresh instances below: `supportCache` inside Mpd memoises isTypeSupported
+ * answers, so swapping the stub on the shared sandbox would test the cache,
+ * not the behaviour. */
+function freshMpd(isTypeSupported) {
+  const sb = { String, Number, Array, MediaSource: { isTypeSupported } };
+  vm.createContext(sb);
+  vm.runInContext(src, sb);
+  return sb.Mpd;
+}
+
+/* The default order: av01 first when the engine takes it — parity with the
+ * official web player, which is what kept 1080p alive the night the CDN
+ * starved the hev1/avc1 files. */
+const MpdAll = freshMpd(() => true);
+MpdAll.build(dash, 80);
+eq("with everything supported the default family is av01", MpdAll.chosen(), "av01");
+
+/* A platform that rejects the long parameter form but accepts the 4-part
+ * prefix must not lose the family — the tail is colour metadata, not decode
+ * capability. */
+const MpdPrefix = freshMpd((t) => {
+  const m = /codecs="([^"]+)"/.exec(t);
+  return m ? m[1].split(".").length <= 4 : false;
+});
+MpdPrefix.build(dash, 80);
+eq("long codec string rejected → 4-part prefix keeps av01", MpdPrefix.chosen(), "av01");
 
 /* A family that cannot reach the tier H.264 reaches is not an improvement:
  * fewer bytes for a smaller picture is a downgrade wearing a disguise. */
