@@ -30,7 +30,7 @@ class FakeXHR {
   }
 }
 
-const sandbox = { String, Number, Array, Object, JSON, Math, Date,
+const sandbox = { String, Number, Array, Object, JSON, Math, Date, parseInt,
                   XMLHttpRequest: FakeXHR, encodeURIComponent, decodeURIComponent };
 vm.createContext(sandbox);
 vm.runInContext(src, sandbox);
@@ -43,7 +43,7 @@ function eq(label, got, want) {
   if (g !== w) { console.log(`✗ ${label}: got ${g} want ${w}`); failed++; }
 }
 
-const AKAM = "https://upos-hz-mirrorakam.akamaized.net/upgcxcode/a.m4s?upsig=1";
+const AKAM = "https://upos-hz-mirrorakam.akamaized.net/upgcxcode/a.m4s?upsig=1&deadline=1785781900";
 const COSOV = "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/a.m4s?upsig=1";
 const MCDN = "https://xy123x.mcdn.bilivideo.cn:4483/upgcxcode/a.m4s?upsig=1";
 
@@ -67,6 +67,10 @@ API.playurlDash("BV1", 1, 80, (dash) => {
      dash.video[0].urls, [AKAM, COSOV, MCDN]);
   eq("dash: baseUrl follows the reordering", dash.video[0].baseUrl, AKAM);
   eq("dash: audio keeps cosov too", dash.audio[0].urls, [AKAM, COSOV]);
+  /* The restart paths judge reusability by these two stamps; absent, a kept
+   * response would be trusted forever and a long pause ends in an exit. */
+  eq("dash: deadline parsed from the url", dash.deadline, 1785781900);
+  eq("dash: fetch time stamped", typeof dash.fetchedAt, "number");
 }, (why) => { eq("dash normalisation succeeds", why, "(no failure)"); });
 
 /* ---- cosov alone survives: ordered is not dropped ---- */

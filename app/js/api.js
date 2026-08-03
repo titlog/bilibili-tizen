@@ -570,6 +570,16 @@ var API = (function () {
                 }
                 /* Carry the tier list across: the panel had to guess it. */
                 d.dash.acceptQuality = d.accept_quality || [];
+                /* Stream urls expire — `deadline` in the query is unix seconds,
+                 * roughly two hours out. Stamped here so the restart paths can
+                 * tell a reusable response from one whose every url is already
+                 * dead: a manifest rebuilt from expired urls fails on each
+                 * segment, which turns "pause overnight, press play" into an
+                 * audible exit. The web player re-asks playurl instead. */
+                var rep0 = (d.dash.video && d.dash.video[0]) || {};
+                var dm = /[?&]deadline=(\d+)/.exec(String(rep0.baseUrl || ""));
+                d.dash.deadline = dm ? parseInt(dm[1], 10) : 0;
+                d.dash.fetchedAt = new Date().getTime();
                 onOk(d.dash);
             }, onFail);
         }

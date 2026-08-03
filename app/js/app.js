@@ -1859,6 +1859,24 @@
         });
     }
 
+    /* A kept DASH response is only as good as its signatures. `deadline` is
+     * stamped by api.js from the urls themselves (unix seconds, about two hours
+     * from playurl); past it, every segment request 403s and a restart that
+     * reuses the response cannot possibly work. Five minutes of margin, because
+     * the restart takes time too and a manifest that expires mid-rebuild fails
+     * the same way. The age fallback covers a payload with no parseable
+     * deadline rather than trusting it forever. */
+    function dashIsStale(dash) {
+        if (!dash) { return false; }
+        if (dash.deadline) {
+            return new Date().getTime() / 1000 > dash.deadline - 300;
+        }
+        if (dash.fetchedAt) {
+            return new Date().getTime() - dash.fetchedAt > 3600000;
+        }
+        return false;
+    }
+
     /* Hand a DASH response to the player and label it with the representation
      * the player itself picked, so the badge cannot disagree with the picture. */
     function playDash(dash, qn) {
@@ -1943,10 +1961,14 @@
             Player.playDash(dash, playing.startMs || 0);
         }
 
-        /* play() asked for both forms at once, and this is the other one. */
-        if (playing.dashReady) {
+        /* play() asked for both forms at once, and this is the other one —
+         * unless its signatures have expired while progressive struggled. */
+        if (playing.dashReady && !dashIsStale(playing.dashReady)) {
             startDash(playing.dashReady, "复用开播时取到的清单");
             return;
+        }
+        if (playing.dashReady) {
+            report("player", "dash 兜底：开播时的清单已过期，重取 playurl");
         }
 
         API.playurlDash(d.bvid, cid, PREFERRED_QN, function (dash) {
@@ -2287,13 +2309,37 @@
                     Player.startTiming();
                     playing.timed = false;
                     playing.timedLabel = "到画面(重启)";
-                    if (playing.dashReady) {
+                    if (playing.dashReady && !dashIsStale(playing.dashReady)) {
                         playing.downgraded = true;
                         report("player", "播放中出错（" + data + "），从 " +
                                fmt(lastKnownPosition) + " 用 DASH 原地重启");
                         var rep2 = Player.pickDashVideo(playing.dashReady);
                         playDash(playing.dashReady,
                                  (rep2 && rep2.id) || playing.quality || 0);
+                    } else if (playing.dashReady) {
+                        /* The kept response has outlived its signatures — the
+                         * long-pause case. Restarting from it fails on every
+                         * segment; a fresh playurl is the restart that works.
+                         * The web player does exactly this. */
+                        playing.downgraded = true;
+                        report("player", "播放中出错（" + data + "），清单已过期，" +
+                               "重取 playurl 后从 " + fmt(lastKnownPosition) +
+                               " 用 DASH 原地重启");
+                        var session3 = playing;
+                        API.playurlDash(playing.detail.bvid, playing.cid,
+                                        PREFERRED_QN, function (dash3) {
+                            if (playing !== session3) {
+                                report("player", "原地重启：新清单到了但会话已经没了，丢弃");
+                                return;
+                            }
+                            var rep3 = Player.pickDashVideo(dash3);
+                            playDash(dash3, (rep3 && rep3.id) || playing.quality || 0);
+                        }, function (w3) {
+                            if (playing !== session3) { return; }
+                            report("player", "原地重启：重取 playurl 失败（" + w3 + "），退出");
+                            toast("播放错误：" + data);
+                            stopPlayback();
+                        });
                     } else if (playing.urls && playing.urls.length) {
                         report("player", "播放中出错（" + data + "），从 " +
                                fmt(lastKnownPosition) + " 原地重启渐进式");
