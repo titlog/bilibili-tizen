@@ -1663,6 +1663,20 @@
          * own ending. */
         closeOptions();
         cancelScrub();
+        /* The handover from one video to the next is a teardown point too —
+         * the least obvious one yet. Without the stop, the outgoing session
+         * keeps playing for the ~300ms until playurl answers, and each of its
+         * timeupdates lands on the NEW `playing`: lastKnownPosition snaps back
+         * to the old episode's clock and Resume.record files it under the new
+         * cid. Switching P22→P23 at 19:52 opened P23 *at* 19:52 — the AVPlay
+         * failure's in-place restart read the leaked position — and the local
+         * resume list kept the lie. Farewell report first, while the session
+         * identifiers are still the outgoing video's. */
+        if (playing && lastKnownPosition !== playing.startMs) {
+            reportProgress(Math.floor(lastKnownPosition / 1000), true,
+                           Math.floor(lastKnownDuration / 1000));
+        }
+        Player.stop();
         playing = { detail: detail, cid: cid };
 
         var startMs = Resume.positionMs(detail.bvid, cid);
