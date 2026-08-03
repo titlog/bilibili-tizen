@@ -100,6 +100,9 @@ node "$ROOT/tools/accounts-verify.mjs" || { echo "  refuse to deploy"; exit 1; }
 # An invalid manifest does not throw — the player refuses it and the viewer just
 # sees a spinner. One unescaped ampersand in a stream url is enough to cause it.
 node "$ROOT/tools/mpd-verify.mjs" >/dev/null || { echo "  the DASH manifest is malformed"; exit 1; }
+# Mirrors are ordered, never dropped. Dropping one played fine for a day and
+# then walled every 1080p video the evening the primary CDN went sour.
+node "$ROOT/tools/mirrors-verify.mjs" >/dev/null || { echo "  mirror ordering is wrong"; exit 1; }
 
 echo "== packaging =="
 cd "$APP"

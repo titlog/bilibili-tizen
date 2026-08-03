@@ -155,33 +155,30 @@ var API = (function () {
      * listed twice, and a failure burst rotating through them hits each host
      * again within a second. On a CDN that rate-limits bursts by IP that is how
      * one refusal becomes twenty requests. */
+    /* `upos-sz-mirrorcosov`, bilibili's designated spare, has now been caught
+     * on both sides of the same bet. 2026-08-02 it answered 403 on every video
+     * tried, and it was dropped here outright. 2026-08-03 the primary
+     * (`upos-hz-mirrorakam`) spent an evening cutting connections mid-stream —
+     * and cosov, measured from the desktop in the same hour on the same file,
+     * served 206s. The official web player rode out akam's failures by failing
+     * over to exactly the host this function had thrown away; this client,
+     * holding a manifest with one lonely BaseURL, retried the same dead edge
+     * seven times and walled at the same second of the same video every time.
+     *
+     * So cosov is *ordered*, never dropped: after the primaries — when it was
+     * the dead one it cost a retry attempt per cycle, which is survivable;
+     * having no second host at all when the primary sours is not. Before the
+     * mcdn/szbdyd PCDN nodes, which refuse plain range requests by design. */
     function mirrors(primary, backups, plain) {
         var all = [primary].concat(backups || []).filter(function (u) { return !!u; });
-        var good = [], iffy = [];
+        var good = [], spare = [], iffy = [];
         for (var i = 0; i < all.length; i++) {
             var host = String(all[i]).split("/")[2] || "";
             if (host.indexOf("mcdn") >= 0 || host.indexOf("szbdyd") >= 0) { iffy.push(all[i]); }
+            else if (host.indexOf("upos-sz-mirrorcosov") >= 0) { spare.push(all[i]); }
             else { good.push(all[i]); }
         }
-        var ordered = good.concat(iffy);
-
-        /* bilibili's own designated spare, `upos-sz-mirrorcosov`, answers 403 on
-         * its own host for every video tried — long documented, and caught twice
-         * more inside a DASH manifest, where Shaka spent a retry cycle on it
-         * while a working host sat beside it in the same AdaptationSet. Dropped
-         * rather than pushed to the back like the mcdn nodes: it is *already*
-         * last, being the backup bilibili lists second, so reordering changes
-         * nothing and the player still reaches it.
-         *
-         * Kept when it is all there is, on the same reasoning as the mcdn hosts:
-         * a url that usually fails still beats no url at all. */
-        var alive = [];
-        for (var m = 0; m < ordered.length; m++) {
-            if (String(ordered[m]).indexOf("upos-sz-mirrorcosov") < 0) {
-                alive.push(ordered[m]);
-            }
-        }
-        if (alive.length) { ordered = alive; }
+        var ordered = good.concat(spare).concat(iffy);
 
         /* AVPlay has its own HTTP stack, far older than WebKit's, and it fails
          * the TLS handshake with some CDN nodes while an XHR to the very same

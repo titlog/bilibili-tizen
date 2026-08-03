@@ -106,6 +106,11 @@ const all = [].concat(capped4k.MPD.Period.AdaptationSet.find((s) => s["@contentT
 eq("raising the cap admits 4K", all.length, 3);
 const multi = [].concat(all[0].BaseURL);
 eq("backup mirrors become extra BaseURLs", multi.length, 2);
+/* Order is load-bearing: the first BaseURL is the host the player leads with,
+ * and the decode-failure reload rotates `urls` precisely to change it. A
+ * builder that reordered them would silently undo that rotation. */
+eq("BaseURL order follows urls order", multi[0], AMPY);
+eq("the rotated-to mirror stays second", multi[1], "http://backup.example/a.m4s?x=1&y=2");
 
 /* Refusals: an empty string is a manifest the player will never be handed. */
 eq("no video means no manifest", Mpd.build({ duration: 10, video: [], audio: dash.audio }, 80), "");

@@ -2141,6 +2141,18 @@
             }
             lastKnownPosition = data.position;
             lastKnownDuration = data.duration || lastKnownDuration;
+            /* The in-place restart is once per *incident*, not once per video.
+             * Spent-and-never-refilled it turned a 33-minute episode into a
+             * minefield: one bad patch at 13 minutes used the restart, and the
+             * next one — 2026-08-03 it was five minutes later — had nothing
+             * left and exited a video that was otherwise playing fine. Ninety
+             * seconds of actual progress past the restart point says the
+             * restart worked; earn the budget back. Progress, not wall time:
+             * `time` does not tick while frozen. */
+            if (playing && playing.replayed &&
+                    lastKnownPosition - (playing.startMs || 0) > 90000) {
+                playing.replayed = false;
+            }
             reportProgress(Math.floor(data.position / 1000), false,
                            Math.floor(lastKnownDuration / 1000));
             /* While scrubbing the bar belongs to the scrub head, not the clock. */

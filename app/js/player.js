@@ -192,6 +192,10 @@ var Player = (function () {
                     new Date().getTime() - lastDecodeFailAt > 60000) {
                 decodeRecoveries = 0;
             }
+            if (criticalRetries && lastCriticalAt &&
+                    new Date().getTime() - lastCriticalAt > 60000) {
+                criticalRetries = 0;
+            }
             emit("time", { position: lastTime, duration: duration });
         });
 
@@ -332,6 +336,7 @@ var Player = (function () {
         lastDecodeFailAt = 0;
         lastDecodeHandled = false;
         criticalRetries = 0;
+        lastCriticalAt = 0;
         /* The "from" of the first 跳转 line belongs to this video, not the
          * last one — stale, it reads as a cross-video jump that never happened. */
         lastTickSec = 0;
@@ -465,6 +470,7 @@ var Player = (function () {
              * never told about is the most expensive kind in this codebase. */
             if (err && err.severity === 2 &&
                     (err.category === 1 || err.category === 3)) {
+                lastCriticalAt = new Date().getTime();
                 criticalRetries++;
                 if (criticalRetries <= 1) {
                     log("shaka 严重错误 " + describeShakaError(err) + "，先试一次重取");
@@ -590,6 +596,37 @@ var Player = (function () {
     var lastDecodeFailAt = 0;
     var lastDecodeHandled = false;
     var criticalRetries = 0;  /* per video; reset() clears it */
+    var lastCriticalAt = 0;   /* refills criticalRetries the same way the
+                               * decode ladder refills: a minute of real
+                               * playback since the last one */
+
+    /* A cut connection does not always announce itself as one. The failure
+     * chain measured all evening on 2026-08-03 was: segment request dies at the
+     * transport level, a truncated body reaches the demuxer anyway, and the
+     * element reports a *decode* error — so the reload below re-asks the same
+     * host for the same range and gets the same corpse, deterministically, at
+     * the same second of the same video. The official web player survives the
+     * identical CDN weather by leading its retry with the other mirror. Rotating
+     * the mirror order before the reload is that, in our shape: the manifest is
+     * rebuilt from `urls`, so whichever host burned us last moves to the back of
+     * every representation. Mutates the session's own arrays on purpose — the
+     * lesson should stick for the rest of this video, including app.js's
+     * in-place restart, which rebuilds from the same object. */
+    function rotateMirrors(dash) {
+        var kinds = ["video", "audio"], lead = "";
+        for (var k = 0; k < kinds.length; k++) {
+            var list = (dash && dash[kinds[k]]) || [];
+            for (var i = 0; i < list.length; i++) {
+                var urls = list[i].urls;
+                if (urls && urls.length > 1) {
+                    urls.push(urls.shift());
+                    list[i].baseUrl = urls[0];
+                    lead = String(urls[0]).split("/")[2] || lead;
+                }
+            }
+        }
+        return lead;
+    }
 
     /* Reload the same codec *first*, and only change family if that did not
      * settle it.
@@ -632,8 +669,12 @@ var Player = (function () {
         lastDecodeHandled = true;
 
         if (decodeRecoveries === 1) {
+            /* Once per incident, not per rung: if the rotated-to host also fails
+             * decode, the avc1 rung below should keep it in front rather than
+             * rotate back onto the host that started the incident. */
+            var lead = rotateMirrors(lastDash.dash);
             log("解码失败（" + why + "），从 " + at + "s 用 " + lastDash.family +
-                " 原样重载一次");
+                " 原样重载一次" + (lead ? "，镜像改从 " + lead + " 出发" : ""));
             playDashWithShaka(lastDash.dash, from, true, lastDash.family);
             return true;
         }
