@@ -23,8 +23,27 @@
      * evening dialling a laptop that went to the office. */
     var reportMisses = 0;
 
+    /* A runaway rebuild loop once wrote three lines a second for minutes —
+     * hundreds of collector rows, and as many POSTs riding the same network
+     * the player was already dying on, each one more fuel for the CDN's burst
+     * limiter. The bucket makes any future loop self-muffling: a burst of 20
+     * passes untouched (an incident's whole ladder fits), then one line a
+     * second, and whatever was dropped is admitted to on the next line out. */
+    var reportTokens = 20, reportRefillAt = 0, reportDropped = 0;
+
     function report(kind, detail) {
         if (!REPORT_TO || reportMisses >= 5) { return; }
+        var now = new Date().getTime();
+        if (reportRefillAt) {
+            reportTokens = Math.min(20, reportTokens + (now - reportRefillAt) / 1000);
+        }
+        reportRefillAt = now;
+        if (reportTokens < 1) { reportDropped++; return; }
+        reportTokens -= 1;
+        if (reportDropped) {
+            detail = "（限速丢弃了 " + reportDropped + " 行）" + detail;
+            reportDropped = 0;
+        }
         try {
             var xhr = new XMLHttpRequest();
             xhr.open("POST", REPORT_TO, true);
@@ -2271,7 +2290,14 @@
              * 越狱 report turned out to be. */
             var dashWaiting = playing.canDowngrade && !playing.downgraded &&
                               !!playing.dashReady;
-            if (!dashWaiting && playing.urls && playing.urlIdx + 1 < playing.urls.length) {
+            /* `refused` means the probe's plain XHR already came back 403 —
+             * the *client* is being turned away, and asking the same hosts
+             * from AVPlay four more times at seven seconds apiece changes
+             * nothing. Measured 2026-08-03: the hopeless rotation was 25
+             * seconds of black screen in front of an exit that was already
+             * decided. */
+            if (!dashWaiting && !playing.refused &&
+                    playing.urls && playing.urlIdx + 1 < playing.urls.length) {
                 playing.urlIdx++;
                 playing.failed = false;
                 el("player-loading").className = "";
@@ -2354,7 +2380,8 @@
                             toast("播放错误：" + data);
                             stopPlayback();
                         });
-                    } else if (playing.urls && playing.urls.length) {
+                    } else if (playing.urls && playing.urls.length &&
+                               !playing.refused) {
                         report("player", "播放中出错（" + data + "），从 " +
                                fmt(lastKnownPosition) + " 原地重启渐进式");
                         Player.playProgressive(playing.urls[playing.urlIdx || 0],
@@ -2390,7 +2417,7 @@
              * network problem that is not there. */
             var refused = playing.refused || String(data).indexOf("403") >= 0;
             toast(refused
-                ? "bilibili 拒绝提供这个视频的画面流（403），换一个试试"
+                ? "视频流被拒绝（403）——可能是临时限流，过几分钟再试，或换一个视频"
                 : "播放错误：" + data);
             stopPlayback();
         }

@@ -650,6 +650,20 @@ var Player = (function () {
         return "";
     }
 
+    /* The best tier strictly below `ceiling` that actually has a segment
+     * index. The cap rung drops to this: a hardcoded 64 rebuilt the identical
+     * manifest on uploads whose ladder already tops out at 64 — one wasted
+     * load — and on the video that exposed it, the tier that actually served
+     * was 32. */
+    function tierBelow(dash, ceiling) {
+        var best = 0, list = (dash && dash.video) || [];
+        for (var i = 0; i < list.length; i++) {
+            var id = list[i].id || 0;
+            if (list[i].segments && id < ceiling && id > best) { best = id; }
+        }
+        return best;
+    }
+
     var badHosts = {};
     /* Which video the blacklist belongs to. reset() must NOT clear it: the
      * in-place restart goes through Player.playDash → reset(), and clearing
@@ -820,9 +834,14 @@ var Player = (function () {
          * up with hev1-1080p truncating, avc1-1080p answering 403 and the
          * spare host dead: every 1080p route was gone while 720p served. */
         if (!lastDash.capId) {
-            log("解码失败（" + why + "），换编码也没走通，压到 720p 从 " + at + "s 再试");
-            playDashWithShaka(lastDash.dash, from, true, null, 64);
-            return true;
+            var below = tierBelow(lastDash.dash,
+                                  tierBelow(lastDash.dash, PREFERRED_QN + 1));
+            if (below) {
+                log("解码失败（" + why + "），换编码也没走通，压到 qn" + below +
+                    " 从 " + at + "s 再试");
+                playDashWithShaka(lastDash.dash, from, true, null, below);
+                return true;
+            }
         }
         log("解码失败（" + why + "），已重载 " + decodeRecoveries + " 次仍然失败，交给上层");
         lastDecodeHandled = false;
@@ -955,9 +974,13 @@ var Player = (function () {
              * next. One capped attempt before giving the failure to app.js,
              * which would only rebuild the same top-tier manifest. */
             if (!capId) {
-                log("加载连续被拒（" + describeShakaError(e) + "），压到 720p 再试一次");
-                playDashWithShaka(dash, startMs, true, prefer, 64);
-                return;
+                var below2 = tierBelow(dash, tierBelow(dash, PREFERRED_QN + 1));
+                if (below2) {
+                    log("加载连续被拒（" + describeShakaError(e) + "），压到 qn" +
+                        below2 + " 再试一次");
+                    playDashWithShaka(dash, startMs, true, prefer, below2);
+                    return;
+                }
             }
             emit("error", "shaka load 失败 " + describeShakaError(e));
         });
