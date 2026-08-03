@@ -45,8 +45,9 @@ zsh tools/deploy.sh     # 检查、签名、安装、启动
 >
 > `setup.sh` 会自动搞定。如果你只是想拿证书、和本项目无关,它已经拆成了独立工具:
 >
-> **[samsung-tv-cert](https://github.com/titlog/samsung-tv-cert)** —
-> `npx samsung-tv-cert --duid <你的DUID>`
+> **[samsung-tv-cert](https://github.com/titlog/samsung-tv-cert)**
+> [![npm](https://img.shields.io/npm/v/samsung-tv-cert.svg)](https://www.npmjs.com/package/samsung-tv-cert)
+> —— `npx samsung-tv-cert --duid <你的DUID>`
 >
 > 不需要 Eclipse、不需要 sudo、不需要 Tizen 的证书管理器。**对任何要往三星电视上
 > 侧载东西的项目都有用**(Jellyfin、Twitch 社区版、你自己写的应用)。
