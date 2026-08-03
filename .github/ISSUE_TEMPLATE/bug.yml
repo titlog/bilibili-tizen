@@ -1,0 +1,102 @@
+name: Bug report / 问题反馈
+description: Something does not work on the television / 电视上有东西不工作
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Please attach the collector log.** Debugging this project without it is
+        guesswork — the television closes `dlog`, the Web Inspector and
+        `sdb shell`, so the app's own reports are the only evidence there is.
+
+        **请务必附上收集器日志。** 没有它就只能靠猜 —— 零售机把 `dlog`、Web
+        Inspector 和 `sdb shell` 全关了，应用自己的上报是唯一的证据来源。
+
+        ```bash
+        node tools/collect.mjs | tee /tmp/bili.log   # 开着它，再复现一次
+        ```
+
+  - type: input
+    id: model
+    attributes:
+      label: TV model and year / 电视型号和年份
+      description: e.g. UE65CU7090 (2023). Settings > Support > About / 设置 > 支持 > 关于本机
+      placeholder: UE65CU7090, 2023
+    validations:
+      required: true
+
+  - type: textarea
+    id: engine
+    attributes:
+      label: The `engine:` line / 启动时的 `engine:` 那一行
+      description: |
+        Printed by every build at startup. It settles what the platform actually
+        is instead of what anyone assumes — this project shipped a wrong
+        assumption about it for months.
+
+        每个构建启动时都会打。它能定下平台到底是什么，而不是谁猜它是什么 ——
+        这个项目曾经为一个错误的假设付出过几个月。
+      render: text
+      placeholder: |
+        engine: Mozilla/5.0 (SMART-TV; LINUX; Tizen 9.0) … 120.0.6099.5 | ES6=true | MSE=true | …
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens / 现象
+      description: |
+        What you saw on screen, and what you expected. If it is playback, say
+        whether the screen was black, frozen, spinning, or dropped back to the
+        grid — those are four different faults.
+
+        屏幕上看到什么、你期待什么。如果是播放问题，说清楚是黑屏、卡住不动、
+        一直转圈、还是自己退回了网格 —— 那是四种不同的故障。
+    validations:
+      required: true
+
+  - type: input
+    id: bvid
+    attributes:
+      label: Which video, if it is one video / 如果只有某个视频不行，是哪个
+      description: |
+        The bvid, and the part number for a multi-part upload. "Some videos will
+        not play" cannot be chased any further than guessing without this — it is
+        why every playback log line in this project carries the bvid.
+
+        bvid，分 P 稿件请带上第几 P。「有些视频打不开」没有这个就只能猜 ——
+        这也是这个项目每条播放日志都带 bvid 的原因。
+      placeholder: BV1xx411c7XD, P10
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Collector log / 收集器日志
+      description: |
+        From `node tools/collect.mjs`, covering the failure. Include the lines
+        before it, not only the error — `到画面`, `编码`, `dash offers`,
+        `progressive gave` and `卡住 / 跳转` are usually where the answer is.
+
+        来自 `node tools/collect.mjs`，覆盖出问题的那一段。**把前面的行也贴上**，
+        不要只贴报错 —— 答案通常在 `到画面`、`编码`、`dash offers`、
+        `progressive gave`、`卡住 / 跳转` 这些行里。
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / 版本
+      description: "`git rev-parse --short HEAD`"
+      placeholder: 45799cf
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing / 提交前
+      options:
+        - label: The collector was running **before** the app started (it gives up reporting after five failures and does not retry until restarted) / 收集器在应用启动**之前**就开着（应用连撞五次失败会永久关闭上报，直到重启）
+          required: true
+        - label: I have read the relevant part of CLAUDE.md / 我看过 CLAUDE.md 里相关的部分

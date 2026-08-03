@@ -1,0 +1,13 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Certificate issuance / 证书签发
+    url: https://github.com/titlog/samsung-tv-cert
+    about: >
+      Issuing the Samsung certificate is a separate tool with its own issue
+      tracker. / 签发三星证书是独立的工具，问题请提到那边。
+  - name: Platform findings / 平台发现
+    url: https://github.com/titlog/bilibili-tizen/blob/master/CLAUDE.md
+    about: >
+      Every measurement, every trap, and how to debug on a retail set. Read
+      before reporting a playback problem. / 全部实测、坑，以及怎么在零售机上
+      调试。报播放问题前先读它。

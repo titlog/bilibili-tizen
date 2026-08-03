@@ -1,5 +1,7 @@
 # 三星电视上的 bilibili
 
+**中文 · [English](README.en.md)**
+
 给三星 Tizen 电视做的 bilibili 客户端,全程遥控器操作。纯 ES5,没有构建步骤,
 **不需要后端,不需要代理,不需要服务器** —— 电视直连 bilibili。
 
