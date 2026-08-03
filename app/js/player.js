@@ -668,15 +668,23 @@ var Player = (function () {
         return m ? m[1] : String(u).split("?")[0];
     }
 
+    /* Returns whether this call taught us something new. The immediate-rebuild
+     * below keys on that, and nothing else bounds it: the once-per-session
+     * flag it used at first was declared inside playDashWithShaka, so every
+     * rebuild arrived with a fresh flag and a video whose files 403 on every
+     * host rebuilt itself three times a second, forever — a spinner from the
+     * sofa, hundreds of identical lines in the collector. */
     function noteBadHost(err) {
-        if (!err || err.code !== 1001 || !err.data) { return; }
+        if (!err || err.code !== 1001 || !err.data) { return false; }
         var status = err.data[1];
-        if (status !== 403 && status !== 401) { return; }
+        if (status !== 403 && status !== 401) { return false; }
         var h = hostOf(err.data[0]);
         if (h && !badHosts[h]) {
             badHosts[h] = true;
             log("镜像 " + h + " 返回 " + status + "，这个视频内不再排在前面");
+            return true;
         }
+        return false;
     }
 
     /* Every path into playDashWithShaka runs through this, so a manifest can
@@ -825,7 +833,6 @@ var Player = (function () {
         mode = "mse";
         var gen = ++mseGeneration;
         var retriedLoad = !!isRetry;
-        var retriedBlacklist = false;
 
         var scope = scopeOf(dash);
         if (scope !== badHostsScope) { badHostsScope = scope; badHosts = {}; }
@@ -888,7 +895,19 @@ var Player = (function () {
             if (gen !== mseGeneration) { return; }
             /* 7000 is LOAD_INTERRUPTED, which is a newer load winning. */
             if (e && e.code === 7000) { return; }
-            noteBadHost(e);
+
+            /* A refusal from a host we only just blacklisted is worth one
+             * immediate rebuild — preferGoodHosts changes the lead. Keyed on
+             * *newly learned*, which is what bounds it: with N hosts this can
+             * fire N times and then never again, and a video refused on every
+             * host falls through to the family ladder below instead of
+             * rebuilding in a circle. Ahead of the 3-second retry on purpose:
+             * a fresh lead needs no cooldown. */
+            if (noteBadHost(e)) {
+                log("排头镜像 403 已拉黑，立即换镜像重建清单");
+                playDashWithShaka(dash, startMs, true, prefer, capId);
+                return;
+            }
 
             /* One more go, after a pause, when the failure was the network.
              * Shaka's own retries all happen inside a few seconds; this CDN's
@@ -905,26 +924,18 @@ var Player = (function () {
             }
 
             /* Anything that is not the network, on a stream this set said it
-             * could decode, is the set having been wrong. H.264 is the answer
-             * to that and it is one reload away — far better than a viewer
-             * meeting a black screen because a codec probe lied. Straight away,
-             * with no pause: nothing out there needs time to change its mind. */
-            if (usedFamily && usedFamily !== "avc1" && (!e || e.category !== 1)) {
+             * could decode, is the set having been wrong — and a 401/403 counts
+             * too, despite being category 1: the CDN discriminates per *file*,
+             * a family's files can be refused on every host while another
+             * family's serve (both directions seen on 2026-08-03, one video
+             * each way), and once the host list is exhausted changing family
+             * is the only move that changes the file being asked for. */
+            if (usedFamily && usedFamily !== "avc1" &&
+                    (!e || e.category !== 1 ||
+                     (e.code === 1001 && e.data &&
+                      (e.data[1] === 403 || e.data[1] === 401)))) {
                 log("走 " + usedFamily + " 时失败（" + describeShakaError(e) + "），退回 avc1");
                 playDashWithShaka(dash, startMs, retriedLoad, "avc1", capId);
-                return;
-            }
-            /* A refusal from the mirror the rotation had just gambled onto is
-             * not a verdict on the manifest — the host is blacklisted as of a
-             * moment ago and preferGoodHosts will lead with a different one on
-             * rebuild. One immediate rebuild, once per load session; without
-             * it a single 403 here burned straight down to the 720p cap with
-             * the akam route untried (20:34, P20). */
-            if (!retriedBlacklist && e && e.code === 1001 &&
-                    (e.data && (e.data[1] === 403 || e.data[1] === 401))) {
-                retriedBlacklist = true;
-                log("排头镜像 403 已拉黑，立即换镜像重建清单");
-                playDashWithShaka(dash, startMs, true, prefer, capId);
                 return;
             }
 
