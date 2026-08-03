@@ -347,6 +347,7 @@ var Player = (function () {
         lastDecodeHandled = false;
         criticalRetries = 0;
         lastCriticalAt = 0;
+        triedAv01 = false;
         /* The "from" of the first 跳转 line belongs to this video, not the
          * last one — stale, it reads as a cross-video jump that never happened. */
         lastTickSec = 0;
@@ -620,6 +621,16 @@ var Player = (function () {
      * run. A 403 host is not "next in line", it is off the list until the
      * next video. Session-scoped on purpose: which mirror is dead varies per
      * video, and tonight proved it both ways within one hour. */
+    /* One AV1 attempt per load session. AV1 sits last in the manifest's own
+     * preference for a reason (nothing says this SoC decodes it in hardware),
+     * but 2026-08-03 a video turned up whose hev1 and avc1 1080p files were
+     * being starved by the CDN — 25-50 KB/s from the desktop, flat 403 for the
+     * TV — while the av01 file served at full speed. The web player never
+     * noticed the incident because av01 is its default. As a desperation rung
+     * it outranks dropping to 720p; the 丢帧 counter in the stall lines is the
+     * judge of whether the decode is actually holding up. */
+    var triedAv01 = false;
+
     var badHosts = {};
     /* Which video the blacklist belongs to. reset() must NOT clear it: the
      * in-place restart goes through Player.playDash → reset(), and clearing
@@ -763,6 +774,17 @@ var Player = (function () {
             playDashWithShaka(lastDash.dash, from, true, "avc1", lastDash.capId);
             return true;
         }
+        /* The third 1080p file. hev1 and avc1 dead ≠ 1080p dead: each family
+         * is its own file with its own CDN treatment, and the healthy one has
+         * been the one we exclude. */
+        if (lastDash.family !== "av01" && !triedAv01 &&
+                Mpd.build(lastDash.dash, lastDash.capId || PREFERRED_QN, "av01")) {
+            triedAv01 = true;
+            log("解码失败（" + why + "），hev1/avc1 都没走通，从 " + at +
+                "s 换 AV1 的同画质（不同的文件，网页端就靠它）");
+            playDashWithShaka(lastDash.dash, from, true, "av01", lastDash.capId);
+            return true;
+        }
         /* Both codec families dead at this tier is not the end: the tiers are
          * different files, and "drop a tier" is the documented escape that
          * carried P17 through its poisoned region — it just relied on ABR
@@ -797,6 +819,7 @@ var Player = (function () {
             return;
         }
         var usedFamily = Mpd.chosen();
+        if (usedFamily === "av01") { triedAv01 = true; }
         log("编码 " + usedFamily + (prefer ? "（指定）" : "") +
             (capId ? "，画质压到 qn" + capId : ""));
         lastDash = { dash: dash, startMs: startMs, family: usedFamily,
@@ -868,6 +891,16 @@ var Player = (function () {
             if (usedFamily && usedFamily !== "avc1" && (!e || e.category !== 1)) {
                 log("走 " + usedFamily + " 时失败（" + describeShakaError(e) + "），退回 avc1");
                 playDashWithShaka(dash, startMs, retriedLoad, "avc1", capId);
+                return;
+            }
+            /* Same tier, third file: the CDN treats each codec's file on its
+             * own terms, and av01 has been the healthy one while both others
+             * starved. Try it before surrendering resolution. */
+            if (usedFamily !== "av01" && !triedAv01 &&
+                    Mpd.build(dash, capId || PREFERRED_QN, "av01")) {
+                triedAv01 = true;
+                log("加载连续被拒（" + describeShakaError(e) + "），换 AV1 的同画质再试");
+                playDashWithShaka(dash, startMs, true, "av01", capId);
                 return;
             }
             /* The top tier can be refused while lower tiers serve — the tiers
