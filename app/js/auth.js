@@ -24,7 +24,42 @@ var Auth = (function () {
     "use strict";
 
     /* bilibili's Android TV client. The endpoints below reject an unsigned
-     * request and accept no other appkey. */
+     * request and accept no other appkey.
+     *
+     * ── This is the project's one deliberate trade-off. Read before changing. ──
+     *
+     * Signing with these makes this client present itself to bilibili as the
+     * official television client. The values are not secret — they are公开
+     * documented across the bilibili API community — but using them is a
+     * decision, not an oversight, and it buys exactly one thing: credentials
+     * this code can read, store and replay.
+     *
+     * `passport-tv-login` answers with SESSDATA, bili_jct, an access token and
+     * a refresh token, as JSON. That is what makes several people able to share
+     * one television: each account is a value this app holds and can swap.
+     *
+     * The web QR flow (startWeb below) is the alternative and needs none of
+     * this. Its cost is structural, not cosmetic: it finishes by redirecting
+     * through a URL whose `Set-Cookie` the engine swallows into its own global
+     * jar. XHR never sees the credentials. So an account signed in that way
+     * cannot be stored, cannot be restored, and cannot coexist with another —
+     * the jar holds one session, and there is no way to put a previous one
+     * back.
+     *
+     * Both paths are implemented and both work. The web flow is the automatic
+     * fallback whenever the TV path is unavailable, and it fires *before* any
+     * QR code reaches the screen — swapping the code out while somebody is
+     * already holding up a phone is worse than failing.
+     *
+     * To ship without the TV appkey: delete these two constants and make
+     * `login()` call `startWeb` directly. Everything keeps working for one
+     * account. `Accounts` will still hold a list, but a second sign-in
+     * dispossesses the first, and `Accounts.needsRelogin` will start flagging
+     * whoever lost the jar. Watch-history reporting back to bilibili also stops
+     * — `/x/v2/history/report` accepts `access_key` and rejects `csrf` from
+     * this device, so it depends on the TV path.
+     *
+     * See README「两条登录路径」for the same trade-off in prose. */
     var TV_APPKEY = "4409e2ce8ffd12b8";
     var TV_APPSEC = "59b43e04ad6965f34319062b478f83dd";
     var TV_BASE = "https://passport.bilibili.com/x/passport-tv-login";
