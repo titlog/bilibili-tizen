@@ -254,17 +254,30 @@ function buildP12(kind, crtText, caFile) {
 const { token, userId, email } = await awaitLogin();
 log("signed in as", email || userId);
 
+/* Who the author certificate says you are. Samsung does not verify any of it —
+ * it is the subject of a self-描述 CSR — but it ends up inside every package
+ * you sign, so it is yours to fill in rather than the repository's to assume.
+ * Defaults are deliberately anonymous; override any of them from the
+ * environment, or leave them and ship a certificate that names nobody. */
+const AUTHOR_NAME = process.env.CERT_NAME || "Tizen Developer";
+const AUTHOR_ORG = process.env.CERT_ORG || "Independent";
+const AUTHOR_CITY = process.env.CERT_CITY || "Unknown";
+const AUTHOR_STATE = process.env.CERT_STATE || "Unknown";
+const AUTHOR_COUNTRY = process.env.CERT_COUNTRY || "NL";
+
 const authorCsr = writeCsr("author", [
-  { name: "commonName", value: "Tizen Developer" },
-  { shortName: "OU", value: "TIT" },
-  { name: "organizationName", value: "Independent" },
-  { name: "localityName", value: "Unknown" },
-  { shortName: "ST", value: "Unknown" },
-  { name: "countryName", value: "NL" },
+  { name: "commonName", value: AUTHOR_NAME },
+  { name: "organizationName", value: AUTHOR_ORG },
+  { name: "localityName", value: AUTHOR_CITY },
+  { shortName: "ST", value: AUTHOR_STATE },
+  { name: "countryName", value: AUTHOR_COUNTRY },
 ]);
 
+/* The address the Samsung account itself signed in with — the one party that
+ * already knows it. A hardcoded fallback here was somebody's real inbox. */
 const distCsr = writeCsr("distributor",
-  [{ name: "commonName", value: "TizenSDK" }, { name: "emailAddress", value: email || "tizen@example.com" }],
+  [{ name: "commonName", value: "TizenSDK" },
+   { name: "emailAddress", value: email || process.env.CERT_EMAIL || "tizen@example.com" }],
   [{ type: 6, value: "URN:tizen:packageid=" }, { type: 6, value: "URN:tizen:deviceid=" + DUID }]);
 
 log("requesting author certificate...");
