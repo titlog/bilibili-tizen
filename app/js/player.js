@@ -631,6 +631,25 @@ var Player = (function () {
      * judge of whether the decode is actually holding up. */
     var triedAv01 = false;
 
+    /* Builds the av01 manifest or says exactly why there is none — the rung
+     * skipped silently once (20:34, P20 straight to 720p with av01 sitting
+     * healthy on the CDN) and a silent skip and a missing feature read
+     * identically from the sofa. */
+    function tryAv01Manifest(dash, capId) {
+        var m = Mpd.build(dash, capId || PREFERRED_QN, "av01");
+        if (m) { return m; }
+        var reps = 0, seg = 0, list = (dash && dash.video) || [];
+        for (var i = 0; i < list.length; i++) {
+            if (String(list[i].codecs || "").split(".")[0] === "av01") {
+                reps++;
+                if (list[i].segments) { seg++; }
+            }
+        }
+        log("AV1 档不可用（av01 表示 " + reps + " 个、带段索引 " + seg +
+            " 个；0 个是响应没给，非 0 是 isTypeSupported 拒绝或够不到 avc1 基线），跳过");
+        return "";
+    }
+
     var badHosts = {};
     /* Which video the blacklist belongs to. reset() must NOT clear it: the
      * in-place restart goes through Player.playDash → reset(), and clearing
@@ -777,13 +796,14 @@ var Player = (function () {
         /* The third 1080p file. hev1 and avc1 dead ≠ 1080p dead: each family
          * is its own file with its own CDN treatment, and the healthy one has
          * been the one we exclude. */
-        if (lastDash.family !== "av01" && !triedAv01 &&
-                Mpd.build(lastDash.dash, lastDash.capId || PREFERRED_QN, "av01")) {
+        if (lastDash.family !== "av01" && !triedAv01) {
             triedAv01 = true;
-            log("解码失败（" + why + "），hev1/avc1 都没走通，从 " + at +
-                "s 换 AV1 的同画质（不同的文件，网页端就靠它）");
-            playDashWithShaka(lastDash.dash, from, true, "av01", lastDash.capId);
-            return true;
+            if (tryAv01Manifest(lastDash.dash, lastDash.capId)) {
+                log("解码失败（" + why + "），hev1/avc1 都没走通，从 " + at +
+                    "s 换 AV1 的同画质（不同的文件，网页端就靠它）");
+                playDashWithShaka(lastDash.dash, from, true, "av01", lastDash.capId);
+                return true;
+            }
         }
         /* Both codec families dead at this tier is not the end: the tiers are
          * different files, and "drop a tier" is the documented escape that
@@ -805,6 +825,7 @@ var Player = (function () {
         mode = "mse";
         var gen = ++mseGeneration;
         var retriedLoad = !!isRetry;
+        var retriedBlacklist = false;
 
         var scope = scopeOf(dash);
         if (scope !== badHostsScope) { badHostsScope = scope; badHosts = {}; }
@@ -893,15 +914,30 @@ var Player = (function () {
                 playDashWithShaka(dash, startMs, retriedLoad, "avc1", capId);
                 return;
             }
+            /* A refusal from the mirror the rotation had just gambled onto is
+             * not a verdict on the manifest — the host is blacklisted as of a
+             * moment ago and preferGoodHosts will lead with a different one on
+             * rebuild. One immediate rebuild, once per load session; without
+             * it a single 403 here burned straight down to the 720p cap with
+             * the akam route untried (20:34, P20). */
+            if (!retriedBlacklist && e && e.code === 1001 &&
+                    (e.data && (e.data[1] === 403 || e.data[1] === 401))) {
+                retriedBlacklist = true;
+                log("排头镜像 403 已拉黑，立即换镜像重建清单");
+                playDashWithShaka(dash, startMs, true, prefer, capId);
+                return;
+            }
+
             /* Same tier, third file: the CDN treats each codec's file on its
              * own terms, and av01 has been the healthy one while both others
              * starved. Try it before surrendering resolution. */
-            if (usedFamily !== "av01" && !triedAv01 &&
-                    Mpd.build(dash, capId || PREFERRED_QN, "av01")) {
+            if (usedFamily !== "av01" && !triedAv01) {
                 triedAv01 = true;
-                log("加载连续被拒（" + describeShakaError(e) + "），换 AV1 的同画质再试");
-                playDashWithShaka(dash, startMs, true, "av01", capId);
-                return;
+                if (tryAv01Manifest(dash, capId)) {
+                    log("加载连续被拒（" + describeShakaError(e) + "），换 AV1 的同画质再试");
+                    playDashWithShaka(dash, startMs, true, "av01", capId);
+                    return;
+                }
             }
             /* The top tier can be refused while lower tiers serve — the tiers
              * are different files, and a 403 on one says nothing about the

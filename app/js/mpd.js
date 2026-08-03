@@ -71,15 +71,30 @@ var Mpd = (function () {
      * pressing a button and seeing a picture, so it gets asked once. */
     var supportCache = {};
 
+    function ask(c) {
+        try {
+            return MediaSource.isTypeSupported('video/mp4; codecs="' + c + '"');
+        } catch (e) { return false; }
+    }
+
     function playable(codecs) {
         if (typeof MediaSource === "undefined" || !MediaSource.isTypeSupported) {
             return family(codecs) === "avc1";
         }
         if (supportCache[codecs] === undefined) {
-            try {
-                supportCache[codecs] =
-                    MediaSource.isTypeSupported('video/mp4; codecs="' + codecs + '"');
-            } catch (e) { supportCache[codecs] = false; }
+            supportCache[codecs] = ask(codecs);
+            /* The engine probe answers true for `av01.0.08M.08` while the
+             * payload states `av01.0.08M.08.0.110.01.01.01.0` — same profile,
+             * level and depth; the tail is colour metadata, not decode
+             * capability. A platform isTypeSupported that rejects the long
+             * form silently deletes the whole family from the manifest, so
+             * ask again with the 4-part prefix before believing a no. */
+            if (!supportCache[codecs]) {
+                var parts = String(codecs).split(".");
+                if (parts.length > 4) {
+                    supportCache[codecs] = ask(parts.slice(0, 4).join("."));
+                }
+            }
         }
         return supportCache[codecs];
     }
