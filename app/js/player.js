@@ -263,6 +263,16 @@ var Player = (function () {
              * gets one shot at H.264; `lastDash.retried` stops the other from
              * taking a second. */
             if (code === 3 && recoverFromDecodeFailure("video element error 3")) { return; }
+            /* A code-less error milliseconds after a decode reload is the old
+             * element being torn down, not a new fault. Unswallowed it raced
+             * the ladder: 19:52:15 on 2026-08-03 it preempted the avc1 rung
+             * with an hev1 in-place restart, burned the restart budget on an
+             * echo, and the exit that followed was blamed on a video that had
+             * never been given its second codec. */
+            if (!code && new Date().getTime() - lastDecodeFailAt < 3000) {
+                log("媒体元素无码错误紧跟在解码重载之后，当作同一事件忽略");
+                return;
+            }
             emit("error", "video element error " + (code || "?"));
         });
     }
@@ -337,7 +347,6 @@ var Player = (function () {
         lastDecodeHandled = false;
         criticalRetries = 0;
         lastCriticalAt = 0;
-        badHosts = {};
         /* The "from" of the first 跳转 line belongs to this video, not the
          * last one — stale, it reads as a cross-video jump that never happened. */
         lastTickSec = 0;
@@ -612,8 +621,22 @@ var Player = (function () {
      * next video. Session-scoped on purpose: which mirror is dead varies per
      * video, and tonight proved it both ways within one hour. */
     var badHosts = {};
+    /* Which video the blacklist belongs to. reset() must NOT clear it: the
+     * in-place restart goes through Player.playDash → reset(), and clearing
+     * there wiped the list mid-incident — 19:52 on 2026-08-03 the same cosov
+     * had to be re-learned with a fresh 403 on every restart of the same
+     * video. The list turns over when the *video* changes, detected from the
+     * cid baked into the stream url path. */
+    var badHostsScope = "";
 
     function hostOf(u) { return String(u || "").split("/")[2] || ""; }
+
+    function scopeOf(dash) {
+        var v = dash && dash.video && dash.video[0];
+        var u = (v && (v.baseUrl || (v.urls && v.urls[0]))) || "";
+        var m = /upgcxcode\/\d+\/\d+\/(\d+)\//.exec(String(u));
+        return m ? m[1] : String(u).split("?")[0];
+    }
 
     function noteBadHost(err) {
         if (!err || err.code !== 1001 || !err.data) { return; }
@@ -750,6 +773,8 @@ var Player = (function () {
         var gen = ++mseGeneration;
         var retriedLoad = !!isRetry;
 
+        var scope = scopeOf(dash);
+        if (scope !== badHostsScope) { badHostsScope = scope; badHosts = {}; }
         preferGoodHosts(dash);
         var manifest = Mpd.build(dash, PREFERRED_QN, prefer);
         if (!manifest && !prefer) {
