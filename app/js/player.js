@@ -753,14 +753,25 @@ var Player = (function () {
             var lead = rotateMirrors(lastDash.dash);
             log("解码失败（" + why + "），从 " + at + "s 用 " + lastDash.family +
                 " 原样重载一次" + (lead ? "，镜像改从 " + lead + " 出发" : ""));
-            playDashWithShaka(lastDash.dash, from, true, lastDash.family);
+            playDashWithShaka(lastDash.dash, from, true, lastDash.family, lastDash.capId);
             return true;
         }
         /* Same codec, twice, still refused — now the probe is the suspect after
          * all, and H.264 is one reload away. */
         if (decodeRecoveries === 2 && lastDash.family !== "avc1") {
             log("解码失败（" + why + "），同族重载没解决，从 " + at + "s 退回 avc1");
-            playDashWithShaka(lastDash.dash, from, true, "avc1");
+            playDashWithShaka(lastDash.dash, from, true, "avc1", lastDash.capId);
+            return true;
+        }
+        /* Both codec families dead at this tier is not the end: the tiers are
+         * different files, and "drop a tier" is the documented escape that
+         * carried P17 through its poisoned region — it just relied on ABR
+         * getting lucky. Made an explicit rung 2026-08-03 after a video turned
+         * up with hev1-1080p truncating, avc1-1080p answering 403 and the
+         * spare host dead: every 1080p route was gone while 720p served. */
+        if (!lastDash.capId) {
+            log("解码失败（" + why + "），换编码也没走通，压到 720p 从 " + at + "s 再试");
+            playDashWithShaka(lastDash.dash, from, true, null, 64);
             return true;
         }
         log("解码失败（" + why + "），已重载 " + decodeRecoveries + " 次仍然失败，交给上层");
@@ -768,7 +779,7 @@ var Player = (function () {
         return false;
     }
 
-    function playDashWithShaka(dash, startMs, isRetry, prefer) {
+    function playDashWithShaka(dash, startMs, isRetry, prefer, capId) {
         mode = "mse";
         var gen = ++mseGeneration;
         var retriedLoad = !!isRetry;
@@ -776,18 +787,20 @@ var Player = (function () {
         var scope = scopeOf(dash);
         if (scope !== badHostsScope) { badHostsScope = scope; badHosts = {}; }
         preferGoodHosts(dash);
-        var manifest = Mpd.build(dash, PREFERRED_QN, prefer);
+        var manifest = Mpd.build(dash, capId || PREFERRED_QN, prefer);
         if (!manifest && !prefer) {
             /* The preferred family had nothing usable. H.264 is always there. */
-            manifest = Mpd.build(dash, PREFERRED_QN, "avc1");
+            manifest = Mpd.build(dash, capId || PREFERRED_QN, "avc1");
         }
         if (!manifest) {
             emit("error", "拼不出播放清单（缺少分段索引）");
             return;
         }
         var usedFamily = Mpd.chosen();
-        log("编码 " + usedFamily + (prefer ? "（指定）" : ""));
-        lastDash = { dash: dash, startMs: startMs, family: usedFamily };
+        log("编码 " + usedFamily + (prefer ? "（指定）" : "") +
+            (capId ? "，画质压到 qn" + capId : ""));
+        lastDash = { dash: dash, startMs: startMs, family: usedFamily,
+                     capId: capId || 0 };
         var player = ensureShaka();
         if (!player) {
             emit("error", "这台设备的浏览器内核不支持 DASH 播放");
@@ -842,7 +855,7 @@ var Player = (function () {
                 log("首次加载被拒（" + describeShakaError(e) + "），3 秒后重来一次");
                 setTimeout(function () {
                     if (gen !== mseGeneration) { return; }
-                    playDashWithShaka(dash, startMs, true, prefer);
+                    playDashWithShaka(dash, startMs, true, prefer, capId);
                 }, 3000);
                 return;
             }
@@ -854,7 +867,16 @@ var Player = (function () {
              * with no pause: nothing out there needs time to change its mind. */
             if (usedFamily && usedFamily !== "avc1" && (!e || e.category !== 1)) {
                 log("走 " + usedFamily + " 时失败（" + describeShakaError(e) + "），退回 avc1");
-                playDashWithShaka(dash, startMs, retriedLoad, "avc1");
+                playDashWithShaka(dash, startMs, retriedLoad, "avc1", capId);
+                return;
+            }
+            /* The top tier can be refused while lower tiers serve — the tiers
+             * are different files, and a 403 on one says nothing about the
+             * next. One capped attempt before giving the failure to app.js,
+             * which would only rebuild the same top-tier manifest. */
+            if (!capId) {
+                log("加载连续被拒（" + describeShakaError(e) + "），压到 720p 再试一次");
+                playDashWithShaka(dash, startMs, true, prefer, 64);
                 return;
             }
             emit("error", "shaka load 失败 " + describeShakaError(e));
