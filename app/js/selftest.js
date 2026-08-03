@@ -207,15 +207,27 @@ var SelfTest = (function () {
          * whole file up to that second and throw all of it away. */
         ["跨出缓冲区的远距离拖动", 900, function () {
             var dur = secs(document.getElementById("player-dur").textContent);
+            var now = secs(document.getElementById("player-pos").textContent);
             window.__stFar = false;
-            if (dur < 300) {
-                post("拖动：这个视频只有 " + dur + "s，跳过远距离拖动（会撞到片尾自动续播）");
+            /* 8 presses is 3:30 (210s) by the step ladder in app.js — well past
+             * the 60 s the pump keeps ahead of the playhead.
+             *
+             * Direction depends on where resume left us. Every run of this test
+             * leaves a resume point further into the same video, and once it
+             * sat near the end the forward jump clamped onto the closing
+             * seconds: the video finished mid-check, autoplay pulled in the
+             * next one, and the readout — now the new video's 2s — failed a
+             * step whose playback was perfectly healthy (19:40 run,
+             * 2026-08-03). Backwards from there is just as far outside the
+             * buffer: bufferBehind keeps 120s and this jumps 210. */
+            var canForward = dur - now >= 300;
+            var canBack = now >= 330;
+            if (!canForward && !canBack) {
+                post("拖动：位置 " + now + "s/" + dur + "s 两头都不够远，跳过远距离拖动");
                 return null;
             }
             window.__stFar = true;
-            /* 8 presses is 3:30 by the step ladder in app.js — well past the
-             * 60 s the pump keeps ahead of the playhead. */
-            for (var i = 0; i < 8; i++) { key(KEY.RIGHT); }
+            for (var i = 0; i < 8; i++) { key(canForward ? KEY.RIGHT : KEY.LEFT); }
             return null;
         }],
         ["跳转落在远处", 9000, function () {

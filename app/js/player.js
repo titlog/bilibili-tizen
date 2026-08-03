@@ -337,6 +337,7 @@ var Player = (function () {
         lastDecodeHandled = false;
         criticalRetries = 0;
         lastCriticalAt = 0;
+        badHosts = {};
         /* The "from" of the first 跳转 line belongs to this video, not the
          * last one — stale, it reads as a cross-video jump that never happened. */
         lastTickSec = 0;
@@ -427,6 +428,7 @@ var Player = (function () {
          * there is only ever one session. */
         player.addEventListener("error", function (e) {
             var err = e && e.detail;
+            noteBadHost(err);
             /* A *critical* media error is the decoder refusing the stream, not
              * a blip on the wire. retryStreaming() re-fetches bytes that will be
              * refused for the same reason the moment they arrive; the answer to
@@ -600,6 +602,52 @@ var Player = (function () {
                                * decode ladder refills: a minute of real
                                * playback since the last one */
 
+    /* Hosts that answered 401/403 during this video, kept so no rebuild leads
+     * with one. Shaka treats those two statuses as CRITICAL and does *not*
+     * advance to the next BaseURL the way it does for a cut connection —
+     * measured 2026-08-03 evening: one video had akam truncating segments
+     * *and* cosov answering 403, the decode-failure rotation put cosov in
+     * front, and every reload died at load() before the codec ladder could
+     * run. A 403 host is not "next in line", it is off the list until the
+     * next video. Session-scoped on purpose: which mirror is dead varies per
+     * video, and tonight proved it both ways within one hour. */
+    var badHosts = {};
+
+    function hostOf(u) { return String(u || "").split("/")[2] || ""; }
+
+    function noteBadHost(err) {
+        if (!err || err.code !== 1001 || !err.data) { return; }
+        var status = err.data[1];
+        if (status !== 403 && status !== 401) { return; }
+        var h = hostOf(err.data[0]);
+        if (h && !badHosts[h]) {
+            badHosts[h] = true;
+            log("镜像 " + h + " 返回 " + status + "，这个视频内不再排在前面");
+        }
+    }
+
+    /* Every path into playDashWithShaka runs through this, so a manifest can
+     * never lead with a host already known to refuse — including the in-place
+     * restart, which reuses a session object earlier rotations may have left
+     * pointing at exactly the wrong mirror. */
+    function preferGoodHosts(dash) {
+        var kinds = ["video", "audio"];
+        for (var k = 0; k < kinds.length; k++) {
+            var list = (dash && dash[kinds[k]]) || [];
+            for (var i = 0; i < list.length; i++) {
+                var urls = list[i].urls;
+                if (!urls || urls.length < 2 || !badHosts[hostOf(urls[0])]) { continue; }
+                for (var j = 1; j < urls.length; j++) {
+                    if (!badHosts[hostOf(urls[j])]) {
+                        urls.unshift(urls.splice(j, 1)[0]);
+                        list[i].baseUrl = urls[0];
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /* A cut connection does not always announce itself as one. The failure
      * chain measured all evening on 2026-08-03 was: segment request dies at the
      * transport level, a truncated body reaches the demuxer anyway, and the
@@ -618,11 +666,18 @@ var Player = (function () {
             var list = (dash && dash[kinds[k]]) || [];
             for (var i = 0; i < list.length; i++) {
                 var urls = list[i].urls;
-                if (urls && urls.length > 1) {
+                if (!urls || urls.length < 2) { continue; }
+                /* Skip mirrors already known to 403: rotating onto one turns a
+                 * recoverable decode failure into an instant load failure. If
+                 * every host is marked, the loop lands back on the original
+                 * order, which is the honest answer — there is nowhere better
+                 * to go. */
+                for (var r = 0; r < urls.length; r++) {
                     urls.push(urls.shift());
-                    list[i].baseUrl = urls[0];
-                    lead = String(urls[0]).split("/")[2] || lead;
+                    if (!badHosts[hostOf(urls[0])]) { break; }
                 }
+                list[i].baseUrl = urls[0];
+                lead = hostOf(urls[0]) || lead;
             }
         }
         return lead;
@@ -695,6 +750,7 @@ var Player = (function () {
         var gen = ++mseGeneration;
         var retriedLoad = !!isRetry;
 
+        preferGoodHosts(dash);
         var manifest = Mpd.build(dash, PREFERRED_QN, prefer);
         if (!manifest && !prefer) {
             /* The preferred family had nothing usable. H.264 is always there. */
@@ -750,6 +806,7 @@ var Player = (function () {
             if (gen !== mseGeneration) { return; }
             /* 7000 is LOAD_INTERRUPTED, which is a newer load winning. */
             if (e && e.code === 7000) { return; }
+            noteBadHost(e);
 
             /* One more go, after a pause, when the failure was the network.
              * Shaka's own retries all happen inside a few seconds; this CDN's
