@@ -43,8 +43,13 @@ zsh tools/deploy.sh     # 检查、签名、安装、启动
 > —— 2022 年过期的那套和有效期到 2032 的 `-new` 那套都一样,所以这是信任链问题,
 > 不是过期问题。必须用三星签发的那一套。
 >
-> `tools/samsung-cert.mjs` 无 GUI 完成这件事:不需要 Eclipse、不需要 sudo、
-> 不需要 Tizen 的证书管理器。**这个脚本对任何 Tizen 项目都有用**,不限于本项目。
+> `setup.sh` 会自动搞定。如果你只是想拿证书、和本项目无关,它已经拆成了独立工具:
+>
+> **[samsung-tv-cert](https://github.com/titlog/samsung-tv-cert)** —
+> `npx samsung-tv-cert --duid <你的DUID>`
+>
+> 不需要 Eclipse、不需要 sudo、不需要 Tizen 的证书管理器。**对任何要往三星电视上
+> 侧载东西的项目都有用**(Jellyfin、Twitch 社区版、你自己写的应用)。
 
 ## 两条登录路径 —— 一个需要你自己判断的取舍
 
