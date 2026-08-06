@@ -2300,6 +2300,11 @@
                     playing.urls && playing.urlIdx + 1 < playing.urls.length) {
                 playing.urlIdx++;
                 playing.failed = false;
+                /* Was the quietest branch in the handler: it can spend tens of
+                 * silent seconds driving AVPlay through mirrors after DASH has
+                 * already died — the minute-long log gap of 08-06 13:44. */
+                report("player", "渐进式换镜像重试 " + (playing.urlIdx + 1) + "/" +
+                       playing.urls.length);
                 el("player-loading").className = "";
                 Player.playProgressive(playing.urls[playing.urlIdx], playing.startMs || 0);
                 return;
@@ -2416,6 +2421,11 @@
              * PLAYER_ERROR_CONNECTION_FAILED" sends the viewer looking for a
              * network problem that is not there. */
             var refused = playing.refused || String(data).indexOf("403") >= 0;
+            /* The viewer gets a toast; the log used to get nothing — an exit
+             * that cannot be found afterwards reads as a hang that never
+             * ended. */
+            report("player", "所有路都试过，有声退出（" +
+                   (refused ? "403 被拒" : String(data)) + "）");
             toast(refused
                 ? "视频流被拒绝（403）——可能是临时限流，过几分钟再试，或换一个视频"
                 : "播放错误：" + data);

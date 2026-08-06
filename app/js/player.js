@@ -1090,7 +1090,11 @@ var Player = (function () {
                     try { part = JSON.stringify(part).slice(0, 200); }
                     catch (e2) { part = "[object]"; }
                 } else {
-                    part = String(part);
+                    /* CDN refusals carry a whole HTML error page here, newlines
+                     * included — printed raw, its tail lands in the collector as
+                     * orphan lines with no timestamp (the untimestamped
+                     * 「An error occur…」 lines of 08-06). One report, one line. */
+                    part = String(part).replace(/\s+/g, " ");
                     /* A stream url is 800 characters of which about ten matter.
                      * Truncating it hid exactly the ten — three rounds of
                      * "why does the television get 403 where a browser gets
