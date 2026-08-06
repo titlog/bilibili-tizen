@@ -490,6 +490,26 @@ var Player = (function () {
         player.addEventListener("error", function (e) {
             var err = e && e.detail;
             noteBadHost(err);
+            /* A critical 403 usually names one *file*, not one host — the
+             * 15:54 incident: hev1-720p answered 403 on every host while its
+             * 1080p sibling played fine, the in-place restart rebuilt the
+             * same manifest, and ABR dipped into the same mine on every
+             * recovery until the budget ran out. Excise the representation
+             * and rebuild from where the viewer is; chooseVideos re-runs, and
+             * a family that just lost its top tier fails the baseline check
+             * so the build falls to the next family on its own. `prefer` is
+             * deliberately not pinned: the re-pick must be free to leave the
+             * family whose file died. */
+            if (err && err.severity === 2 && err.category === 1 && lastDash) {
+                var badTok = noteBadFile(err);
+                if (badTok && dropRep(lastDash.dash, badTok)) {
+                    var fromTok = lastTime || lastDash.startMs || 0;
+                    log("文件 " + badTok + " 被 403，从清单剔除，从 " +
+                        Math.round(fromTok / 1000) + "s 原地重建");
+                    playDashWithShaka(lastDash.dash, fromTok, true, null, lastDash.capId);
+                    return;
+                }
+            }
             /* A *critical* media error is the decoder refusing the stream, not
              * a blip on the wire. retryStreaming() re-fetches bytes that will be
              * refused for the same reason the moment they arrive; the answer to
@@ -723,6 +743,11 @@ var Player = (function () {
      * video. The list turns over when the *video* changes, detected from the
      * cid baked into the stream url path. */
     var badHostsScope = "";
+    /* Files (representations), same scope and turnover as badHosts. A 403 is
+     * usually aimed at one *file*, not one host — 2026-08-06 15:54: a video
+     * whose hev1-720p file answered 403 everywhere while its 1080p sibling
+     * played fine. Host-level blacklisting cannot express that. */
+    var badFiles = {};
 
     function hostOf(u) { return String(u || "").split("/")[2] || ""; }
 
@@ -750,6 +775,53 @@ var Player = (function () {
             return true;
         }
         return false;
+    }
+
+    function fileTokenOf(u) {
+        var path = String(u || "").split(/[?#]/)[0];
+        var seg = path.split("/").pop();
+        return /\.m4s$/.test(seg) ? seg : "";
+    }
+
+    /* Same contract as noteBadHost: returns the newly learned file token, or
+     * "" — and *newly learned* is what bounds the rebuild below, exactly the
+     * lesson the host blacklist paid for. N poisoned files cost at most N
+     * rebuilds per video. */
+    function noteBadFile(err) {
+        if (!err || err.code !== 1001 || !err.data) { return ""; }
+        var status = err.data[1];
+        if (status !== 403 && status !== 401) { return ""; }
+        var tok = fileTokenOf(err.data[0]);
+        if (!tok || badFiles[tok]) { return ""; }
+        badFiles[tok] = true;
+        return tok;
+    }
+
+    function dropRep(dash, tok) {
+        var kinds = ["video", "audio"];
+        for (var k = 0; k < kinds.length; k++) {
+            var list = (dash && dash[kinds[k]]) || [];
+            for (var i = 0; i < list.length; i++) {
+                var u = (list[i].urls && list[i].urls[0]) || list[i].baseUrl;
+                if (fileTokenOf(u) !== tok) { continue; }
+                /* Never empty a list — a manifest with no audio (or video)
+                 * cannot be built at all, and the honest exit path is a
+                 * better end than 「拼不出播放清单」 on a self-inflicted
+                 * wound. */
+                if (list.length < 2) { return false; }
+                list.splice(i, 1);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* Fresh playurl responses within the same video (deadline expiry, the
+     * app-level restart) arrive with the poisoned representations restored;
+     * this re-applies what the video already taught us, the way
+     * preferGoodHosts does for hosts. */
+    function dropKnownBadFiles(dash) {
+        for (var tok in badFiles) { dropRep(dash, tok); }
     }
 
     /* Every path into playDashWithShaka runs through this, so a manifest can
@@ -905,8 +977,9 @@ var Player = (function () {
         var retriedLoad = !!isRetry;
 
         var scope = scopeOf(dash);
-        if (scope !== badHostsScope) { badHostsScope = scope; badHosts = {}; }
+        if (scope !== badHostsScope) { badHostsScope = scope; badHosts = {}; badFiles = {}; }
         preferGoodHosts(dash);
+        dropKnownBadFiles(dash);
         var manifest = Mpd.build(dash, capId || PREFERRED_QN, prefer);
         if (!manifest && !prefer) {
             /* The preferred family had nothing usable. H.264 is always there. */
