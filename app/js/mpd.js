@@ -51,25 +51,33 @@ var Mpd = (function () {
      * set of alternatives the player may switch between mid-stream, and codecs
      * are not that.
      *
-     * AV1 first as of 2026-08-03 evening, matching the official web player's
-     * default — and that parity is the argument: the CDN treats each codec's
-     * file on its own terms, and the av01 copies ride whatever path bilibili's
-     * own player keeps healthy. The night this flipped, one video's hev1 and
-     * avc1 1080p files were starved to 25-50 KB/s (403 for the TV's tokens)
-     * while av01 served at full speed, and the web player never felt it.
-     * H.265 next: same picture in ~15% fewer bytes than av01 on these files,
-     * so it stays the fallback for the many uploads with no av01 tracks.
+     * H.265 back in front as of 2026-08-06 afternoon. AV1 led for three days
+     * (2026-08-03, for CDN parity with the official web player — the night
+     * hev1/avc1 files were starved while av01 served at full speed), and the
+     * revert is exactly the one the AV1 note promised, but the judge named
+     * there turned out to be blind: the 丢帧 counter never moved while an
+     * av01-only afternoon produced, twenty minutes apart, a picture that
+     * went green mid-play and then a full decoder wedge — frozen frame,
+     * buffer full, element claiming to play, no `waiting`, so even the
+     * stall watchdog cannot see it. Decoded-wrong and decoder-hung are
+     * failures no counter this app can read will ever show; the viewer's
+     * eyes were the actual referee, and they voted twice in one sitting.
+     * av01 stays second: it is still the escape when the CDN starves the
+     * hev1/avc1 files (that night was real), reached via the failure ladder
+     * and the per-file 403 handling rather than as the default diet.
      *
-     * The old fear — that this panel might software-decode AV1 and trade a
-     * bandwidth problem for a dropped-frames problem — was never measured.
-     * The 丢帧 counter in the 卡住/恢复播放 lines is the judge now that av01
-     * actually plays; if it climbs, the revert is putting hev1 back in front.
+     * H.265 wears two boxes across bilibili's catalogue — some uploads carry
+     * `hev1` tracks, others `hvc1` (in-band vs out-of-band parameter sets,
+     * same decoder, both pass isTypeSupported here). Discovered when the
+     * 08-06 revert changed nothing: the afternoon's videos shipped hvc1, the
+     * hev1 family matched zero representations, and av01 quietly won again.
+     * Both flavours lead the order or the revert only reverts some uploads.
      *
      * The set is asked rather than assumed — `isTypeSupported` with the codec
      * string bilibili actually sent, not a guess at what a 2024 Samsung ought
      * to manage. Where there is nothing to ask (the verifier runs this file
      * under node), only H.264 is taken: it is the one every engine has. */
-    var FAMILIES = ["av01", "hev1", "hvc1", "avc1"];
+    var FAMILIES = ["hev1", "hvc1", "av01", "avc1"];
 
     function family(codecs) { return String(codecs || "").split(".")[0]; }
 

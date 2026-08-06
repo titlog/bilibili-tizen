@@ -152,22 +152,26 @@ function freshMpd(isTypeSupported) {
   return sb.Mpd;
 }
 
-/* The default order: av01 first when the engine takes it — parity with the
- * official web player, which is what kept 1080p alive the night the CDN
- * starved the hev1/avc1 files. */
+/* The default order: hev1 back in front as of 2026-08-06 — av01 led for
+ * three days until an av01-only afternoon produced green frames and then a
+ * silent decoder wedge, neither visible to any counter this app can read.
+ * av01 is the ladder's escape now, not the default diet. */
 const MpdAll = freshMpd(() => true);
 MpdAll.build(dash, 80);
-eq("with everything supported the default family is av01", MpdAll.chosen(), "av01");
+eq("with everything supported the default family is hev1", MpdAll.chosen(), "hev1");
 
 /* A platform that rejects the long parameter form but accepts the 4-part
  * prefix must not lose the family — the tail is colour metadata, not decode
- * capability. */
+ * capability. Checked for the default family and for pinned av01, which is
+ * how the failure ladder reaches it now that it no longer leads. */
 const MpdPrefix = freshMpd((t) => {
   const m = /codecs="([^"]+)"/.exec(t);
   return m ? m[1].split(".").length <= 4 : false;
 });
 MpdPrefix.build(dash, 80);
-eq("long codec string rejected → 4-part prefix keeps av01", MpdPrefix.chosen(), "av01");
+eq("long codec string rejected → 4-part prefix keeps the default family", MpdPrefix.chosen(), "hev1");
+MpdPrefix.build(dash, 80, "av01");
+eq("pinned av01 survives the long-string rejection too", MpdPrefix.chosen(), "av01");
 
 /* A family that cannot reach the tier H.264 reaches is not an improvement:
  * fewer bytes for a smaller picture is a downgrade wearing a disguise. */
