@@ -49,17 +49,16 @@ var Player = (function () {
     var lastStallAt = 0;
     var stallTimer = null;
     var stallSilenced = false; /* capped out; owed a 恢复播放 line when it ends */
+    var stallProbeEnd = -1;    /* buffered end as of the last watchdog look */
+    var stallStuckTicks = 0;   /* consecutive 5s ticks without a byte of progress */
 
     /* One line describing the stall, from Shaka's own statistics. `已卡` is the
      * number to read first: it is cumulative, so if it has not moved since the
      * previous line then whatever happened was not a stall at all — a seek
      * raises `waiting` exactly as a stall does. */
-    function stallLine(tag) {
-        if (!shakaPlayer) { return; }
-        var v = el("html5-video");
+    function bufferedAhead(v) {
+        var ahead = 0;
         try {
-            var st = shakaPlayer.getStats() || {};
-            var ahead = 0;
             if (v.buffered && v.buffered.length) {
                 for (var b = 0; b < v.buffered.length; b++) {
                     if (v.currentTime >= v.buffered.start(b) - 0.5 &&
@@ -68,6 +67,16 @@ var Player = (function () {
                     }
                 }
             }
+        } catch (e) {}
+        return ahead;
+    }
+
+    function stallLine(tag) {
+        if (!shakaPlayer) { return; }
+        var v = el("html5-video");
+        try {
+            var st = shakaPlayer.getStats() || {};
+            var ahead = bufferedAhead(v);
             log(tag + " t=" + (v.currentTime || 0).toFixed(1) + "s" +
                 " ahead=" + ahead.toFixed(1) + "s" +
                 " seeking=" + v.seeking +
@@ -95,7 +104,14 @@ var Player = (function () {
          * the television was switched off — and every line is an XHR to the
          * collector. A minute of it says everything a longer stall would. */
         var left = 12;
+        var v0 = el("html5-video");
+        stallProbeEnd = (v0.currentTime || 0) + bufferedAhead(v0);
+        stallStuckTicks = 0;
         stallTimer = setInterval(function () {
+            stallWatchdogTick();
+            /* The rescue can tear the watch down synchronously via emit —
+             * a cleared timer must not keep narrating. */
+            if (!stallTimer) { return; }
             if (--left <= 0) {
                 stallLine("仍然卡住（一分钟了，不再复述，恢复时会说一声）");
                 stopStallWatch(true);
@@ -126,6 +142,41 @@ var Player = (function () {
             stallLine("恢复播放");
         }
         stallSilenced = false;
+    }
+
+    /* The acting half of the stall watch — logging alone was not enough.
+     * Live capture 2026-08-06 13:33: a resume seek, cosov answering 403
+     * (blacklisted, correctly), and the one host left neither delivered a
+     * byte nor raised an error for over two minutes. Every recovery rung in
+     * this file is triggered by an *error* event, so a hang that never
+     * errors never recovers — the viewer stares at black until they give up
+     * and reopen the video, which is a mirror rotation done by hand.
+     *
+     * Three ticks (~15s) with an unchanged buffered end is declared a cut
+     * connection and handed to the decode-failure ladder: its first rung —
+     * rotate mirrors, reload in place from the current position — is exactly
+     * that escape, and its per-incident budget (refilled only by real
+     * playback) is what keeps this from feeding the rate limiter in a
+     * rebuild loop. `paused` is deliberately not checked: a pause issued
+     * while the picture is frozen is the viewer prodding a dead player, not
+     * a wish to keep the screen black — and during the initial load the
+     * element still reports paused=true, which is precisely the hang this
+     * exists to catch. */
+    function stallWatchdogTick() {
+        if (mode !== "mse") { stallStuckTicks = 0; return; }
+        var v = el("html5-video");
+        var end = (v.currentTime || 0) + bufferedAhead(v);
+        if (end > stallProbeEnd + 0.3) {
+            stallProbeEnd = end;
+            stallStuckTicks = 0;
+            return;
+        }
+        if (++stallStuckTicks < 3) { return; }
+        stallStuckTicks = 0;
+        log("卡住 15 秒无错误也无进展，当作断连走重载阶梯");
+        if (!recoverFromDecodeFailure("卡死无进展")) {
+            emit("error", "卡死无进展，重载阶梯用尽");
+        }
     }
 
     /* The playhead has been observed jumping backwards — 1021s to 14s once,
