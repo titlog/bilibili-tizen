@@ -18,7 +18,11 @@ const NAMES = {
 };
 
 function stamp() {
-  return new Date().toTimeString().slice(0, 8);
+  /* The log file spans days; a bare HH:MM:SS once let an Aug-3 debugging
+   * session be misread as "tonight". Keep the date in every line. */
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${d.toTimeString().slice(0, 8)}`;
 }
 
 let lastMpd = null;
