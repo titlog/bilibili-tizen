@@ -737,38 +737,35 @@ var Player = (function () {
                  * declared unplayable when it is merely unlucky. */
                 retryParameters: { maxAttempts: 7, baseDelay: 600, backoffFactor: 1.6,
                                    fuzzFactor: 0.5, timeout: 20000 },
-                /* EXPERIMENT 2026-08-02, single variable: 60 → 30.
+                /* Both numbers are the official web player's, measured off it
+                 * on 2026-08-03 and adopted on 08-09. The rule they follow:
+                 * where the web player's behaviour is known, match it — it is
+                 * the reference implementation, running against the same CDN
+                 * with the same account, and it does not stutter.
                  *
-                 * The hypothesis under test: our own read-ahead is what trips
-                 * the CDN's per-IP burst limiter, and the limiter is where the
-                 * evening's failures came from. The chain, each link measured:
-                 * every seek makes Shaka fill `bufferingGoal` worth of buffer
-                 * immediately — at this CDN's segment sizing that is a burst of
-                 * range requests on two streams at once; the probe run from the
-                 * dev machine found ~20 requests in a short window is enough to
-                 * start the cooldown, inside which connections are simply cut
-                 * (status 000 — the same empty-status shape as tonight's
-                 * `1002 data[1]={}` errors); and the viewer seeked a dozen times
-                 * tonight, re-arming it each time. Meanwhile the official web
-                 * player on the very same LAN never trips it — so the variable
-                 * is how much we ask for and how fast, not the route.
+                 * What this replaces: `bufferingGoal: 30`, an experiment from
+                 * 08-02 testing "our own read-ahead is what trips the CDN's
+                 * per-IP burst limiter". That hypothesis never proved itself
+                 * and the reference refutes it — the web player fills ~72s and
+                 * fires 34 requests in the ten seconds after a seek without
+                 * being throttled. Thirty seconds of headroom is simply less
+                 * room to ride out a cold patch, and cold patches are what
+                 * 08-09 was made of.
                  *
-                 * 60 was itself a fix — "stalls when I skip ahead", "nothing
-                 * cached when I go back" — so this may regress that. bufferBehind
-                 * stays at 120: it retains, it does not fetch.
-                 *
-                 * Read the verdict from the collector, not from feel:
-                 *   fewer `1002 … data[1]={}` per hour of viewing  → keep 30
-                 *   1002s unchanged                                → hypothesis
-                 *     dead, revert to 60, look elsewhere
-                 *   skip-ahead stalls return without fewer 1002s   → revert */
-                bufferingGoal: 30,
+                 * bufferBehind comes down at the same time, also to match
+                 * (the web player trims at 20-38s). Together the set buffers
+                 * *less* in total than before — 72+30 against 30+120 — while
+                 * more than doubling what stands between a stalled range and
+                 * a frozen picture. */
+                bufferingGoal: 72,
                 /* One second, not two. This is how much has to be in hand
                  * before the picture is allowed to start, and it was measured
                  * costing two seconds of black screen after the load had
-                 * already finished. */
+                 * already finished. The web player starts on ~4.5s after a
+                 * deep seek and reaches a picture in 1.0s; same philosophy,
+                 * and ours has measured well, so this one stays ours. */
                 rebufferingGoal: 1,
-                bufferBehind: 120,
+                bufferBehind: 30,
                 /* How long Shaka benches a stream whose segment requests keep
                  * failing, before poking it again. Measured with the default:
                  * a 1080p tier whose deep ranges this edge has never cached got
