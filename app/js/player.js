@@ -49,8 +49,6 @@ var Player = (function () {
     var lastStallAt = 0;
     var stallTimer = null;
     var stallSilenced = false; /* capped out; owed a 恢复播放 line when it ends */
-    var stallProbeEnd = -1;    /* buffered end as of the last watchdog look */
-    var stallStuckTicks = 0;   /* consecutive 5s ticks without a byte of progress */
 
     /* One line describing the stall, from Shaka's own statistics. `已卡` is the
      * number to read first: it is cumulative, so if it has not moved since the
@@ -104,14 +102,7 @@ var Player = (function () {
          * the television was switched off — and every line is an XHR to the
          * collector. A minute of it says everything a longer stall would. */
         var left = 12;
-        var v0 = el("html5-video");
-        stallProbeEnd = (v0.currentTime || 0) + bufferedAhead(v0);
-        stallStuckTicks = 0;
         stallTimer = setInterval(function () {
-            stallWatchdogTick();
-            /* The rescue can tear the watch down synchronously via emit —
-             * a cleared timer must not keep narrating. */
-            if (!stallTimer) { return; }
             if (--left <= 0) {
                 stallLine("仍然卡住（一分钟了，不再复述，恢复时会说一声）");
                 stopStallWatch(true);
@@ -144,46 +135,58 @@ var Player = (function () {
         stallSilenced = false;
     }
 
-    /* The acting half of the stall watch — logging alone was not enough.
-     * Live capture 2026-08-06 13:33: a resume seek, cosov answering 403
-     * (blacklisted, correctly), and the one host left neither delivered a
-     * byte nor raised an error for over two minutes. Every recovery rung in
-     * this file is triggered by an *error* event, so a hang that never
-     * errors never recovers — the viewer stares at black until they give up
-     * and reopen the video, which is a mirror rotation done by hand.
+    /* The acting watchdog — a standing heartbeat, deliberately NOT driven by
+     * media events.
      *
-     * Three ticks (~15s) with an unchanged buffered end is declared a cut
-     * connection and handed to the decode-failure ladder: its first rung —
-     * rotate mirrors, reload in place from the current position — is exactly
-     * that escape, and its per-incident budget (refilled only by real
-     * playback) is what keeps this from feeding the rate limiter in a
-     * rebuild loop. `paused` is deliberately not checked: a pause issued
-     * while the picture is frozen is the viewer prodding a dead player, not
-     * a wish to keep the screen black — and during the initial load the
-     * element still reports paused=true, which is precisely the hang this
-     * exists to catch. */
-    function stallWatchdogTick() {
-        if (mode !== "mse") { stallStuckTicks = 0; return; }
+     * It was event-driven for three days and that is how it failed on
+     * 2026-08-09 20:03: the picture froze four seconds after a recovery, the
+     * one `waiting` event landed inside the five-second entry throttle that
+     * exists to stop log spam, and was swallowed. `waiting` never fires again
+     * while nothing arrives, so the watch never armed and the screen stayed
+     * black for minutes with the collector completely silent — the exact
+     * failure this watchdog was built to end, reintroduced by its own
+     * debounce. The 08-06 av01 decoder wedge raised no `waiting` at all.
+     * Two independent ways to lose the only wake-up there was; a heartbeat
+     * has none.
+     *
+     * Progress is `currentTime + buffered ahead` — bytes arriving count even
+     * while the picture is frozen, which is what keeps a slow cold range from
+     * being mistaken for a dead one. `userPaused` is an explicit flag, not
+     * `element.paused`: the element reports paused during load, and load is
+     * precisely when the worst hangs happen. */
+    var watchdogTimer = null;
+    var watchdogSeen = -1;    /* furthest progress seen */
+    var watchdogAt = 0;       /* when it last moved */
+    var userPaused = false;
+
+    function startWatchdog() {
+        watchdogSeen = -1;
+        watchdogAt = new Date().getTime();
+        if (watchdogTimer) { return; }
+        watchdogTimer = setInterval(watchdogTick, 5000);
+    }
+
+    function stopWatchdog() {
+        if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+        watchdogSeen = -1;
+        watchdogAt = 0;
+    }
+
+    function watchdogTick() {
+        var now = new Date().getTime();
+        if (mode !== "mse" || userPaused) { watchdogAt = now; return; }
         var v = el("html5-video");
         var end = (v.currentTime || 0) + bufferedAhead(v);
-        if (end > stallProbeEnd + 0.3) {
-            stallProbeEnd = end;
-            stallStuckTicks = 0;
-            return;
-        }
-        /* Adaptive patience (2026-08-09): the fixed three ticks made every
-         * rung of a sick video cost 15+ seconds — a video with three starved
-         * files in a row spent a minute mostly on the watchdog counting.
-         * Two situations deserve less patience: an incident already in
-         * progress (a ladder rung fired within the last minute — the disease
-         * is known, decodeRecoveries has not been repaid yet) and a screen
-         * that has never shown a frame (pure black reads as a crash). Both
-         * drop to two ticks. Healthy mid-play stalls keep three: a false
-         * fire there burns a ladder rung on a video that was fine. */
-        var need = (decodeRecoveries > 0 || !marks || marks.playing === undefined) ? 2 : 3;
-        if (++stallStuckTicks < need) { return; }
-        stallStuckTicks = 0;
-        log("卡住 " + (need * 5) + " 秒无错误也无进展，当作断连走重载阶梯");
+        if (end > watchdogSeen + 0.3) { watchdogSeen = end; watchdogAt = now; return; }
+
+        /* Adaptive patience: an incident already in progress and a screen that
+         * has never shown a frame both get 10 seconds; a healthy mid-play
+         * stall keeps 15, because a false fire there burns a ladder rung on a
+         * video that was fine. */
+        var need = (incidentAt || !marks || marks.playing === undefined) ? 10000 : 15000;
+        if (now - watchdogAt < need) { return; }
+        watchdogAt = now;
+        log("卡住 " + Math.round(need / 1000) + " 秒无错误也无进展，当作断连走重载阶梯");
         if (!recoverFromDecodeFailure("卡死无进展")) {
             emit("error", "卡死无进展，重载阶梯用尽");
         }
@@ -427,6 +430,8 @@ var Player = (function () {
         /* The "from" of the first 跳转 line belongs to this video, not the
          * last one — stale, it reads as a cross-video jump that never happened. */
         lastTickSec = 0;
+        userPaused = false;
+        stopWatchdog();
         stopStallWatch(true);
     }
 
@@ -1111,6 +1116,7 @@ var Player = (function () {
 
         var v = el("html5-video");
         bindMediaElement();
+        startWatchdog();
         v.className = "";
         duration = (dash.duration || 0) * 1000;
         /* Start the moment there is something to show, rather than waiting for
@@ -1359,10 +1365,14 @@ var Player = (function () {
         },
 
         pause: function () {
+            userPaused = true;
             if (mode === "avplay") { try { webapis.avplay.pause(); } catch (e) {} }
             else if (mode === "mse") { el("html5-video").pause(); }
         },
         resume: function () {
+            userPaused = false;
+            watchdogSeen = -1;
+            watchdogAt = new Date().getTime();
             if (mode === "avplay") { try { webapis.avplay.play(); } catch (e) {} }
             else if (mode === "mse") { el("html5-video").play(); }
         },
