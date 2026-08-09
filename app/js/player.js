@@ -192,6 +192,68 @@ var Player = (function () {
         }
     }
 
+    /* The discriminating experiment the DASH path never had. Progressive
+     * failures have had one since 08-02 — `probe: … xhr=403|206` — and it
+     * settled arguments that had already cost several deploys. A DASH stall
+     * had nothing: 「没有字节到达」 is equally consistent with the CDN refusing
+     * this client, with a connection that hangs open and delivers nothing, and
+     * with bytes arriving fine while the player sits on them. Those three want
+     * opposite fixes, and 2026-08-09 was spent guessing between them.
+     *
+     * One small range of the representation that is stalling, asked plainly.
+     * 128KB, once per rescue — next to the segment traffic it interrupts, it
+     * is noise, and the rate limiter is watched closely enough elsewhere. */
+    function probeStalledStream() {
+        if (!lastDash) { return; }
+        var reps = (lastDash.dash && lastDash.dash.video) || [];
+        var rep = null, i;
+        for (i = 0; i < reps.length; i++) {
+            if (String(reps[i].codecs || "").split(".")[0] === lastDash.family) { rep = reps[i]; break; }
+        }
+        rep = rep || reps[0];
+        var url = rep && ((rep.urls && rep.urls[0]) || rep.baseUrl);
+        if (!url) { return; }
+        /* At the stalled position, NOT at byte zero. The first version asked
+         * for bytes 0-131071 and came back 206 in 95ms, which proved only that
+         * the host, the token and the UA are fine — the head of a file is
+         * always warm at the edge. What stalls is a range nineteen minutes in,
+         * and this CDN's documented failure is precisely the range its edge has
+         * never cached: thirty times slower when it answers at all, connection
+         * cut when it does not. A probe that cannot tell those apart from a
+         * healthy file is not an experiment, it is decoration.
+         *
+         * Offset from bandwidth × time — the representation is CBR-ish enough
+         * for this to land in the right neighbourhood, which is all it needs. */
+        var v = el("html5-video");
+        var at = v.currentTime || 0;
+        var off = Math.floor((rep.bandwidth || 1000000) / 8 * at);
+        var t0 = new Date().getTime();
+        try {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", url, true);
+            xhr.responseType = "arraybuffer";
+            xhr.timeout = 10000;
+            xhr.setRequestHeader("Range", "bytes=" + off + "-" + (off + 131071));
+            xhr.onload = function () {
+                var n = (xhr.response && xhr.response.byteLength) || 0;
+                log("判别探测 xhr=" + xhr.status + " " + n + "B" +
+                    (n && n < 131072 ? "（要 131072B，短了——半截响应）" : "") + " " +
+                    (new Date().getTime() - t0) + "ms 偏移=" + Math.round(off / 1048576) +
+                    "MB(" + Math.round(at) + "s) 主机=" + hostOf(url) +
+                    " 档=" + rep.id + " " + lastDash.family);
+            };
+            xhr.onerror = function () {
+                log("判别探测 xhr=连接失败 " + (new Date().getTime() - t0) +
+                    "ms 主机=" + hostOf(url));
+            };
+            xhr.ontimeout = function () {
+                log("判别探测 xhr=十秒无响应（连接吊着不给字节）偏移=" +
+                    Math.round(off / 1048576) + "MB(" + Math.round(at) + "s) 主机=" + hostOf(url));
+            };
+            xhr.send();
+        } catch (e) {}
+    }
+
     /* The playhead has been observed jumping backwards — 1021s to 14s once,
      * 383s to 358s later — with nobody touching the remote, and the jump is
      * what destroys the resume point: `Resume.record` files anything under
@@ -606,6 +668,35 @@ var Player = (function () {
             emit("quality", { id: t.originalVideoId || t.id, width: t.width, height: t.height });
         });
 
+        /* What Shaka actually asked for, and what actually came back. Days of
+         * this file have asserted that a decode error is a cut connection in
+         * disguise — a truncated segment reaching the demuxer — and the claim
+         * was never measured. 2026-08-09 21:03 measured the neighbourhood
+         * instead (a plain range at the stalled offset returned its full 128KB)
+         * and the demuxer still said 「stream parsing failed」, which the
+         * truncation story does not explain. This closes the gap: the byte
+         * range of the last segment request, against the length of its
+         * response. Requested 1.2MB and got 2MB-capped or short → truncation,
+         * as claimed. Requested and received the same → the bytes were whole
+         * and the fault is in what we asked for (our own SegmentBase offsets)
+         * or in the decoder. Two answers, opposite fixes; no way to tell them
+         * apart without this. */
+        try {
+            var RT = shaka.net.NetworkingEngine.RequestType;
+            var ne = player.getNetworkingEngine();
+            ne.registerRequestFilter(function (type, request) {
+                if (type !== RT.SEGMENT) { return; }
+                var h = (request.headers && (request.headers.Range || request.headers.range)) || "";
+                lastSegReq = { range: String(h), uri: (request.uris && request.uris[0]) || "" };
+            });
+            ne.registerResponseFilter(function (type, response) {
+                if (type !== RT.SEGMENT || !lastSegReq) { return; }
+                var m = /bytes=(\d+)-(\d+)/.exec(lastSegReq.range);
+                lastSegReq.want = m ? (Number(m[2]) - Number(m[1]) + 1) : 0;
+                lastSegReq.got = (response.data && response.data.byteLength) || 0;
+            });
+        } catch (e) { log("段级仪表装不上：" + e.message); }
+
         shakaPlayer = player;
         return player;
     }
@@ -797,6 +888,7 @@ var Player = (function () {
     var LESSON_TTL = 6 * 3600 * 1000;
     var LESSON_CAP = 100;
     var lessonFamily = "";   /* soft first-choice for the current video */
+    var lastSegReq = null;   /* last segment request/response, for the probe */
 
     function readLessons() {
         var now = new Date().getTime(), keep = {}, k;
@@ -1015,12 +1107,25 @@ var Player = (function () {
          * carries the detail, the screen only needs a heartbeat. */
         emit("status", "网络不顺，正在自动重试…");
         incidentAt = now;
+        /* Every rescue, whichever ladder runs it. It lived on the watchdog
+         * path alone at first and missed the commonest failure of all — the
+         * decode error, which this file has claimed for days is a cut
+         * connection wearing a mask. That claim has never been measured. A
+         * short body here (128KB asked, a fraction returned) is the mask
+         * coming off. */
+        if (lastSegReq && lastSegReq.want) {
+            log("最后一个分段请求 " + lastSegReq.range + " 要 " + lastSegReq.want +
+                "B 收到 " + lastSegReq.got + "B" +
+                (lastSegReq.got < lastSegReq.want ? "（短了——确实是半截）" : "（完整）"));
+        }
+        probeStalledStream();
 
         /* From where the viewer actually got to, not from the original start —
          * this failure arrives mid-playback, and restarting the episode is a
          * worse answer than the stall was. */
         var from = lastTime || lastDash.startMs || 0;
         var at = Math.round(from / 1000);
+        var skippedReload = false;
         decodeRecoveries++;
         lastDecodeHandled = true;
 
@@ -1041,6 +1146,7 @@ var Player = (function () {
             if (why === "卡死无进展" && lead === wasLead) {
                 log("卡死且没有别的镜像可换，跳过同族重载，直接换编码族");
                 decodeRecoveries = 2;
+                skippedReload = true;
             } else {
                 log("解码失败（" + why + "），从 " + at + "s 用 " + lastDash.family +
                     " 原样重载一次" + (lead ? "，镜像改从 " + lead + " 出发" : ""));
@@ -1051,7 +1157,12 @@ var Player = (function () {
         /* Same codec, twice, still refused — now the probe is the suspect after
          * all, and H.264 is one reload away. */
         if (decodeRecoveries === 2 && lastDash.family !== "avc1") {
-            log("解码失败（" + why + "），同族重载没解决，从 " + at + "s 退回 avc1");
+            /* Two ways to arrive here and they are not the same event: the
+             * reload ran and did not help, or it was skipped as futile. A line
+             * claiming a reload that never happened is the kind of small lie
+             * that costs an hour when the log is read months later. */
+            log("解码失败（" + why + "），" + (skippedReload ? "没有镜像可换" : "同族重载没解决") +
+                "，从 " + at + "s 退回 avc1");
             playDashWithShaka(lastDash.dash, from, true, "avc1", lastDash.capId);
             return true;
         }
@@ -1311,8 +1422,17 @@ var Player = (function () {
                      * were past the cut. */
                     if (part.indexOf("http") === 0 && part.indexOf("upgcxcode") > 0) {
                         part = summariseStreamUrl(part);
-                    } else if (part.length > 120) {
-                        part = part.slice(0, 60) + "…(" + part.length + " chars)";
+                    } else if (part.length > 400) {
+                        /* Was 60 characters, which is how
+                         * `CHUNK_DEMUXER_ERROR_APPEND_FAILED: RunSegmentParserLoop:
+                         * str…(127 chars)` reached the collector all evening —
+                         * the tail it cut carries the data size, the one number
+                         * that says whether the segment arrived truncated. These
+                         * strings are bounded (a few hundred characters); the
+                         * 800-character monster this rule was written for is a
+                         * stream url, and that goes through summariseStreamUrl
+                         * above. */
+                        part = part.slice(0, 400) + "…(" + part.length + " chars)";
                     }
                 }
                 out += " data[" + i + "]=" + part;
