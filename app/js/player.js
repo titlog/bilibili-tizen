@@ -975,7 +975,7 @@ var Player = (function () {
         if (status !== 403 && status !== 401) { return ""; }
         var tok = fileTokenOf(err.data[0]);
         if (!tok || badFiles[tok]) { return ""; }
-        badFiles[tok] = true;
+        badFiles[tok] = new Date().getTime();
         stashLesson(null);
         return tok;
     }
@@ -1008,8 +1008,21 @@ var Player = (function () {
      * app-level restart) arrive with the poisoned representations restored;
      * this re-applies what the video already taught us, the way
      * preferGoodHosts does for hosts. */
+    var BAD_FILE_TTL = 5 * 60 * 1000;
+
     function dropKnownBadFiles(dash) {
-        for (var tok in badFiles) { dropRep(dash, tok); }
+        /* Expiring, because a 403 from this CDN is the weather of the minute:
+         * the same file that refuses everything during a cooldown serves at
+         * full speed a few minutes later, and a permanent ban costs a tier for
+         * the rest of the video. */
+        var now = new Date().getTime();
+        for (var tok in badFiles) {
+            if (badFiles[tok] !== true && now - badFiles[tok] > BAD_FILE_TTL) {
+                delete badFiles[tok];
+                continue;
+            }
+            dropRep(dash, tok);
+        }
     }
 
     /* Every path into playDashWithShaka runs through this, so a manifest can
@@ -1227,6 +1240,18 @@ var Player = (function () {
         if (!manifest && !prefer) {
             /* The preferred family had nothing usable. H.264 is always there. */
             manifest = Mpd.build(dash, capId || PREFERRED_QN, "avc1");
+        }
+        if (!manifest && objectKeys(badFiles).length) {
+            /* The blacklist ate the manifest. Seven files banned inside one
+             * video on 2026-08-09 left nothing to build and the video exited
+             * with 「拼不出播放清单」 — the per-file ban repeating, at file
+             * scale, the mistake 08-03 taught at mirror scale (rank, do not
+             * discard). A tier that 403s is still better than no tier at all,
+             * so the ban yields rather than the video. */
+            log("坏文件名单把清单掏空了，这次忽略名单重建");
+            badFiles = {};
+            manifest = Mpd.build(dash, capId || PREFERRED_QN, prefer, lessonFamily) ||
+                       Mpd.build(dash, capId || PREFERRED_QN, "avc1");
         }
         if (!manifest) {
             emit("error", "拼不出播放清单（缺少分段索引）");
