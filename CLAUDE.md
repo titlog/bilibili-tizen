@@ -356,7 +356,8 @@ zsh tools/deploy.sh --selftest  # 同上，但构建会自己走一遍全流程�
 是 sdb 静默超时，DUID 错是证书签得出来、装不上去。
 
 `deploy.sh` 先对每个文件跑 `node --check`，然后依次跑 `tools/lint.mjs`、
-`tools/md5-verify.mjs`、`tools/accounts-verify.mjs`、`tools/mpd-verify.mjs`，
+`tools/md5-verify.mjs`、`tools/accounts-verify.mjs`、`tools/mpd-verify.mjs`、
+`tools/mirrors-verify.mjs`，
 **任何一个失败就拒绝安装** —— 光靠语法检查曾经放过一个「按确认键什么都不发生」
 的构建。
 
@@ -405,12 +406,15 @@ app/          客户端
   js/selftest.js 设备上的自动走查，非 --selftest 构建里关闭
 spike/        当初摸清平台事实的工装；不参与发布
 tools/
+  setup.sh            只跑一次：把电视地址/证书写进仓库外的 ~/.bilibili-tizen.conf
   deploy.sh           一条命令完成构建 + 安装 + 启动
   collect.mjs         :8099 上的诊断收集器
   lint.mjs            抓「调用了不存在的东西」；卡发布
   accounts-verify.mjs 用假设备驱动整个账号层；卡发布
   md5-verify.mjs      把 md5.js 对着 node 的实现回环验证；卡发布
   mpd-verify.mjs      检查清单是否合法且转义正确；卡发布
+  mirrors-verify.mjs  检查镜像是排序而不是丢弃；卡发布
+  devserver.mjs       在开发机上跑 playurl/清单那套，不碰电视
   samsung-cert.mjs    无 GUI 的三星证书签发
   qr-verify.mjs       把 qr.js 过一遍真实解码器
   probe-gating.py     从开发机重新核对 CDN/API 的门禁规则
