@@ -173,6 +173,15 @@ eq("long codec string rejected → 4-part prefix keeps the default family", MpdP
 MpdPrefix.build(dash, 80, "av01");
 eq("pinned av01 survives the long-string rejection too", MpdPrefix.chosen(), "av01");
 
+/* firstChoice is a remembered lesson, not a pin: it must lead the order when
+ * usable and must never block playback when the video's health has changed —
+ * an absent family falls straight back to the default order. */
+const MpdSoft = freshMpd(() => true);
+MpdSoft.build(dash, 80, null, "av01");
+eq("a remembered family leads the order without pinning", MpdSoft.chosen(), "av01");
+MpdSoft.build(dash, 80, null, "vp09");
+eq("a remembered family that is gone falls back to the default order", MpdSoft.chosen(), "hev1");
+
 /* A family that cannot reach the tier H.264 reaches is not an improvement:
  * fewer bytes for a smaller picture is a downgrade wearing a disguise. */
 const shortHevc = {

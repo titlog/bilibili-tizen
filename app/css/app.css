@@ -422,6 +422,10 @@ body {
     gap: 32px; background: #0f1419;
 }
 #loading-title { font-size: 30px; color: #9aa4ad; max-width: 1200px; text-align: center; }
+/* The self-rescue heartbeat. Empty (and invisible) in the normal case; the
+   ladder writes here while it works so a long recovery cannot be mistaken
+   for a crash. */
+#loading-status { font-size: 24px; color: #6b7680; min-height: 30px; text-align: center; }
 .spinner {
     width: 72px; height: 72px; border-radius: 50%;
     border: 6px solid rgba(255,255,255,0.18);

@@ -117,7 +117,7 @@ var Mpd = (function () {
 
     var chosen = "";
 
-    function chooseVideos(all, maxId, prefer) {
+    function chooseVideos(all, maxId, prefer, firstChoice) {
         var usable = [];
         for (var i = 0; i < (all || []).length; i++) {
             var r = all[i];
@@ -136,7 +136,22 @@ var Mpd = (function () {
         }
         var baseline = topOf("avc1");
 
-        var order = prefer ? [prefer] : FAMILIES;
+        /* `prefer` pins (the failure ladder needs a hard answer: 「退回 avc1」
+         * that silently picks hev1 again would repeat the exact failure it
+         * exists to escape). `firstChoice` merely leads the order — it comes
+         * from a remembered lesson about this video, and a memory must never
+         * be able to block playback when the video's health has changed. */
+        var order;
+        if (prefer) {
+            order = [prefer];
+        } else if (firstChoice) {
+            order = [firstChoice];
+            for (var fc = 0; fc < FAMILIES.length; fc++) {
+                if (FAMILIES[fc] !== firstChoice) { order.push(FAMILIES[fc]); }
+            }
+        } else {
+            order = FAMILIES;
+        }
         for (var k = 0; k < order.length; k++) {
             var fam = order[k], reps = [], allOk = true;
             for (var m = 0; m < usable.length; m++) {
@@ -168,10 +183,10 @@ var Mpd = (function () {
          *
          * `prefer` pins the codec family; the player uses it to come back on
          * H.264 when a first attempt failed for anything but the network. */
-        build: function (dash, maxId, prefer) {
+        build: function (dash, maxId, prefer, firstChoice) {
             if (!dash) { return ""; }
 
-            var videos = chooseVideos(dash.video, maxId, prefer)
+            var videos = chooseVideos(dash.video, maxId, prefer, firstChoice)
                 .sort(function (a, b) { return (b.bandwidth || 0) - (a.bandwidth || 0); });
 
             var audios = (dash.audio || []).filter(function (r) {

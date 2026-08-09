@@ -1750,6 +1750,7 @@
         el("player-fill").style.width = "0%";
         showPlayerUi(true);
         el("loading-title").textContent = detail.title || "";
+        el("loading-status").textContent = "";
         el("player-loading").className = "";
         status("");
 
@@ -1836,7 +1837,18 @@
              * to fail that a response already in hand cannot. */
             if (dash) { playing.dashReady = dash; }
 
-            if (dash && (!prog || dashQn > prog.quality)) { playDash(dash, dashQn); return; }
+            /* Ties go progressive (AVPlay is native) — unless this video
+             * already taught us otherwise within the lesson TTL: 平凡之路
+             * spent seven doomed AVPlay seconds on every entry before the
+             * tie-break got a memory. Quality still outranks the lesson. */
+            var routeHint = Player.routeHint(cid);
+            if (dash && (!prog || dashQn > prog.quality ||
+                    (routeHint === "dash" && dashQn >= prog.quality))) {
+                if (routeHint === "dash" && prog && dashQn <= prog.quality) {
+                    report("player", "上次渐进式在这个视频上败过，打平直接走 DASH");
+                }
+                playDash(dash, dashQn); return;
+            }
             if (prog) { startProgressive(prog); return; }
             toast("播放失败：拿不到播放地址");
             stopPlayback();
@@ -1932,6 +1944,7 @@
         playing.downgraded = true;
         el("player-loading").className = "";
         report("player", "progressive refused (" + why + "), switching to dash");
+        Player.learnRoute(playing.cid, "dash");
 
         /* Tear AVPlay down *here*, before asking for the manifest — not inside
          * Player.playDash a round trip later.
@@ -2228,8 +2241,19 @@
              * a hand-rolled step-down and announced "原画质取不到" every time the
              * picture got better. */
             setQualityBadge(QUALITY_NAMES[data.id] || ("QN " + data.id));
+        } else if (kind === "status") {
+            /* The ladder is acting and the screen must say so — a minute of
+             * self-rescue that looks identical to a crash is what got the app
+             * force-quit on 08-04 and complained about on 08-09. Shown on the
+             * loading overlay whether this is the first frame or a mid-play
+             * rescue: by the time a rung fires the picture is dead either
+             * way, and a spinner with a sentence beats a frozen frame. */
+            if (!playing) { return; }
+            el("loading-status").textContent = data;
+            el("player-loading").className = "";
         } else if (kind === "playing") {
             el("player-loading").className = "hidden";
+            el("loading-status").textContent = "";
             /* Where the seconds before a picture actually went. Without this,
              * "it takes a few seconds" has at least five candidate causes and
              * no way to tell them apart from the sofa. */

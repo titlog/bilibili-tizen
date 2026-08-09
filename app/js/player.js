@@ -171,9 +171,19 @@ var Player = (function () {
             stallStuckTicks = 0;
             return;
         }
-        if (++stallStuckTicks < 3) { return; }
+        /* Adaptive patience (2026-08-09): the fixed three ticks made every
+         * rung of a sick video cost 15+ seconds — a video with three starved
+         * files in a row spent a minute mostly on the watchdog counting.
+         * Two situations deserve less patience: an incident already in
+         * progress (a ladder rung fired within the last minute — the disease
+         * is known, decodeRecoveries has not been repaid yet) and a screen
+         * that has never shown a frame (pure black reads as a crash). Both
+         * drop to two ticks. Healthy mid-play stalls keep three: a false
+         * fire there burns a ladder rung on a video that was fine. */
+        var need = (decodeRecoveries > 0 || !marks || marks.playing === undefined) ? 2 : 3;
+        if (++stallStuckTicks < need) { return; }
         stallStuckTicks = 0;
-        log("卡住 15 秒无错误也无进展，当作断连走重载阶梯");
+        log("卡住 " + (need * 5) + " 秒无错误也无进展，当作断连走重载阶梯");
         if (!recoverFromDecodeFailure("卡死无进展")) {
             emit("error", "卡死无进展，重载阶梯用尽");
         }
@@ -242,6 +252,15 @@ var Player = (function () {
             if (decodeRecoveries && lastDecodeFailAt &&
                     new Date().getTime() - lastDecodeFailAt > 60000) {
                 decodeRecoveries = 0;
+                /* Sixty seconds of real playback after an incident is the
+                 * same signal that refills the budget — and it is the moment
+                 * the surviving family is proven. Remembered, so the next
+                 * entry into this video starts here instead of re-walking
+                 * the ladder. */
+                if (mode === "mse" && lastDash) {
+                    stashLesson({ f: lastDash.family });
+                    log("这条路稳定播了一分钟，记为本视频的教训（" + lastDash.family + "）");
+                }
             }
             if (criticalRetries && lastCriticalAt &&
                     new Date().getTime() - lastCriticalAt > 60000) {
@@ -506,6 +525,7 @@ var Player = (function () {
                     var fromTok = lastTime || lastDash.startMs || 0;
                     log("文件 " + badTok + " 被 403，从清单剔除，从 " +
                         Math.round(fromTok / 1000) + "s 原地重建");
+                    emit("status", "网络不顺，正在自动重试…");
                     playDashWithShaka(lastDash.dash, fromTok, true, null, lastDash.capId);
                     return;
                 }
@@ -749,6 +769,60 @@ var Player = (function () {
      * played fine. Host-level blacklisting cannot express that. */
     var badFiles = {};
 
+    /* Per-video lessons, persisted device-level and expiring. Re-entering a
+     * sick video used to re-learn everything from scratch: on 08-09 the same
+     * three starved files cost the same watchdog rounds on every entry — 40
+     * seconds to a picture the previous entry had already found at av01.
+     * The lesson (winning family, bad hosts, bad files, failed route) is
+     * keyed by cid and expires after six hours: per-file weather flips
+     * between evenings — 08-06 av01 was the disease and H.265 the cure,
+     * 08-09 the exact mirror — so yesterday's lesson is not a fact, it is a
+     * lie. That TTL is the design, not a nicety. */
+    var LESSON_KEY = "bili.lessons.v1";
+    var LESSON_TTL = 6 * 3600 * 1000;
+    var LESSON_CAP = 100;
+    var lessonFamily = "";   /* soft first-choice for the current video */
+
+    function readLessons() {
+        var now = new Date().getTime(), keep = {}, k;
+        try {
+            var all = JSON.parse(localStorage.getItem(LESSON_KEY) || "{}");
+            for (k in all) {
+                if (all[k] && now - (all[k].t || 0) < LESSON_TTL) { keep[k] = all[k]; }
+            }
+        } catch (e) {}
+        return keep;
+    }
+
+    function writeLessons(map) {
+        var keys = [], k;
+        for (k in map) { keys.push(k); }
+        keys.sort(function (a, b) { return (map[a].t || 0) - (map[b].t || 0); });
+        while (keys.length > LESSON_CAP) { delete map[keys.shift()]; }
+        try { localStorage.setItem(LESSON_KEY, JSON.stringify(map)); } catch (e) {}
+    }
+
+    function objectKeys(o) { var out = [], k; for (k in o) { out.push(k); } return out; }
+
+    function stashLessonFor(scope, patch) {
+        if (!scope) { return; }
+        var map = readLessons();
+        var l = map[scope] || {};
+        if (scope === badHostsScope) {
+            l.bh = objectKeys(badHosts);
+            l.bf = objectKeys(badFiles);
+        }
+        if (patch && patch.f) { l.f = patch.f; }
+        if (patch && patch.r) { l.r = patch.r; }
+        l.t = new Date().getTime();
+        map[scope] = l;
+        writeLessons(map);
+    }
+
+    /* Snapshot what the current video has taught us — called from the same
+     * places the in-memory maps learn, so store and session cannot drift. */
+    function stashLesson(patch) { stashLessonFor(badHostsScope, patch); }
+
     function hostOf(u) { return String(u || "").split("/")[2] || ""; }
 
     function scopeOf(dash) {
@@ -772,6 +846,7 @@ var Player = (function () {
         if (h && !badHosts[h]) {
             badHosts[h] = true;
             log("镜像 " + h + " 返回 " + status + "，这个视频内不再排在前面");
+            stashLesson(null);
             return true;
         }
         return false;
@@ -794,6 +869,7 @@ var Player = (function () {
         var tok = fileTokenOf(err.data[0]);
         if (!tok || badFiles[tok]) { return ""; }
         badFiles[tok] = true;
+        stashLesson(null);
         return tok;
     }
 
@@ -913,6 +989,12 @@ var Player = (function () {
         if (now - lastDecodeFailAt < 3000) { return lastDecodeHandled; }
         lastDecodeFailAt = now;
 
+        /* Whatever rung fires next, the screen must say the player is on it.
+         * A minute of self-rescue that looks identical to a crash is what got
+         * the app force-quit on 08-04 and complained about on 08-09; the log
+         * carries the detail, the screen only needs a heartbeat. */
+        emit("status", "网络不顺，正在自动重试…");
+
         /* From where the viewer actually got to, not from the original start —
          * this failure arrives mid-playback, and restarting the episode is a
          * worse answer than the stall was. */
@@ -977,10 +1059,25 @@ var Player = (function () {
         var retriedLoad = !!isRetry;
 
         var scope = scopeOf(dash);
-        if (scope !== badHostsScope) { badHostsScope = scope; badHosts = {}; badFiles = {}; }
+        if (scope !== badHostsScope) {
+            badHostsScope = scope; badHosts = {}; badFiles = {};
+            lessonFamily = "";
+            var lesson = readLessons()[scope];
+            if (lesson) {
+                var li;
+                for (li = 0; li < (lesson.bh || []).length; li++) { badHosts[lesson.bh[li]] = true; }
+                for (li = 0; li < (lesson.bf || []).length; li++) { badFiles[lesson.bf[li]] = true; }
+                lessonFamily = lesson.f || "";
+                log("沿用 " + Math.round((new Date().getTime() - (lesson.t || 0)) / 60000) +
+                    " 分钟前的教训：" +
+                    (lessonFamily ? "编码从 " + lessonFamily + " 出发" : "编码不限") +
+                    "，坏主机 " + (lesson.bh || []).length +
+                    "，坏文件 " + (lesson.bf || []).length);
+            }
+        }
         preferGoodHosts(dash);
         dropKnownBadFiles(dash);
-        var manifest = Mpd.build(dash, capId || PREFERRED_QN, prefer);
+        var manifest = Mpd.build(dash, capId || PREFERRED_QN, prefer, lessonFamily);
         if (!manifest && !prefer) {
             /* The preferred family had nothing usable. H.264 is always there. */
             manifest = Mpd.build(dash, capId || PREFERRED_QN, "avc1");
@@ -1048,6 +1145,7 @@ var Player = (function () {
              * a fresh lead needs no cooldown. */
             if (noteBadHost(e)) {
                 log("排头镜像 403 已拉黑，立即换镜像重建清单");
+                emit("status", "网络不顺，正在自动重试…");
                 playDashWithShaka(dash, startMs, true, prefer, capId);
                 return;
             }
@@ -1059,6 +1157,7 @@ var Player = (function () {
             if (e && e.category === 1 && !retriedLoad) {
                 retriedLoad = true;
                 log("首次加载被拒（" + describeShakaError(e) + "），3 秒后重来一次");
+                emit("status", "网络不顺，正在自动重试…");
                 setTimeout(function () {
                     if (gen !== mseGeneration) { return; }
                     playDashWithShaka(dash, startMs, true, prefer, capId);
@@ -1222,6 +1321,18 @@ var Player = (function () {
          * video. Called on a timer rather than at init so it lands after the
          * feed has painted. */
         prewarm: function () { ensureShaka(); },
+
+        /* Route lessons live in the same per-video store as codec lessons but
+         * are written by app.js, which owns routing: 「渐进式打平胜出」 sent
+         * 平凡之路 to AVPlay for seven doomed seconds on every entry, because
+         * the tie-break had no memory of the last defeat. */
+        routeHint: function (cid) {
+            var l = readLessons()[String(cid)];
+            return (l && l.r) || "";
+        },
+        learnRoute: function (cid, route) {
+            stashLessonFor(String(cid), { r: route });
+        },
 
         playProgressive: function (url, startMs) { reset(); playAvplay(url, startMs); },
         playDash: function (dash, startMs) {
