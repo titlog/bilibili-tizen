@@ -1199,7 +1199,8 @@
                 report("login", "扫码完成 via=" + s.via +
                        "，bilibili 给的 mid=" + (s.mid || "未给") +
                        "，落在账号 " + (s.accId || "?") +
-                       (s.into ? ("（指定重登 " + s.into + "）") : "（新加）") +
+                       (s.created ? "（新建的一行）" : "（并入已有的这一行）") +
+                       (s.into ? "，是指定重登 " + s.into : "") +
                        "，账号数=" + Accounts.count());
                 toast("登录成功");
                 feedCache = {};

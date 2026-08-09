@@ -199,14 +199,22 @@ var Auth = (function () {
                         }
                         stop();
                         gen++;   /* this run is finished; nothing else may report */
+                        /* Whether a row was created is only knowable by counting
+                         * across the call: remember() recognises the same person
+                         * by mid and takes over their existing row, which is a
+                         * different event from adding a face to the switcher and
+                         * must not be reported as one. */
+                        var had = Accounts.count();
                         var acc = Accounts.remember(got.session, { mid: got.mid }, intoId);
+                        var created = Accounts.count() > had;
                         /* The mid bilibili itself attached to this scan, and the
                          * row it landed in. Without both, "the wrong person's
                          * name came up" cannot be split into "the scan gave us
                          * the wrong credentials" and "the right credentials went
                          * to the wrong place". */
                         onState({ kind: "done", via: "tv", mid: got.mid,
-                                  accId: acc && acc.id, into: intoId });
+                                  accId: acc && acc.id, created: created,
+                                  into: intoId });
                         return;
                     }
                     if (p.code === 86038) { stop(); onState({ kind: "expired" }); return; }
@@ -242,9 +250,12 @@ var Auth = (function () {
                         var s = parseSessionUrl(d.url || "");
                         if (s) {
                             gen++;
+                            var hadW = Accounts.count();
                             var wa = Accounts.remember(s, {}, intoId);
                             onState({ kind: "done", via: "web", mid: 0,
-                                      accId: wa && wa.id, into: intoId });
+                                      accId: wa && wa.id,
+                                      created: Accounts.count() > hadW,
+                                      into: intoId });
                             return;
                         }
 
@@ -271,11 +282,14 @@ var Auth = (function () {
                                 return;
                             }
                             gen++;
+                            var hadJ = Accounts.count();
                             var ja = Accounts.remember(
                                 { viaCookieJar: true, savedAt: new Date().getTime() },
                                 {}, intoId);
                             onState({ kind: "done", via: "web", mid: 0,
-                                      accId: ja && ja.id, into: intoId });
+                                      accId: ja && ja.id,
+                                      created: Accounts.count() > hadJ,
+                                      into: intoId });
                         };
                         hop.onerror = function () {
                             if (mine !== gen) { return; }
