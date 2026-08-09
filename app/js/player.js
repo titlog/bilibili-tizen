@@ -1193,16 +1193,24 @@ var Player = (function () {
          * carried P17 through its poisoned region — it just relied on ABR
          * getting lucky. Made an explicit rung 2026-08-03 after a video turned
          * up with hev1-1080p truncating, avc1-1080p answering 403 and the
-         * spare host dead: every 1080p route was gone while 720p served. */
-        if (!lastDash.capId) {
-            var below = tierBelow(lastDash.dash,
-                                  tierBelow(lastDash.dash, PREFERRED_QN + 1));
-            if (below) {
-                log("解码失败（" + why + "），换编码也没走通，压到 qn" + below +
-                    " 从 " + at + "s 再试");
-                playDashWithShaka(lastDash.dash, from, true, null, below);
-                return true;
-            }
+         * spare host dead: every 1080p route was gone while 720p served.
+         *
+         * It descends one step at a time and it descends as many times as it
+         * has to. It used to fire once and once only — the guard was
+         * `!capId`, so the first drop set a cap and shut its own door. 2026-08-09
+         * 22:30 是它的账单：BV1hCQsBDEAL 的 720P 和 1080P 被 CDN 全数拒绝（两台
+         * 主机、hev1/avc1/av01 三个族无一幸免），梯子压到 720P、发现那里也全死，
+         * 于是「所有路都试过，有声退出」—— 而同一台 akam 主机上，这个稿件的
+         * 480P 和 360P 当时满速可取（各 131072B / 206，实测）。观众本可以看 480P，
+         * 拿到的是一句退出。停下来的条件应该是「下面没有档位了」，不是「已经压过
+         * 一次了」。 */
+        var capNow = lastDash.capId || tierBelow(lastDash.dash, PREFERRED_QN + 1);
+        var below = tierBelow(lastDash.dash, capNow);
+        if (below) {
+            log("解码失败（" + why + "），换编码也没走通，从 qn" + capNow +
+                " 再压到 qn" + below + "，从 " + at + "s 再试");
+            playDashWithShaka(lastDash.dash, from, true, null, below);
+            return true;
         }
         log("解码失败（" + why + "），已重载 " + decodeRecoveries + " 次仍然失败，交给上层");
         lastDecodeHandled = false;
@@ -1364,16 +1372,16 @@ var Player = (function () {
             }
             /* The top tier can be refused while lower tiers serve — the tiers
              * are different files, and a 403 on one says nothing about the
-             * next. One capped attempt before giving the failure to app.js,
-             * which would only rebuild the same top-tier manifest. */
-            if (!capId) {
-                var below2 = tierBelow(dash, tierBelow(dash, PREFERRED_QN + 1));
-                if (below2) {
-                    log("加载连续被拒（" + describeShakaError(e) + "），压到 qn" +
-                        below2 + " 再试一次");
-                    playDashWithShaka(dash, startMs, true, prefer, below2);
-                    return;
-                }
+             * next. Keep stepping down for as long as there is a step: this is
+             * the exit tonight's 有声退出 came out of, already capped at 720P and
+             * refused there, with 480P serving all along. */
+            var capNow2 = capId || tierBelow(dash, PREFERRED_QN + 1);
+            var below2 = tierBelow(dash, capNow2);
+            if (below2) {
+                log("加载连续被拒（" + describeShakaError(e) + "），从 qn" + capNow2 +
+                    " 再压到 qn" + below2 + " 试一次");
+                playDashWithShaka(dash, startMs, true, prefer, below2);
+                return;
             }
             emit("error", "shaka load 失败 " + describeShakaError(e));
         });
