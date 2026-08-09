@@ -888,6 +888,11 @@ var Player = (function () {
         return tok;
     }
 
+    function leadHostOf(dash) {
+        var v = dash && dash.video && dash.video[0];
+        return hostOf((v && ((v.urls && v.urls[0]) || v.baseUrl)) || "");
+    }
+
     function dropRep(dash, tok) {
         var kinds = ["video", "audio"];
         for (var k = 0; k < kinds.length; k++) {
@@ -1023,11 +1028,25 @@ var Player = (function () {
             /* Once per incident, not per rung: if the rotated-to host also fails
              * decode, the avc1 rung below should keep it in front rather than
              * rotate back onto the host that started the incident. */
+            var wasLead = leadHostOf(lastDash.dash);
             var lead = rotateMirrors(lastDash.dash);
-            log("解码失败（" + why + "），从 " + at + "s 用 " + lastDash.family +
-                " 原样重载一次" + (lead ? "，镜像改从 " + lead + " 出发" : ""));
-            playDashWithShaka(lastDash.dash, from, true, lastDash.family, lastDash.capId);
-            return true;
+            /* This rung repairs a *truncated* stream: a cut connection leaves a
+             * hole, the demuxer refuses the next sample, and re-asking — ideally
+             * of another host — fills it. It repairs nothing when no byte
+             * arrived at all and the rotation had nowhere to go: that is the
+             * same file from the same host, asked the same way, and 2026-08-09
+             * 20:17 spent twenty seconds proving it (av01 starved, cosov already
+             * blacklisted, one host left, reload starved identically). Skip
+             * straight to the family below — a different file. */
+            if (why === "卡死无进展" && lead === wasLead) {
+                log("卡死且没有别的镜像可换，跳过同族重载，直接换编码族");
+                decodeRecoveries = 2;
+            } else {
+                log("解码失败（" + why + "），从 " + at + "s 用 " + lastDash.family +
+                    " 原样重载一次" + (lead ? "，镜像改从 " + lead + " 出发" : ""));
+                playDashWithShaka(lastDash.dash, from, true, lastDash.family, lastDash.capId);
+                return true;
+            }
         }
         /* Same codec, twice, still refused — now the probe is the suspect after
          * all, and H.264 is one reload away. */
