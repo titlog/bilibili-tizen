@@ -252,11 +252,16 @@ var Player = (function () {
             if (decodeRecoveries && lastDecodeFailAt &&
                     new Date().getTime() - lastDecodeFailAt > 60000) {
                 decodeRecoveries = 0;
-                /* Sixty seconds of real playback after an incident is the
-                 * same signal that refills the budget — and it is the moment
-                 * the surviving family is proven. Remembered, so the next
-                 * entry into this video starts here instead of re-walking
-                 * the ladder. */
+            }
+            /* Sixty seconds of real playback after an incident proves the
+             * family that survived it. Keyed on its own marker rather than on
+             * the decode budget: the incident that made this feature worth
+             * building — 19:56 on 08-09, three hvc1 tiers 403'd one after
+             * another until the family ran out and av01 took over — never
+             * touched the decode ladder at all, so hanging the lesson off
+             * `decodeRecoveries` recorded the bad files and lost the answer. */
+            if (incidentAt && new Date().getTime() - incidentAt > 60000) {
+                incidentAt = 0;
                 if (mode === "mse" && lastDash) {
                     stashLesson({ f: lastDash.family });
                     log("这条路稳定播了一分钟，记为本视频的教训（" + lastDash.family + "）");
@@ -413,6 +418,7 @@ var Player = (function () {
          * budget would already be spent before it started. */
         lastDash = null;
         decodeRecoveries = 0;
+        incidentAt = 0;
         lastDecodeFailAt = 0;
         lastDecodeHandled = false;
         criticalRetries = 0;
@@ -526,6 +532,7 @@ var Player = (function () {
                     log("文件 " + badTok + " 被 403，从清单剔除，从 " +
                         Math.round(fromTok / 1000) + "s 原地重建");
                     emit("status", "网络不顺，正在自动重试…");
+                    incidentAt = new Date().getTime();
                     playDashWithShaka(lastDash.dash, fromTok, true, null, lastDash.capId);
                     return;
                 }
@@ -696,6 +703,9 @@ var Player = (function () {
      * had resolved. `isTypeSupported` said yes to that stream. */
     var lastDash = null;      /* {dash, startMs, family} */
     var decodeRecoveries = 0; /* per video; reset() clears it */
+    /* Any rescue, whichever ladder ran it — the clock the lesson is measured
+     * from. */
+    var incidentAt = 0;
     var lastDecodeFailAt = 0;
     var lastDecodeHandled = false;
     var criticalRetries = 0;  /* per video; reset() clears it */
@@ -994,6 +1004,7 @@ var Player = (function () {
          * the app force-quit on 08-04 and complained about on 08-09; the log
          * carries the detail, the screen only needs a heartbeat. */
         emit("status", "网络不顺，正在自动重试…");
+        incidentAt = now;
 
         /* From where the viewer actually got to, not from the original start —
          * this failure arrives mid-playback, and restarting the episode is a
@@ -1146,6 +1157,7 @@ var Player = (function () {
             if (noteBadHost(e)) {
                 log("排头镜像 403 已拉黑，立即换镜像重建清单");
                 emit("status", "网络不顺，正在自动重试…");
+                incidentAt = new Date().getTime();
                 playDashWithShaka(dash, startMs, true, prefer, capId);
                 return;
             }
