@@ -38,6 +38,15 @@ var SelfTest = (function () {
 
     function count(sel) { return document.querySelectorAll(sel).length; }
 
+    /* A set with nobody signed in opens the login page instead of the switcher,
+     * and the removal walk has nothing to walk. Skipping is right; failing would
+     * make the run red on a television that is behaving perfectly. */
+    function onAccounts() { return count("#screen .acc") > 0; }
+
+    /* Filled by the identity check, read by the step that waits for it. Empty
+     * string means it answered and agreed; null means it never answered. */
+    var identityVerdict = "凭证检查没有回应";
+
     /* "3:30" or "1:06:40" back into seconds, for the position readouts. */
     function secs(text) {
         var parts = String(text || "").split(":");
@@ -268,28 +277,47 @@ var SelfTest = (function () {
         }],
 
         /* The decisive one for multiple accounts, and it can only be answered
-         * here. A Tizen widget may or may not be allowed to set a Cookie header
-         * — it is a property of the firmware, not of the spec — and the whole
-         * design rests on it, because that header is how a *chosen* account
-         * reaches the server. The jar cannot do that job: it is global and
-         * holds one account. So report which route carried the request and
-         * whether bilibili recognised it. isLogin true on the "Cookie 头" route
-         * means switching accounts genuinely works. */
-        ["凭证是否真的送达服务器", 200, function () {
-            if (typeof Accounts === "undefined" || !Accounts.active()) {
-                post("账号：这台电视上没有登录账号，跳过");
-                return null;
-            }
-            var route = Auth.cookieHeader() ? "Cookie 头"
+         * here — the question is what this firmware puts on the wire.
+         *
+         * This step existed before 2026-08-09 and did not catch the failure it
+         * was written for. It asked whether the server recognised *somebody*,
+         * and called that proof that a chosen account reaches it. Those are not
+         * the same claim: the engine's jar is global and holds one account, so
+         * with one account on the set it answers correctly no matter which route
+         * carried the request. The Cookie header had in fact never arrived, and
+         * this step said 认得 X every time.
+         *
+         * The claim is only worth anything against *which* account. So compare
+         * the mid the server answers with against the mid the login handed us —
+         * a disagreement means the request carried somebody else, which is the
+         * whole bug, and it is a failure rather than a note. */
+        ["送达服务器的是不是当前这个账号", 200, function () {
+            var acc = (typeof Accounts !== "undefined") && Accounts.active();
+            if (!acc) { post("账号：这台电视上没有登录账号，跳过"); return null; }
+
+            var route = Auth.accessKey() ? "access_key"
                       : (Auth.jarIsOurs() ? "cookie jar" : "没有可用凭证");
-            post("账号：共 " + Accounts.count() + " 个，当前走 " + route);
+            post("账号：共 " + Accounts.count() + " 个，当前 " + acc.id +
+                 " mid=" + acc.mid + "，走 " + route);
             API.nav(function (me) {
-                post("账号：服务器" + (me.isLogin ? ("认得 " + me.uname) : "不认这个会话") +
-                     "（route=" + route + "）");
-            }, function (why) { post("账号：nav 失败 " + why); });
+                if (!me.isLogin) {
+                    identityVerdict = "服务器不认这个会话（route=" + route + "）";
+                } else if (acc.mid && me.mid && acc.mid !== me.mid) {
+                    identityVerdict = "服务器认得的是 mid=" + me.mid + " " + me.uname +
+                                      "，不是当前账号 mid=" + acc.mid +
+                                      " —— 请求没带上被选中的那个账号";
+                } else {
+                    identityVerdict = "";
+                    post("账号：服务器认得 " + me.uname + " mid=" + me.mid +
+                         "，与当前账号一致（route=" + route + "）");
+                }
+            }, function (why) { identityVerdict = "nav 失败 " + why; });
             return null;
         }],
-        ["等待凭证检查", 3500, function () { return null; }],
+        /* The answer arrives asynchronously, and a step only counts as failed by
+         * returning a reason — so the verdict is collected here rather than
+         * posted from inside the callback, where the tally would never see it. */
+        ["等待凭证检查", 3500, function () { return identityVerdict; }],
 
         /* The switcher is reachable only by remote, so walk to it the way a
          * viewer does: up out of the grid, then right past every tab. */
@@ -327,6 +355,65 @@ var SelfTest = (function () {
             var f = document.querySelector("#screen .acc.focused");
             return f ? null : "账号页打开了但没有任何格子被选中";
         }],
+
+        /* Removing an account was reachable, and had never once been walked —
+         * the run stopped at "the tiles are here". On 2026-08-09 it was asked
+         * for as a feature that did not exist, which is what an unwalked path
+         * eventually becomes. The steps below go all the way to the confirmation
+         * and then press 取消: the path gets exercised, nobody's account and
+         * nobody's watch history gets destroyed by a test. */
+        ["下键从头像走到删除账号按钮", 500, function () {
+            if (!onAccounts()) { return null; }
+            key(KEY.DOWN);
+            return null;
+        }],
+        ["焦点停在删除账号上", 400, function () {
+            if (!onAccounts()) { return null; }
+            var f = document.querySelector("#screen .btn.focused");
+            return (f && f.id === "btn-manage") ? null : "从头像按下键没走到删除账号按钮";
+        }],
+        ["确认键进入删除模式", 700, function () {
+            if (!onAccounts()) { return null; }
+            key(KEY.ENTER);
+            return null;
+        }],
+        ["删除模式打开，焦点回到头像上", 600, function () {
+            if (!onAccounts()) { return null; }
+            if (!count("#screen .accounts.managing")) { return "按了删除账号却没进入删除模式"; }
+            if (!document.querySelector("#screen .acc.focused")) {
+                return "删除模式里没有任何头像被选中";
+            }
+            /* 访客 and 添加账号 have to be gone: pressing 确认 on either here
+             * would do nothing, which is the shape of failure this app is worst
+             * at showing. */
+            var tiles = document.querySelectorAll("#screen .acc");
+            var last = tiles[tiles.length - 1].getAttribute("data-id");
+            if (last === "__add" || last === "__guest") { return "删除模式里还留着删不掉的格子"; }
+            return null;
+        }],
+        ["确认键打开删除确认框", 700, function () {
+            if (!onAccounts()) { return null; }
+            key(KEY.ENTER);
+            return null;
+        }],
+        ["确认框出现，焦点停在取消上", 600, function () {
+            if (!onAccounts()) { return null; }
+            if (!count("#screen .acc-confirm")) { return "选中账号后没有出现删除确认框"; }
+            var f = document.querySelector("#screen .btn.focused");
+            return (f && f.id === "btn-cancel") ? null : "删除确认框的焦点没有停在取消上";
+        }],
+        ["按取消，不真的删", 700, function () {
+            if (!onAccounts()) { return null; }
+            key(KEY.ENTER);
+            return null;
+        }],
+        ["取消之后回到账号列表", 700, function () {
+            if (!onAccounts()) { return null; }
+            if (count("#screen .acc-confirm")) { return "取消之后确认框还在"; }
+            if (!count("#screen .acc")) { return "取消之后账号列表没了"; }
+            return null;
+        }],
+
         ["返回键离开账号页", 1500, function () { key(KEY.RETURN); return null; }],
         ["回到浏览界面", 2500, function () {
             if (!visible("shell")) { return "没有回到浏览界面"; }

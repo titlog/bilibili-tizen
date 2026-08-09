@@ -271,6 +271,36 @@ function firePoll(env) {
   eq("and the same device fingerprint", again.buvid, first.buvid);
 }
 
+{
+  /* nav() is how a row learns its name, and nav answers for whoever the request
+   * actually carried — not for whoever the app believes is active. On 2026-08-09
+   * that gap was real for every request on the television: the firmware drops
+   * the Cookie header, so nav kept answering as one person while a second and
+   * third account were being added, and describe() renamed all of them to him.
+   * Three rows, three distinct credentials, one mid and one face — and nothing
+   * anywhere said so. A mid that disagrees is evidence about the transport, not
+   * about the account. */
+  const env = boot();
+  const { Accounts } = env.sandbox;
+  const mine = Accounts.remember({ SESSDATA: "A" }, { mid: 42 });
+  const theirs = Accounts.remember({ SESSDATA: "B" }, { mid: 7 });
+
+  eq("a matching answer is accepted",
+     Accounts.describe(theirs.id, { mid: 7, uname: "乙" }).uname, "乙");
+  eq("an answer about somebody else is refused",
+     Accounts.describe(theirs.id, { mid: 42, uname: "甲" }), null);
+  eq("so the row keeps its own name", Accounts.get(theirs.id).uname, "乙");
+  eq("and its own mid", Accounts.get(theirs.id).mid, 7);
+  eq("the other row is untouched", Accounts.get(mine.id).mid, 42);
+
+  /* A row whose mid is not known yet still has to be fillable — that is the
+   * web fallback's only way to ever learn who it belongs to. */
+  const unknown = Accounts.remember({ viaCookieJar: true }, {});
+  ok("an unidentified row accepts an identity",
+     !!Accounts.describe(unknown.id, { mid: 99, uname: "丙" }));
+  eq("and keeps it", Accounts.get(unknown.id).mid, 99);
+}
+
 /* ---------------- the jar holds at most one account ---------------- */
 
 {

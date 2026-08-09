@@ -155,19 +155,87 @@
     function refreshActiveProfile() {
         var acc = Accounts.active();
         if (!acc || !Auth.isLoggedIn()) { return; }
-        /* Which route is carrying the session. Whether this firmware lets a
-         * widget set a Cookie header is the fact the whole account design rests
-         * on, and nothing else in the app would ever say — a session that works
-         * and one that silently falls back to the jar look identical on screen. */
-        var route = Auth.cookieHeader() ? "Cookie 头"
+        /* Which route is carrying the session. It used to name the Cookie header
+         * first, which is exactly how the header went four days without anyone
+         * noticing it arrives nowhere: this line said 「route=Cookie 头，服务器
+         * 认得 X」 while the jar did the work. It now names what actually
+         * travels, and `whoami` keeps measuring rather than asserting. */
+        var route = Auth.accessKey() ? "access_key"
                   : (Auth.jarIsOurs() ? "cookie jar" : "无凭证");
         API.nav(function (me) {
             report("account", Accounts.count() + " 个账号，当前 route=" + route +
                    "，服务器" + (me.isLogin ? ("认得 " + me.uname) : "不认这个会话"));
             if (!me.isLogin) { return; }
-            Accounts.describe(acc.id, me);
+            if (!Accounts.describe(acc.id, me)) {
+                report("account", "服务器答的是 mid=" + me.mid + " " + me.uname +
+                       "，而活动账号 " + acc.id + " 是 mid=" + acc.mid +
+                       " —— 这次请求没带上这个账号的会话，身份不采信");
+                return;
+            }
             paintAccount();
         }, function (why) { report("account", "route=" + route + "，nav 失败 " + why); });
+    }
+
+    /* Which account the server answers as, and by what route it learned.
+     *
+     * The whole account layer rests on one measured fact — that this firmware
+     * lets a widget set a Cookie header — and that measurement was taken with
+     * one account on the set, where the header and the engine's own jar cannot
+     * disagree. It therefore never separated "our header is read" from "the
+     * engine had a session anyway"; `account:` says 服务器认得 X in both cases.
+     * With two people on the television they stop agreeing, and one of them
+     * serves the wrong person's name.
+     *
+     * The bare request is the discriminator. No Cookie header, no jar, cache
+     * busted: if the server still knows who we are, the session is not ours to
+     * choose and no amount of switching will move it. */
+    function whoami(where) {
+        var acc = Accounts.active();
+        var head = Auth.cookieHeader();
+        report("whoami", where + " 活动=" + (acc ? acc.id : "访客") +
+               " access_key=" + (Auth.accessKey() ? "有" : "无") +
+               " header=" + (head ? ("有 " + fingerprint(head)) : "无") +
+               " jar主=" + (Accounts.jarOwner() || "无") +
+               " withCred=" + (Auth.jarIsOurs() ? "是" : "否") +
+               " | " + storedAccounts());
+
+        var steps = [
+            ["常规", null],
+            ["只有 Cookie 头·不带 access_key", { noKey: true, bust: true }],
+            ["裸请求·什么都不带", { bare: true, bust: true }]
+        ];
+        /* One at a time so the lines read in order, and so a cached response
+         * cannot be handed from one variant to the next. */
+        (function next(i) {
+            if (i >= steps.length) { return; }
+            API.nav(function (me) {
+                report("whoami", where + " " + steps[i][0] + " → isLogin=" + me.isLogin +
+                       " mid=" + me.mid + " uname=" + (me.uname || "-"));
+                next(i + 1);
+            }, function (why) {
+                report("whoami", where + " " + steps[i][0] + " → 失败 " + why);
+                next(i + 1);
+            }, steps[i][1]);
+        })(0);
+    }
+
+    /* A stable, non-reversible stand-in for a credential. SESSDATA is the thing
+     * a session *is* — logging it would put an account in the collector and in
+     * whatever terminal scrollback outlives it — but two accounts holding the
+     * same one is exactly what needs to be visible. */
+    function fingerprint(s) {
+        try { return MD5(String(s)).slice(0, 8); } catch (e) { return "?"; }
+    }
+
+    function storedAccounts() {
+        var list = Accounts.all(), out = [];
+        for (var i = 0; i < list.length; i++) {
+            var a = list[i], s = a.session || {};
+            out.push(a.id + " mid=" + (a.mid || 0) + " " + (a.uname || "-") +
+                     " 凭证=" + (s.SESSDATA ? fingerprint(s.SESSDATA)
+                                            : (s.viaCookieJar ? "在 jar 里" : "无")));
+        }
+        return out.length ? out.join("；") : "没有账号";
     }
 
     /* The one path an account change takes. Everything personal has to be let
@@ -812,7 +880,12 @@
         }
 
         html += '</div><div id="acc-actions"></div>';
-        if (list.length && !manageMode) {
+        if (manageMode) {
+            /* The mode is only reachable by pressing a button whose name does
+             * not say what it does to anything, so it says it here. */
+            html += '<div class="acc-note">选中要删除的账号，按确认键。' +
+                    'TA 在这台电视上的观看记录会一起删掉，bilibili 上的账号不受影响。</div>';
+        } else if (list.length) {
             html += '<div class="acc-note">每个账号的观看记录和推荐都是分开的，互相看不到。</div>';
         }
         screenEl.innerHTML = html + '</div>';
@@ -841,9 +914,13 @@
 
         var box = el("acc-actions");
         if (list.length && box) {
+            /* Named for what it does. It used to say 管理账号, which is the kind
+             * of label that makes a feature unfindable — the one thing the mode
+             * offers is removal, and somebody looking for it asked for it to be
+             * built. */
             box.innerHTML = '<div class="actions">' +
                 '<div class="btn ghost focusable" id="btn-manage">' +
-                (manageMode ? "完成" : "管理账号") + '</div></div>';
+                (manageMode ? "完成" : "删除账号") + '</div></div>';
             el("btn-manage").onselect = function () {
                 manageMode = !manageMode;
                 paintAccounts(false);
@@ -871,7 +948,13 @@
         el("btn-remove").onselect = function () {
             var wasActive = Accounts.activeId() === id;
             Accounts.remove(id);
-            manageMode = false;
+            /* Stay in the mode. Dropping out of it after each removal meant
+             * clearing several rows was 管理账号 → 选 → 确认 → 管理账号 → 选 →
+             * 确认, and the positions shift underneath between rounds, so the
+             * second press lands on a different account than the one counted.
+             * 完成 is how it ends. */
+            report("account", "移除了 " + id + "（" + label + "），还剩 " +
+                   Accounts.count() + " 个");
             /* Whether or not the removed account was the active one, the cached
              * feeds may be theirs — remove() promotes somebody else. */
             feedCache = {};
@@ -981,7 +1064,8 @@
             /* A slow nav landing after the viewer switched account or tab used
              * to repaint the screen they had left, under the wrong name. */
             if (!stillViewing(token)) { return; }
-            if (me.isLogin) { Accounts.describe(accId, me); paintAccount(); }
+            /* Refused when the answer is about a different mid — see describe(). */
+            if (me.isLogin && Accounts.describe(accId, me)) { paintAccount(); }
 
             var html = '<div class="mine">' +
                 '<div class="me">' +
@@ -1112,6 +1196,11 @@
             } else if (s.kind === "finishing") {
                 step.textContent = "正在换取登录凭证…";
             } else if (s.kind === "done") {
+                report("login", "扫码完成 via=" + s.via +
+                       "，bilibili 给的 mid=" + (s.mid || "未给") +
+                       "，落在账号 " + (s.accId || "?") +
+                       (s.into ? ("（指定重登 " + s.into + "）") : "（新加）") +
+                       "，账号数=" + Accounts.count());
                 toast("登录成功");
                 feedCache = {};
                 /* Another account, another history. */
@@ -1120,6 +1209,7 @@
                 state.results = null;
                 paintAccount();
                 refreshActiveProfile();
+                whoami("登录后");
                 renderMine();
             } else if (s.kind === "expired") {
                 step.textContent = "二维码已过期，选「重新获取」";
@@ -2551,6 +2641,9 @@
         };
         paintAccount();
         refreshActiveProfile();
+        /* Answerable with one person in the room: if the bare request comes
+         * back signed in, the engine holds a session this code never chose. */
+        whoami("启动");
 
         /* What this engine actually is. The conventions here assume it is old
          * enough to need ES5, which decides whether a maintained DASH player

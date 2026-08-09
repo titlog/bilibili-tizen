@@ -10,27 +10,63 @@ var API = (function () {
 
     var BASE = "https://api.bilibili.com";
 
-    /* Attaching the session, which multiple accounts made delicate.
+    /* Attaching the session — the part multiple accounts broke.
      *
-     * The Cookie header is a forbidden header name in a normal browser, but a
-     * Tizen widget runs under its own <access> policy rather than CORS, so it
-     * is worth setting and it is the route that carries a *chosen* account.
+     * ── The Cookie header does not leave this television. ──
      *
-     * withCredentials is the other route, and it is no longer set whenever
-     * signed in. The engine's jar is global and holds at most one account, so
-     * on a set with several people on it that flag would quietly attach
-     * whoever logged in through the web fallback last — to requests made under
-     * somebody else's name. It goes on only when the active account is the one
-     * the jar actually belongs to, which Accounts tracks. */
+     * It was believed to, on the strength of a 2026-08-02 device measurement,
+     * and the whole account layer was built on that belief. The measurement was
+     * taken with one account on the set, where the header and the engine's own
+     * cookie jar cannot disagree: `服务器认得 X` is true whichever one the
+     * request actually carried. It never had the power to tell them apart.
+     *
+     * A second account is what tells them apart, and on 2026-08-09 it did. A
+     * two-second-old TV-login session, put in the header exactly as this
+     * function builds it, came back isLogin=false from the set; the identical
+     * header — same session, same UA, no Referer, self-minted buvid3 and all —
+     * came back isLogin=true from a desktop. Cookie is a forbidden header name
+     * and Chromium 120 silently ignores setRequestHeader for it; the widget's
+     * <access> policy does not exempt it. So every signed-in request this app
+     * ever made went out either anonymous or wearing whatever the jar happened
+     * to hold, and with one account on the set the jar happened to hold the
+     * right person.
+     *
+     * ── What carries a chosen account instead ──
+     *
+     * access_key, in the query. Nothing can strip a query parameter, there is
+     * no global slot for one account to evict another from, and a request that
+     * is already in flight during a switch still carries the account it was
+     * made for. Measured against every login-only endpoint this file calls:
+     * nav, rcmd, dynamic, history, history/cursor, player/v2 and playurl (which
+     * returns the same twelve representations it returns for a cookie session,
+     * against six signed out). The TV login hands one over; the web fallback
+     * does not, which is why the jar route stays for those accounts.
+     *
+     * The header is still set. It costs nothing, it names the same account, and
+     * a firmware that honours it is welcome to. */
     function applySession(xhr) {
         if (typeof Auth === "undefined" || !Auth.isLoggedIn()) { return; }
         var header = Auth.cookieHeader();
         if (header) {
             try { xhr.setRequestHeader("Cookie", header); } catch (e) {}
         }
+        /* Only when the active account is the one the jar belongs to — otherwise
+         * this flag attaches whoever logged in through the web fallback last, to
+         * requests made under somebody else's name. */
         if (Auth.jarIsOurs()) {
             try { xhr.withCredentials = true; } catch (e) {}
         }
+    }
+
+    /* The route that actually arrives. Confined to api.bilibili.com: the token
+     * is a credential and the suggestion host has no business holding one. */
+    function withSession(url) {
+        if (typeof Auth === "undefined" || !Auth.isLoggedIn()) { return url; }
+        if (url.indexOf(BASE) !== 0) { return url; }
+        var key = Auth.accessKey();
+        if (!key) { return url; }   /* web-fallback account — the jar is all it has */
+        return url + (url.indexOf("?") < 0 ? "?" : "&") +
+               Auth.signTv({ access_key: key });
     }
 
     function getJson(url, onOk, onFail) {
@@ -41,7 +77,7 @@ var API = (function () {
          * twice — and callers that retry on failure then retry twice. */
         function fail(why) { if (!settled) { settled = true; onFail(why); } }
         function ok(data) { if (!settled) { settled = true; onOk(data); } }
-        xhr.open("GET", url, true);
+        xhr.open("GET", withSession(url), true);
 
         applySession(xhr);
 
@@ -264,10 +300,28 @@ var API = (function () {
          * makes it the only honest way to tell a live account from an expired
          * one, so the account switcher runs it and takes the name, avatar and
          * mid from the answer rather than trusting what is stored. */
-        nav: function (onOk, onFail) {
+        /* The whoami probe in app.js drives these, and each one answers a
+         * question no other request can:
+         *
+         *   bare   — nothing attached at all. Says whether the engine carries a
+         *            session of its own, which is the difference between an
+         *            account layer that chooses who is signed in and one that
+         *            merely describes whoever the engine last saw.
+         *   noKey  — the Cookie header and nothing else. This firmware drops it,
+         *            which is why access_key exists; keeping the measurement
+         *            running is how a firmware that starts honouring it — or a
+         *            replacement television that never did — gets noticed
+         *            rather than assumed.
+         *   bust   — a unique query, so a cached answer cannot stand in for a
+         *            live one. */
+        nav: function (onOk, onFail, opts) {
+            opts = opts || {};
             var xhr = new XMLHttpRequest();
-            xhr.open("GET", BASE + "/x/web-interface/nav", true);
-            applySession(xhr);
+            var url = BASE + "/x/web-interface/nav";
+            if (opts.bust) { url += "?_=" + new Date().getTime(); }
+            if (!opts.bare && !opts.noKey) { url = withSession(url); }
+            xhr.open("GET", url, true);
+            if (!opts.bare) { applySession(xhr); }
             xhr.timeout = 20000;
             xhr.onreadystatechange = function () {
                 if (xhr.readyState !== 4) { return; }

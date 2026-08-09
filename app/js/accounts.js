@@ -234,10 +234,20 @@ var Accounts = (function () {
             return acc;
         },
 
-        /* Display fields learned after the fact, from nav(). */
+        /* Display fields learned after the fact, from nav().
+         *
+         * An account's mid does not change. If nav answers with a different one
+         * than the login handed over, the answer is about somebody else — the
+         * request did not carry this account's session — and writing it here
+         * would rename the row to whoever the server did recognise. That is not
+         * hypothetical: it stamped one person's name and mid onto three rows
+         * belonging to different logins, and the only visible symptom was a new
+         * account showing the previous account's face. Refuse and say so; the
+         * caller reports it. */
         describe: function (id, profile) {
             var acc = get(id);
             if (!acc) { return null; }
+            if (acc.mid && profile.mid && acc.mid !== profile.mid) { return null; }
             if (profile.mid) { acc.mid = profile.mid; }
             if (profile.uname) { acc.uname = profile.uname; }
             if (profile.face) { acc.face = profile.face; }
@@ -296,6 +306,11 @@ var Accounts = (function () {
          * account is the one the jar holds — otherwise withCredentials would
          * quietly send someone else's session. */
         jarBelongsTo: function (id) { return load().jarOwner === id; },
+
+        /* For the whoami probe only. Which account the jar is believed to hold
+         * is a belief this code maintains, never one it can read back, so it is
+         * worth saying out loud next to what the server actually answers. */
+        jarOwner: function () { return load().jarOwner; },
 
         clearJar: clearJar
     };

@@ -199,8 +199,14 @@ var Auth = (function () {
                         }
                         stop();
                         gen++;   /* this run is finished; nothing else may report */
-                        Accounts.remember(got.session, { mid: got.mid }, intoId);
-                        onState({ kind: "done", via: "tv" });
+                        var acc = Accounts.remember(got.session, { mid: got.mid }, intoId);
+                        /* The mid bilibili itself attached to this scan, and the
+                         * row it landed in. Without both, "the wrong person's
+                         * name came up" cannot be split into "the scan gave us
+                         * the wrong credentials" and "the right credentials went
+                         * to the wrong place". */
+                        onState({ kind: "done", via: "tv", mid: got.mid,
+                                  accId: acc && acc.id, into: intoId });
                         return;
                     }
                     if (p.code === 86038) { stop(); onState({ kind: "expired" }); return; }
@@ -236,8 +242,9 @@ var Auth = (function () {
                         var s = parseSessionUrl(d.url || "");
                         if (s) {
                             gen++;
-                            Accounts.remember(s, {}, intoId);
-                            onState({ kind: "done", via: "web" });
+                            var wa = Accounts.remember(s, {}, intoId);
+                            onState({ kind: "done", via: "web", mid: 0,
+                                      accId: wa && wa.id, into: intoId });
                             return;
                         }
 
@@ -264,10 +271,11 @@ var Auth = (function () {
                                 return;
                             }
                             gen++;
-                            Accounts.remember(
+                            var ja = Accounts.remember(
                                 { viaCookieJar: true, savedAt: new Date().getTime() },
                                 {}, intoId);
-                            onState({ kind: "done", via: "web" });
+                            onState({ kind: "done", via: "web", mid: 0,
+                                      accId: ja && ja.id, into: intoId });
                         };
                         hop.onerror = function () {
                             if (mine !== gen) { return; }
