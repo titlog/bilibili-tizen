@@ -124,6 +124,14 @@ overturned earlier conclusions**. A few that cost a day each:
 - **Setting `COOKIE` to an empty string breaks playback outright** — AVPlay
   emits a malformed header and the CDN refuses everything. It looks exactly like
   a broken stream, and **only appears once a viewer signs in**.
+- **This firmware's widget cannot send a `Cookie` header at all** — Chromium 120
+  silently drops `setRequestHeader` for the forbidden name, and the engine's
+  global cookie jar cannot be filled either (cross-origin lockdown). So the
+  signed-in session travels as `access_key` in the query, which nothing can
+  strip. This overturned a claim that stood in the docs for seven days — that the
+  firmware *does* let a widget set the header. That measurement was taken with a
+  single account, where the header and the jar necessarily point at the same
+  person and so cannot be told apart; it only broke when a second account arrived.
 - **AVPlay plays DASH, but only from a manifest delivered over HTTP.** `data:`
   and `file://` are both refused, and a widget cannot listen on a socket — which
   is why DASH goes through MSE.
@@ -132,6 +140,17 @@ overturned earlier conclusions**. A few that cost a day each:
   403 on every mirror and every quality.
 - **Rotating CDN hostnames does not work here.** Signatures are host-bound; seven
   of eight alternates 403, and the one that answers runs thirty times slower.
+- **Same video, plays on the phone but not the TV — the cause is playurl's
+  `platform`.** The web endpoint (`platform=pc`, what the client always used)
+  mints a stream token the CDN's strict nodes 403; the app endpoint
+  (`app.bilibili.com/x/playurl`, `platform=android`) mints one they accept — and
+  the phone app is an app-endpoint client. `platform` decides token strength,
+  `access_key` decides which tiers are visible (without it you get only the
+  signed-out low tiers); you need both. On a 403 the client switches to the app
+  endpoint for a strong token and reads each file's header itself to supply the
+  `SegmentBase` the app endpoint omits. Full investigation (including twice
+  mistaking "the weather" for a diagnosis) in
+  [`docs/播放流令牌-app端点根治.md`](docs/播放流令牌-app端点根治.md).
 - **Every AVPlay callback needs a generation guard.** `setListener` registers on
   a singleton and `close()` does not detach it, so a torn-down session's
   `onerror` lands in whatever is playing now. This **inverted a conclusion** once.
@@ -139,10 +158,14 @@ overturned earlier conclusions**. A few that cost a day each:
   `script` tags and `wgt-private` read/write all verified on the device.
 
 The document also records the debugging discipline that got there: **a plausible
-mechanism is not a diagnosis**. Five separate failures were each explained by the
+mechanism is not a diagnosis**. Again and again, a failure was explained by the
 first self-consistent story, designed around, and shipped — before measurement
-said otherwise. Every time, the previous explanation still held, and still was
-not the cause.
+said otherwise. The two facts above are each one such case ("the firmware allows
+the header", "the video's blanket 403 is weather"), and the night that pinned
+down `platform` mistook "the weather" for the cause twice over. Every time, the
+previous explanation still held, and still was not the cause. **For a
+cross-device difference, get the evidence from the device in question itself; two
+observations at different times cannot be subtracted into a diagnosis.**
 
 ## Layout
 
