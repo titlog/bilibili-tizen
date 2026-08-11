@@ -1,0 +1,100 @@
+# 为什么有些稿件电视放不了、手机能放 —— 流令牌鉴权根因与根治
+
+2026-08-11 一整夜的排查记录。结论一句话：**bilibili CDN 按 playurl 请求的
+`platform` 决定给你多强的流令牌；web 端点（`platform=pc`）铸的令牌被严格节点
+403，app 端点（`platform=android`）铸的令牌被接受。** 这台电视一直走 web 端点，
+所以版权敏感的搬运影视放不了，而手机 App 走 app 端点，放得了。根治是：撞 403 时
+改用 app 端点铸强令牌，并自读文件头补上 app 端点不给的 SegmentBase。
+
+这份文档记完整过程，**包括两次把「天气」当诊断的错判和纠正**——因为这个仓库最贵
+的教训就是「说得通的机制不等于诊断」，而这一夜又踩了两次、又靠判别实验爬出来两次。
+
+---
+
+## 症状
+
+`BV1PwjA6tEy4`（《波士顿法律》搬运）在电视上每档视频、两台主机（akam/cosov）、
+三个编码族全 403，反复走失败阶梯直到有声退出。**同一时刻，网页端和手机端流畅
+播放。** 同一台电视上别的视频（普通 UP 稿）2.9 秒出画面、完全正常。
+
+## 排查链（每一步都是判别实验，两种结果指向不同原因）
+
+1. **错判一：「CDN 全面拒绝这个稿件」= 天气。** 被一句话推翻——天气不分客户端，
+   而现象是同一时刻网页能播电视不能，所以是**客户端差异**，不是天气。
+
+2. **方法论错误：全程用开发机代测电视。** 「三种认证（access_key/匿名/cookie）
+   此刻都 206」只证明了开发机怎么弄都行，从没测过**电视自己铸的令牌**。变量没
+   控制。
+
+3. **抓电视自己铸的令牌**（临时诊断部署，打出完整 upsig/hdnts）→ 拿到开发机、
+   用电视 UA 测 → **403**。而浏览器 cookie 令牌**同一台 cosov 主机、同一文件、
+   同一秒** → **206**。主机/时间/UA 全控住，唯一变量是令牌铸造方式。
+
+4. **错判二：「是 cookie 会话 vs access_key 的区别」。** 想让 SESSDATA 经 sso
+   端点进引擎 cookie jar、playurl 用 `withCredentials` 带上——设备实测
+   `nav isLogin=false`，**widget 灌不进 jar**（和 Cookie 头发不出去同源的固件
+   封锁）。这条路死。
+
+5. **逐字段分离**：node 里带浏览器全套辅助 cookie（bili_ticket 风控票、buvid_fp
+   指纹…）+ TV 登录的 SESSDATA → 仍 403。钥匙不是 buvid、不是 bili_ticket、不是
+   会话类型。
+
+6. **换端点**：`app.bilibili.com/x/playurl`（platform=android）铸的令牌 →
+   **cosov 206**，不管哪个 appkey，连现有的 TV appkey 都行。而
+   `api.bilibili.com/x/player/playurl` 和 `.../wbi/playurl`（web 系，platform=pc）
+   → **403**。**根因坐实：是 `platform`，不是认证方式、不是参数、不是天气。**
+
+## 根因
+
+`platform=android`（app 端点）铸的流令牌被 CDN 严格节点接受，`platform=pc`
+（web 端点）铸的被拒。手机 App 是 app 端点客户端，所以能播；电视一直走 web 端点，
+所以这类稿件放不了。普通稿件的 CDN 节点不严，web 令牌也放行，所以只有部分稿件中招。
+
+为什么电视被迫走 web 端点、拿不到 cookie 会话：这个固件 **Cookie 头发不出去**
+（Chromium 120 对 forbidden header 的 `setRequestHeader` 静默忽略），**jar 也
+灌不进**（widget 对 `.bilibili.com` 的 cookie 读写被封，第 4 步实测）。唯一能带
+的凭证是 access_key（走 query），而 access_key + web 端点铸的就是弱令牌。参考实现
+（ATV-Bilibili-demo 等）是**原生 App**，有完整网络栈能持 cookie 会话、用 wbi 端点，
+这条路 widget 用不了。
+
+## 根治
+
+撞 403 时改用 app 端点铸强令牌。**app 端点的坑：只给 base_url + size，不给
+SegmentBase（Shaka 必需的 init/index 字节范围）**。解法是自读——请求文件头前 12KB，
+解析 MP4 box：moov 结束是 init range，紧跟的 sidx box 给 index range。开发机对 web
+端点也返回的低档逐字节验证：自算的 range 和 web 的 SegmentBase **完全一致**。codecs
+字符串 app 端点也不给，从 web 端点低档按 codecid 复用（同 cid 同族盒子类型一致）；
+width/height 按 qn 映射；duration 从 app 响应的 `timelength`（毫秒）取。
+
+代码位置：
+- `api.js` 的 `playurlDashStrong(aid, cid, qn, …)` —— app 端点请求 + 自读 sidx +
+  归一化成和 `playurlDash` 一样的 dash 结构。app 端点要 aid（bvid 报 -400）。
+- `player.js` 的 `offerStrongToken()` —— web 清单撞第一个 403 就 emit error 让上层
+  走强令牌，**不先剔文件**（每剔一个都是一次 403 请求喂限流）。
+- `app.js` 错误处理最前 —— 收到含 403 的 error 直奔强令牌，**优先于原地重启**
+  （原地重启用同一个被拒的 web 令牌，只会再撞 403、再喂限流）。
+- 位置用 `Player.position()`（真实播放头），不是卡死时归 0 的 `lastKnownPosition`。
+
+失败链（每层都尽量保画质）：**高档 web 403 → app 端点强令牌(1080p) → 渐进式
+durl(720p) → web 端点压中低档(480p) → 有声退出**。
+
+## 已知边界（诚实）
+
+- **触发时机决定档数。** 纯 403 型稿件（web 令牌一上来就全被拒），第一个 403 立即
+  触发强令牌、限流未热，应能拿满 12 档 1080p。**「解码坏字节 + 403」混合型**
+  （这集就是）先跑一轮解码阶梯才转成 403，那一轮已经把 CDN 的每 IP 限流喂起来，
+  强令牌的 sidx 读被限，实测只拿到 4 档、ABR 落到 480p。480p 能看，但不是满档。
+- 强令牌救不了**解码坏字节**（app 端点是同一个物理文件，坏字节相同）。它只解决
+  **令牌被拒**（app 端点是不同令牌）。
+- app 端点在 web 403 风暴**之后**触发时，sidx 读受限流影响；已用小 Range（12KB，
+  不触发 CDN 大 range 截断）+ 每流一次重试 + 降并发到 2 缓解，但风暴后仍可能掉档。
+
+## 方法论教训（值得单独记住）
+
+- **跨设备差异，必须抓「被质疑那台设备自己产出的证物」**（电视铸的真令牌），不能
+  用另一台设备代测。今晚三分之二的弯路都源于用开发机代测电视。
+- **跨时刻的两个观测不能相减归因**，中间的天气是未控变量——「此刻浏览器 206 vs
+  几小时前电视 403」骗了我一次。要归因必须**同一时刻同框**测所有对照臂。
+- 「说得通的机制」被当诊断，这一夜发生了两次（天气、cookie 会话），两次都靠**同框
+  同主机的判别实验**爬出来。下笔断言前先问：**如果我的结论是错的，这个测量会给出
+  不同的结果吗？** 答案是否，它就不是证据。
