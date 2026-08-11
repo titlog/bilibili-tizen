@@ -603,6 +603,28 @@ var Player = (function () {
                     playDashWithShaka(lastDash.dash, fromTok, true, null, lastDash.capId);
                     return;
                 }
+                /* A 403 on an *audio* file. The representation cannot be
+                 * dropped — audio has one family, and a manifest without sound
+                 * is not a recovery — but the file exists on the other mirror,
+                 * and Shaka will not fail over on 403 by itself. Rotate and
+                 * rebuild, once per file: 2026-08-11 20:57 the soundtrack
+                 * (30280) was refused by cosov twice in four seconds and the
+                 * only path left was the critical-retry exit, while akam had
+                 * never been asked. */
+                var aTok = fileTokenOf(err.data && err.data[0]);
+                if (aTok && !isVideoToken(lastDash.dash, aTok) && !audioRotated[aTok]) {
+                    audioRotated[aTok] = true;
+                    var aLead = rotateMirrors(lastDash.dash);
+                    var fromA = lastTime || lastDash.startMs || 0;
+                    log("音轨 " + aTok + " 被 403，换镜像" +
+                        (aLead ? "（改从 " + aLead + " 出发）" : "") +
+                        "，从 " + Math.round(fromA / 1000) + "s 原地重建");
+                    emit("status", "网络不顺，正在自动重试…");
+                    incidentAt = new Date().getTime();
+                    playDashWithShaka(lastDash.dash, fromA, true,
+                                      lastDash.family, lastDash.capId);
+                    return;
+                }
             }
             /* A *critical* media error is the decoder refusing the stream, not
              * a blip on the wire. retryStreaming() re-fetches bytes that will be
@@ -962,6 +984,24 @@ var Player = (function () {
         return /\.m4s$/.test(seg) ? seg : "";
     }
 
+    /* Whether a file token names one of this manifest's *video* representations.
+     *
+     * lastSegReq records whichever stream asked last, and audio asks too. On
+     * 2026-08-11 20:52 the parse-failure rung took that token at face value and
+     * blacklisted the soundtrack: both audio representations were dropped within
+     * twenty seconds, the manifest lost its audio, and the attempt still ended in
+     * 有声退出 — the rung made the failure worse than the one it was added to
+     * fix. Dropping a video tier leaves other tiers; dropping the audio leaves
+     * nothing to play. */
+    function isVideoToken(dash, tok) {
+        var list = (dash && dash.video) || [];
+        for (var i = 0; i < list.length; i++) {
+            var u = (list[i].urls && list[i].urls[0]) || list[i].baseUrl;
+            if (fileTokenOf(u) === tok) { return true; }
+        }
+        return false;
+    }
+
     /* Same contract as noteBadHost: returns the newly learned file token, or
      * "" — and *newly learned* is what bounds the rebuild below, exactly the
      * lesson the host blacklist paid for. N poisoned files cost at most N
@@ -1161,6 +1201,38 @@ var Player = (function () {
                 log("解码失败（" + why + "），从 " + at + "s 用 " + lastDash.family +
                     " 原样重载一次" + (lead ? "，镜像改从 " + lead + " 出发" : ""));
                 playDashWithShaka(lastDash.dash, from, true, lastDash.family, lastDash.capId);
+                return true;
+            }
+        }
+        /* Before blaming the family: the same *file* failing to parse twice is
+         * evidence about that file, not about its codec.
+         *
+         * 2026-08-11《波士顿法律》: av01 played, then died at the identical byte
+         * range (bytes=1530210-1571231, 41022B asked, 41022B received, twice on
+         * two different hosts) with CHUNK_DEMUXER_ERROR_APPEND_FAILED. The rung
+         * below read that as "av01 is bad" and switched to avc1 — whose every
+         * tier was 403 that evening — and then walked the tier ladder down a
+         * dead family to 有声退出, four times in a row while the viewer kept
+         * pressing play. av01 was the only family the CDN was serving at all.
+         *
+         * 「族和字节区间是两件事」 is already written in CLAUDE.md from 08-09,
+         * and the ladder still had no rung that could act on it. This is it:
+         * drop that one representation and rebuild. The remaining tiers of the
+         * same family are different files and stay reachable. Bounded the way
+         * the 403 blacklist is — a file is learned once, so N poisoned files
+         * cost at most N rebuilds. */
+        if (lastSegReq && lastSegReq.uri) {
+            var badTok2 = fileTokenOf(lastSegReq.uri);
+            /* Video only — see isVideoToken for what taking the audio token
+             * cost the first evening this rung existed. */
+            if (badTok2 && !badFiles[badTok2] &&
+                isVideoToken(lastDash.dash, badTok2)) {
+                badFiles[badTok2] = new Date().getTime();
+                stashLesson(null);
+                log("解码失败（" + why + "），文件 " + badTok2 +
+                    " 在同一处反复解析失败，剔出清单，从 " + at + "s 重建");
+                playDashWithShaka(lastDash.dash, from, true, lastDash.family,
+                                  lastDash.capId);
                 return true;
             }
         }
