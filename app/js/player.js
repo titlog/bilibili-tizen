@@ -228,6 +228,12 @@ var Player = (function () {
         var at = v.currentTime || 0;
         var off = Math.floor((rep.bandwidth || 1000000) / 8 * at);
         var t0 = new Date().getTime();
+        /* Snapshot both before the async callback. lastDash is nulled by reset()
+         * when a session tears down, and the probe's onload arriving after that
+         * threw an uncaught TypeError on lastDash.family — harmless (onerror
+         * caught it) but noisy, and 2026-08-11 it landed right in the middle of
+         * the strong-token retry. rep.id likewise. */
+        var probeFam = lastDash.family, probeId = rep.id;
         try {
             var xhr = new XMLHttpRequest();
             xhr.open("GET", url, true);
@@ -240,7 +246,7 @@ var Player = (function () {
                     (n && n < 131072 ? "（要 131072B，短了——半截响应）" : "") + " " +
                     (new Date().getTime() - t0) + "ms 偏移=" + Math.round(off / 1048576) +
                     "MB(" + Math.round(at) + "s) 主机=" + hostOf(url) +
-                    " 档=" + rep.id + " " + lastDash.family);
+                    " 档=" + probeId + " " + probeFam);
             };
             xhr.onerror = function () {
                 log("判别探测 xhr=连接失败 " + (new Date().getTime() - t0) +
