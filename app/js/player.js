@@ -1230,13 +1230,39 @@ var Player = (function () {
             if (lesson) {
                 var li;
                 for (li = 0; li < (lesson.bh || []).length; li++) { badHosts[lesson.bh[li]] = true; }
-                for (li = 0; li < (lesson.bf || []).length; li++) { badFiles[lesson.bf[li]] = true; }
+                /* Replayed with the lesson's own age, not as `true`.
+                 *
+                 * `true` means "never expires" to dropKnownBadFiles, so a
+                 * bad-file verdict up to six hours old outlived every file
+                 * learned in this session — which expires in five minutes,
+                 * because a 403 here is the weather of the minute. The two
+                 * paths disagreed and the stricter one was the one built on
+                 * the older evidence.
+                 *
+                 * 2026-08-11 20:14 是它的账单：《波士顿法律》20:07 那次失败
+                 * （日志正好断着）学到 9 个坏文件，七分钟后回放成永久黑名单，
+                 * 把 av01 整族从清单里删空 —— 日志写着「AV1 档不可用（av01
+                 * 表示 0 个）」。而同一分钟从开发机逐个探这个稿件的每一份文件：
+                 * avc1/hvc1 的 480P 和 360P、av01 的 480P 全部 403，**只有
+                 * av01 的 360P 是 206**。教训里「编码从 av01 出发」说对了，
+                 * 是这份名单让它没机会兑现，观众拿到的是「所有路都试过」。
+                 *
+                 * 现在它们按 lesson.t 计龄，过了 BAD_FILE_TTL 在第一次清扫时
+                 * 自然消失。六小时的保留期继续为「赢的族」和「渐进式败绩」服务
+                 * —— 那两样不是按分钟翻脸的。*/
+                var lessonAt = lesson.t || new Date().getTime();
+                var freshFiles = 0;
+                for (li = 0; li < (lesson.bf || []).length; li++) {
+                    badFiles[lesson.bf[li]] = lessonAt;
+                    if (new Date().getTime() - lessonAt <= BAD_FILE_TTL) { freshFiles++; }
+                }
                 lessonFamily = lesson.f || "";
                 log("沿用 " + Math.round((new Date().getTime() - (lesson.t || 0)) / 60000) +
                     " 分钟前的教训：" +
                     (lessonFamily ? "编码从 " + lessonFamily + " 出发" : "编码不限") +
                     "，坏主机 " + (lesson.bh || []).length +
-                    "，坏文件 " + (lesson.bf || []).length);
+                    "，坏文件 " + (lesson.bf || []).length +
+                    "（还在保鲜期内的 " + freshFiles + " 个）");
             }
         }
         preferGoodHosts(dash);
