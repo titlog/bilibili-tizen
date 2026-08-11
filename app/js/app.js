@@ -1927,6 +1927,13 @@
              * on a screen that has been black for twenty seconds, and adds a way
              * to fail that a response already in hand cannot. */
             if (dash) { playing.dashReady = dash; }
+            /* And the mirror image, which did not exist until 2026-08-11: the
+             * durl is a *different file* (audio muxed in) on AVPlay's own
+             * stack, and the evening DASH died completely — video tiers 403d
+             * per-file, audio tracks 403d per-host, the byte range at 184s
+             * unparseable — it was never once asked. 「所有路都试过」 was a lie
+             * with a qn=64 file sitting untried in this very response. */
+            if (prog) { playing.progReady = prog; }
 
             /* Ties go progressive (AVPlay is native) — unless this video
              * already taught us otherwise within the lesson TTL: 平凡之路
