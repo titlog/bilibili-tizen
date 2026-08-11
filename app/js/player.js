@@ -600,6 +600,16 @@ var Player = (function () {
              * family whose file died. */
             if (err && err.severity === 2 && err.category === 1 && lastDash) {
                 var badTok = noteBadFile(err);
+                /* The first web-token 403 goes straight to the app endpoint —
+                 * before dropping even one file. Each dropped file is another
+                 * 403 request into this CDN's per-IP limiter, and by the third
+                 * the strong token's own sidx reads are throttled, which is
+                 * exactly why it kept arriving with 4 tiers of 12 (2026-08-11).
+                 * offerStrongToken's guard (badFiles non-empty) is satisfied the
+                 * instant noteBadFile records this one. It rebuilds from lastTime
+                 * inside app.js; a strong manifest or a video with no aid falls
+                 * through to the per-file drop below. */
+                if (badTok && offerStrongToken()) { return; }
                 if (badTok && dropRep(lastDash.dash, badTok)) {
                     var fromTok = lastTime || lastDash.startMs || 0;
                     log("文件 " + badTok + " 被 403，从清单剔除，从 " +
@@ -936,6 +946,31 @@ var Player = (function () {
 
     function objectKeys(o) { var out = [], k; for (k in o) { out.push(k); } return out; }
 
+    /* Raise the "try the app endpoint's strong token" request, once per video,
+     * when a web manifest has met a 403 this video. Returns true if it fired —
+     * the caller must then stop (not drop a tier). app.js turns the error into a
+     * playurlDashStrong call; its result comes back as a fresh manifest whose
+     * `strong` flag stops this from firing again. A strong manifest drops tiers
+     * as before.
+     *
+     * `known403` is the load-failure path passing its own 403 directly:
+     * playDashWithShaka's catch never calls noteBadFile, so badFiles stays empty
+     * there and the badFiles-only guard was a permanent no-op — which for a
+     * reupload that 403s at load time (the headline target) meant the strong
+     * token fired only after the whole family+tier ladder had flooded the
+     * limiter. Either signal — a recorded bad file, or a 403 in hand — is
+     * enough. */
+    function offerStrongToken(known403) {
+        if (strongEmitted) { return false; }
+        if (lastDash && lastDash.strong) { return false; }
+        if (!known403 && !objectKeys(badFiles).length) { return false; }
+        strongEmitted = true;
+        log("web 令牌高档被 403 拒，压档前先试 app 端点强令牌");
+        lastDecodeHandled = false;
+        emit("error", "web 令牌 403，交给 app 端点强令牌");
+        return true;
+    }
+
     function stashLessonFor(scope, patch) {
         if (!scope) { return; }
         var map = readLessons();
@@ -1018,10 +1053,43 @@ var Player = (function () {
         if (status !== 403 && status !== 401) { return ""; }
         var tok = fileTokenOf(err.data[0]);
         if (!tok || badFiles[tok]) { return ""; }
+        /* Only what dropRep can actually act on. Recording an undroppable token
+         * is a silent side effect: the entry does nothing except pollute the
+         * lesson and make the next 403 on the same file unrecognisable as new —
+         * 2026-08-11 20:52, the last remaining audio file was learned this way
+         * and its second 403 fell straight through to the critical-retry exit.
+         *
+         * Droppable means: a video representation, or an audio representation
+         * with a sibling left to carry the sound. The CDN discriminates
+         * per-file on audio too (21:07: akam refused 30232 while cosov refused
+         * 30280, and 30216 was healthy the whole time) — refusing to ever drop
+         * audio just walks the refused file into the same exit via the retry
+         * counter. The last audio file standing is the mirror-rotation rung's
+         * job — see the caller. */
+        if (lastDash && !isVideoToken(lastDash.dash, tok)) {
+            var alist = (lastDash.dash && lastDash.dash.audio) || [];
+            var mine = false;
+            for (var ai = 0; ai < alist.length; ai++) {
+                var au = (alist[ai].urls && alist[ai].urls[0]) || alist[ai].baseUrl;
+                if (fileTokenOf(au) === tok) { mine = true; break; }
+            }
+            if (!mine || alist.length < 2) { return ""; }
+        }
         badFiles[tok] = new Date().getTime();
         stashLesson(null);
         return tok;
     }
+
+    /* One rotation per audio file per video: enough to reach the other mirror,
+     * bounded so two hosts refusing the same file cannot spin a rebuild loop. */
+    var audioRotated = {};
+
+    /* Per video: has the "web token 403 → try the app endpoint's strong token"
+     * request been raised yet. Raised once, before the first tier drop — the
+     * app endpoint mints a token the CDN accepts where the web endpoint's is
+     * refused, so restoring 1080p beats degrading to 480p. Reset per video with
+     * the rest of the per-video state below. */
+    var strongEmitted = false;
 
     function leadHostOf(dash) {
         var v = dash && dash.video && dash.video[0];
@@ -1282,6 +1350,13 @@ var Player = (function () {
          * 480P 和 360P 当时满速可取（各 131072B / 206，实测）。观众本可以看 480P，
          * 拿到的是一句退出。停下来的条件应该是「下面没有档位了」，不是「已经压过
          * 一次了」。 */
+        /* Before dropping a tier, offer the incident to the app endpoint: a web
+         * token 403 is what strands the high tiers, and the app endpoint mints a
+         * token the CDN accepts. Restoring 1080p beats degrading to 480p, so it
+         * goes first — but only for a web manifest that has actually met a 403
+         * this video, and only once. A strong manifest that still fails has
+         * nothing better to escalate to and drops tiers normally. */
+        if (offerStrongToken()) { return true; }
         var capNow = lastDash.capId || tierBelow(lastDash.dash, PREFERRED_QN + 1);
         var below = tierBelow(lastDash.dash, capNow);
         if (below) {
@@ -1302,7 +1377,8 @@ var Player = (function () {
 
         var scope = scopeOf(dash);
         if (scope !== badHostsScope) {
-            badHostsScope = scope; badHosts = {}; badFiles = {};
+            badHostsScope = scope; badHosts = {}; badFiles = {}; audioRotated = {};
+            strongEmitted = false;
             lessonFamily = "";
             var lesson = readLessons()[scope];
             if (lesson) {
@@ -1447,6 +1523,15 @@ var Player = (function () {
                 return;
             }
 
+            /* A load 403 is a web-token refusal — go straight to the app
+             * endpoint before switching families or dropping tiers, each of
+             * which is another burst of refused requests into the limiter that
+             * then throttles the strong token's own sidx reads. After the one
+             * cooldown retry above, this is the earliest honest point. */
+            var is403Load = !!(e && e.code === 1001 && e.data &&
+                               (e.data[1] === 403 || e.data[1] === 401));
+            if (offerStrongToken(is403Load)) { return; }
+
             /* Anything that is not the network, on a stream this set said it
              * could decode, is the set having been wrong — and a 401/403 counts
              * too, despite being category 1: the CDN discriminates per *file*,
@@ -1527,7 +1612,8 @@ var Player = (function () {
                 if (seen[k] !== undefined) { out += " " + k + "=" + seen[k]; }
             }
             out += " upsig=" + (seen.upsig ? "有" : "无") +
-                   " hdnts=" + (seen.hdnts ? "有" : "无");
+                   " hdnts=" + (seen.hdnts ? "有" : "无") +
+                   " buvid=" + (seen.buvid ? "有" : "空");
         } catch (e) { out = u.slice(0, 80); }
         return out;
     }
@@ -1598,6 +1684,12 @@ var Player = (function () {
 
     return {
         on: function (fn) { onEvent = fn; },
+
+        /* The real playhead, in ms — video.currentTime, and what seeks write.
+         * app.js's own lastKnownPosition freezes at 0 through a stall (no
+         * timeupdate fires), so the strong-token rebuild must ask here for where
+         * the viewer actually is, not there. */
+        position: function () { return lastTime; },
 
         /* The clock starts when the button is pressed, which is before the
          * player is involved at all — so app.js owns starting it. */

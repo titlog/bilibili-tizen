@@ -2389,6 +2389,60 @@
             playing.failed = true;
             el("player-loading").className = "hidden";
             report("player", data);
+
+            /* A web-token 403 goes to the app endpoint FIRST — before the
+             * in-place restart, before mirror rotation, before anything. Those
+             * restart the same web manifest whose token the CDN is refusing, so
+             * they cannot succeed; worse, each one is another burst of refused
+             * requests that fills this CDN's per-IP limiter, and the strong
+             * token's own sidx reads then get throttled too (2026-08-11: the
+             * restart-first ordering left the strong manifest with 4 tiers of 12
+             * and the playhead lost to 0, because by the time it ran the limiter
+             * was hot). Straight to the strong token keeps the position and the
+             * quiet pipe. Player raises this via offerStrongToken; app.js also
+             * reaches it when a load fails outright. */
+            if (playing.route === "dash" && !playing.triedStrong &&
+                    String(data).indexOf("403") >= 0 &&
+                    playing.dashReady && !playing.dashReady.strong &&
+                    playing.detail && playing.detail.aid) {
+                /* The real playhead — lastKnownPosition freezes at 0 through the
+                 * stall that precedes a 403 storm, and 2026-08-11 that rebuilt
+                 * the strong manifest from 0:00 instead of where the viewer was. */
+                var atMs = Player.position() || lastKnownPosition || playing.startMs || 0;
+                playing.triedStrong = true;
+                playing.failed = false;
+                playing.startMs = atMs;
+                el("player-loading").className = "";
+                Player.startTiming();
+                playing.timed = false;
+                playing.timedLabel = "到画面(强令牌)";
+                report("player", "web 令牌被拒（403），直奔 app 端点强令牌，从 " +
+                       fmt(atMs) + " 重建");
+                var sessST = playing;
+                /* Tear the failing session down before the multi-second sidx
+                 * reads — reset() bumps avGeneration/mseGeneration so the old
+                 * Shaka's onerror cannot fire into this window, re-enter the
+                 * handler (failed is now false), and race a web-manifest restart
+                 * against the strong rebuild. 「任何会启动新播放的入口，第一件事
+                 * 都是拆掉旧的」— the rule downgrade() was fixed to obey. atMs was
+                 * read above, before this zeroes the playhead. */
+                Player.stop();
+                API.playurlDashStrong(playing.detail.aid, playing.cid, PREFERRED_QN,
+                    function (strongDash) {
+                        if (playing !== sessST) { return; }
+                        playing.dashReady = strongDash;
+                        var repST = Player.pickDashVideo(strongDash);
+                        report("player", "app 端点强令牌就绪，" +
+                               (strongDash.tierNote || (strongDash.video ? strongDash.video.length + " 档" : "0 档")) +
+                               "，从 " + fmt(atMs) + " 重建");
+                        playDash(strongDash, (repST && repST.id) || PREFERRED_QN);
+                    }, function (whyST) {
+                        if (playing !== sessST) { return; }
+                        report("player", "app 端点强令牌也不行（" + whyST + "）");
+                        finalFallback("强令牌失败 " + whyST);
+                    });
+                return;
+            }
             /* The probe runs on every failure, not only the ones that rotate.
              * It is the line that separates "bilibili refused this stream" from
              * "AVPlay could not ask for it", and that distinction has been worth
@@ -2536,6 +2590,61 @@
             if (playing.route === "progressive" &&
                     playing.canDowngrade && !playing.downgraded) {
                 downgrade(String(data)); return;
+            }
+            /* The strong-token retry lives at the top of this handler now (a
+             * 403 goes there before the in-place restart can waste a round on
+             * the same refused web token). By here it has either already run or
+             * did not apply, so nothing to do but the shared fallbacks. */
+            finalFallback(String(data));
+        }
+
+        /* The last two exits, shared so the strong-token retry can fall through
+         * to them from its async failure callback. */
+        function finalFallback(data) {
+            /* DASH is exhausted — but the progressive durl is a different file
+             * on a different stack, already in hand from decide()'s parallel
+             * fetch, and 「所有路都试过」 is not true until it has been asked.
+             * One attempt, flagged so a durl that dies comes back here and
+             * exits for real. Position over quality: resuming at 64 beats a
+             * toast, and the next video starts fresh at full quality. */
+            if (playing.route !== "progressive" && playing.progReady &&
+                    !playing.progTried &&
+                    playing.progReady.urls && playing.progReady.urls.length) {
+                playing.progTried = true;
+                playing.failed = false;
+                playing.startMs = lastKnownPosition;   /* progress restarts here */
+                playing.route = "progressive";
+                playing.quality = playing.progReady.quality;
+                playing.urls = playing.progReady.urls;
+                playing.urlIdx = 0;
+                playing.refused = false;
+                report("player", "DASH 全灭（" + data + "），最后一手：渐进式 qn=" +
+                       playing.progReady.quality + " 走 AVPlay，从 " +
+                       fmt(lastKnownPosition) + " 起");
+                el("player-loading").className = "";
+                setQualityBadge(QUALITY_NAMES[playing.progReady.quality] ||
+                                ("QN " + playing.progReady.quality));
+                Player.playProgressive(playing.urls[0], lastKnownPosition);
+                return;
+            }
+            /* The strong token was tried (or was not applicable) and progressive
+             * too — but the web endpoint's mid and low tiers may still serve
+             * (480/360p), and the player's tier ladder reaches them. Hand the
+             * web manifest back once: the player's strongEmitted flag is set now,
+             * so it drops tiers normally instead of raising the strong-token
+             * request again. Below progressive because a 720p durl is better than
+             * a 480p tier — when the durl is not itself 403, which for these
+             * videos it often is. */
+            if (playing.route === "dash" && playing.dashReady &&
+                    playing.triedStrong && !playing.triedLowDash) {
+                playing.triedLowDash = true;
+                playing.failed = false;
+                playing.startMs = lastKnownPosition;
+                report("player", "强令牌与渐进式都不行，回到 web 端点压中低档，从 " +
+                       fmt(lastKnownPosition) + " 起");
+                var repL = Player.pickDashVideo(playing.dashReady);
+                playDash(playing.dashReady, (repL && repL.id) || PREFERRED_QN);
+                return;
             }
             /* Every route has been tried. If the probes came back 403 the
              * content itself is being withheld — reuploads of films get their
