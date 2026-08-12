@@ -217,6 +217,47 @@ function firePoll(env) {
   eq("and they are the three that were watched", all, "BVdone,BVmid,BVshort");
 }
 
+/* ---------------- 被删掉的稿件：从继续观看里去掉，但不销毁记录 ---------- */
+
+{
+  /* A takedown answers `-404 啥都木有` on both playurl forms and on view()
+   * (2026-08-12, BV1GAu163EXE). The card outlives the streams, so 继续观看
+   * keeps offering a video that can never play. Everything here is silent on
+   * the device — a card that quietly stays, or quietly goes, and neither
+   * throws — which is why it is tested off it. */
+  const env = boot({ "bili.dead.v1": JSON.stringify({ BVancient: 1 }) });
+  const { Accounts, Resume } = env.sandbox;
+  const a = Accounts.remember({ SESSDATA: "A" }, { mid: 1, uname: "A" });
+  const b = Accounts.remember({ SESSDATA: "B" }, { mid: 2, uname: "B" });
+  Accounts.switchTo(a.id);
+
+  eq("a mark from 1970 is pruned on read", Resume.dead().BVancient, undefined);
+
+  Resume.record("BVgone", 1, 300000, 600000, { bvid: "BVgone", title: "被删了" });
+  Resume.flush();
+  Resume.markDead("BVgone");
+  ok("the dead video is marked", !!Resume.dead().BVgone);
+  ok("and only it is", Object.keys(Resume.dead()).join(",") === "BVgone",
+     Object.keys(Resume.dead()).join(","));
+
+  /* The deliberate half: the record stays. Deleting it is the mistake this
+   * file has already made twice, and 我的 is where it shows up. */
+  const kept = Resume.recent(10).map((c) => c.bvid);
+  ok("the watch record survives the takedown", kept.indexOf("BVgone") >= 0, kept.join(","));
+  eq("and so does its position", Resume.positionMs("BVgone", 1), 300000);
+
+  /* A takedown is a fact about the video, not about the viewer. */
+  Accounts.switchTo(b.id);
+  ok("the mark is device level, not per account", !!Resume.dead().BVgone);
+  Accounts.remove(a.id);
+  ok("and removing an account does not take it", !!Resume.dead().BVgone);
+
+  /* 审核中 answers the same way and comes back. */
+  Resume.markAlive("BVgone");
+  eq("playing it again clears the mark", Resume.dead().BVgone, undefined);
+  eq("and clearing an unmarked video is a no-op", Object.keys(Resume.dead()).length, 0);
+}
+
 /* ---------------- unwritten progress belongs to whoever earned it ---------- */
 
 {

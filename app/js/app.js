@@ -317,9 +317,16 @@
      * middle of", and something watched to the end is not an answer to that. */
     function resumeRowItems() {
         var merged = mergeHistory(Resume.recent(20), serverHistory.items || []);
+        /* Filtered here rather than at either source, because a taken-down
+         * video reaches this row down two separate paths — this television's
+         * own record and the account's server history — and removing it from
+         * one leaves the card standing, delivered by the other. 我的 still
+         * lists it: it was watched, and that stays true after the takedown. */
+        var dead = Resume.dead();
         var out = [];
         for (var i = 0; i < merged.length && out.length < 4; i++) {
             if ((merged[i].seen || 0) >= 0.95) { continue; }
+            if (dead[merged[i].bvid]) { continue; }
             out.push(merged[i]);
         }
         return out;
@@ -1959,6 +1966,10 @@
              * with a qn=64 file sitting untried in this very response. */
             if (prog) { playing.progReady = prog; }
 
+            /* Whatever the -404 was, it is over — a 审核中 video that came back
+             * belongs in 继续观看 again, and nothing else has to know. */
+            if (dash || prog) { Resume.markAlive(detail.bvid); }
+
             /* Ties go progressive (AVPlay is native) — unless this video
              * already taught us otherwise within the lesson TTL: 平凡之路
              * spent seven doomed AVPlay seconds on every entry before the
@@ -1993,6 +2004,31 @@
              * -404 for the whole 稿件 — pressed twice, five seconds apart. */
             if (whyText.indexOf("-404") >= 0) {
                 toast("这个视频已经被删除或下架了");
+                /* Hiding a card is a persistent decision, so it gets a
+                 * discriminating test rather than an inference. playurl is
+                 * asked for one *part*: a -404 means the streams behind this
+                 * cid are gone, which is what a takedown looks like — but a
+                 * stale cid on a live 稿件 (parts re-uploaded, and this set
+                 * remembers the old one) answers exactly the same. view()
+                 * separates them, and it is one API round trip on a path that
+                 * has already failed. Only the takedown removes the card.
+                 * Should the other case ever appear in the log, the answer is
+                 * to re-resolve the cid, not to hide anything. */
+                var deadBvid = detail.bvid;
+                API.view(deadBvid, function () {
+                    report("player", "playurl 说 -404 但稿件还在 —— 是这一 P 的 cid" +
+                           "（" + cid + "）过期了，继续观看不动它");
+                }, function (vWhy) {
+                    if (String(vWhy).indexOf("-404") < 0) {
+                        report("player", "playurl -404，而 view 另有说法（" + vWhy +
+                               "），先不动继续观看");
+                        return;
+                    }
+                    /* stopPlayback reloads the feed on the way back, so by the
+                     * time the grid is on screen the card is already gone. */
+                    Resume.markDead(deadBvid);
+                    report("player", "view 也答 -404：这个稿件确实没了，从继续观看里去掉");
+                });
             } else {
                 toast("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
             }

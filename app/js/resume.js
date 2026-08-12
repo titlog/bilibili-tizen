@@ -26,6 +26,51 @@ var Resume = (function () {
     var mapKey = null;        /* the namespace `map` was read from */
     var dirty = false;
 
+    /* Videos bilibili itself says are gone — playurl and view both answer
+     * `-404 啥都木有`, which is what a takedown looks like from here. Reuploads
+     * of films and shows are removed constantly while the card that opens them
+     * lives on in a feed, in the account's history and in this television's own
+     * 继续观看 row.
+     *
+     * Device level on purpose — the raw key, not `Accounts.scope()`. A takedown
+     * is a fact about the video, not about the viewer, so one person meeting it
+     * spares everyone else on this television the same dead card.
+     *
+     * It hides the card from 继续观看 and does nothing else. The watch record
+     * stays: 我的 answers 「这台电视放过什么」, and something watched and later
+     * deleted is still part of that answer — and deleting entries outright is a
+     * mistake this file has already made twice, in `record()` and in the call
+     * that became `finished()`, both of which quietly emptied 我的.
+     *
+     * Marks expire, and playing the video clears one. A -404 is usually a
+     * takedown, but 审核中 answers identically and comes back a day later; a
+     * mark with no end would hide such a video from the row for good, on
+     * evidence that had stopped being true. */
+    var DEAD_KEY = "bili.dead.v1";
+    var DEAD_TTL = 7 * 24 * 3600 * 1000;
+    var DEAD_CAP = 200;
+
+    function writeDead(m) {
+        var keys = [], k;
+        for (k in m) { if (m.hasOwnProperty(k)) { keys.push(k); } }
+        keys.sort(function (a, b) { return (m[a] || 0) - (m[b] || 0); });
+        while (keys.length > DEAD_CAP) { delete m[keys.shift()]; }
+        try { localStorage.setItem(DEAD_KEY, JSON.stringify(m)); } catch (e) {}
+    }
+
+    function readDead() {
+        var m;
+        try { m = JSON.parse(localStorage.getItem(DEAD_KEY) || "{}"); }
+        catch (e) { m = {}; }
+        var now = new Date().getTime(), expired = false, k;
+        for (k in m) {
+            if (!m.hasOwnProperty(k)) { continue; }
+            if (now - (m[k] || 0) > DEAD_TTL) { delete m[k]; expired = true; }
+        }
+        if (expired) { writeDead(m); }
+        return m;
+    }
+
     /* Turning the television off is the normal way to stop watching, and it
      * gives no unload event worth trusting, so writes are flushed on a timer
      * rather than only when playback ends. */
@@ -185,6 +230,30 @@ var Resume = (function () {
             e.at = new Date().getTime();
             dirty = true;
             flush();
-        }
+        },
+
+        /* bilibili answered -404 for this video: it is gone, and no amount of
+         * pressing play will change that. */
+        markDead: function (bvid) {
+            if (!bvid) { return; }
+            var m = readDead();
+            m[bvid] = new Date().getTime();
+            writeDead(m);
+        },
+
+        /* It played — so whatever the -404 was, it is over. Self-correction
+         * costs one read in the common case and writes nothing. */
+        markAlive: function (bvid) {
+            if (!bvid) { return; }
+            var m = readDead();
+            if (!m[bvid]) { return; }
+            delete m[bvid];
+            writeDead(m);
+        },
+
+        /* The whole set at once, pruned. Callers filter a list against it, and
+         * asking per card would re-read and re-parse storage for every card on
+         * the screen. */
+        dead: readDead
     };
 })();
