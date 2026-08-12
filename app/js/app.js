@@ -2027,6 +2027,13 @@
         /* The latest response in hand, as an invariant of this wrapper rather
          * than a courtesy of decide() — the in-place replay reaches for it. */
         playing.dashReady = dash;
+        /* A fresh web manifest re-arms the strong-token escalation. The flag
+         * means "tried for this manifest", not "spent for this video" — the
+         * 12-hour session of 2026-08-12 proved the difference: strong was used
+         * at 00:05, the 12:46 fallback fetched a new web manifest, and the
+         * 12:48 403s on it had no escalation left. Mirrors strongEmitted's
+         * re-arm inside the player. */
+        if (!dash.strong) { playing.triedStrong = false; }
         playing.quality = qn;
         setQualityBadge(QUALITY_NAMES[qn] || ("QN " + qn));
         Player.playDash(dash, playing.startMs || 0);
@@ -2087,22 +2094,24 @@
                 return;
             }
             var vrep = Player.pickDashVideo(dash);
-            if (vrep && vrep.id) {
-                playing.quality = vrep.id;
-                setQualityBadge(QUALITY_NAMES[vrep.id] || ("QN " + vrep.id));
-            }
             report("player", "dash 兜底：" + how + " qn=" + ((vrep && vrep.id) || 0) +
                    "，交给播放器");
-            playing.route = "dash";
-            /* `playing.startMs`, not a fresh Resume lookup. play() already
-             * settled where this video starts, and that answer folds in things
-             * the local list has never heard of: a handoff from the phone, and
-             * bilibili's own `player/v2` position for this account. Reading
-             * Resume again here silently discarded both — so a video picked up
-             * from the phone at forty minutes restarted wherever this television
-             * last left it, but *only* when the progressive attempt failed
-             * first, which is why it never looked like a rule. */
-            Player.playDash(dash, playing.startMs || 0);
+            /* Through playDash(), not Player.playDash() directly — the wrapper
+             * owns the `dashReady` invariant. Bypassing it here left dashReady
+             * pointing at the manifest this fallback had just replaced, and
+             * twelve hours later (2026-08-12 12:49) the low-tier retry handed
+             * that expired corpse back to the player and exited to the grid.
+             *
+             * playDash reads `playing.startMs`, not a fresh Resume lookup.
+             * play() already settled where this video starts, and that answer
+             * folds in things the local list has never heard of: a handoff
+             * from the phone, and bilibili's own `player/v2` position for this
+             * account. Reading Resume again here silently discarded both — so
+             * a video picked up from the phone at forty minutes restarted
+             * wherever this television last left it, but *only* when the
+             * progressive attempt failed first, which is why it never looked
+             * like a rule. */
+            playDash(dash, (vrep && vrep.id) || playing.quality || 0);
         }
 
         /* play() asked for both forms at once, and this is the other one —
@@ -2390,6 +2399,62 @@
             el("player-loading").className = "hidden";
             report("player", data);
 
+            /* Expiry is the one fault no rung can fix — every rebuild from the
+             * kept response 403s on every tier — and after an overnight suspend
+             * it is the *first* fault: the player refuses to rebuild from a
+             * stale response now and raises this instead. The answer is a
+             * refetch from where the viewer is; if the manifest that expired
+             * was a strong-token one, refetch strong directly — the weather
+             * that demanded it has not changed just because the clock ran out.
+             * Bounded twice per session: a fresh response passes the player's
+             * guard by fetchedAt so this cannot ping-pong, but a silent loop
+             * is this codebase's most expensive failure shape, so the cap
+             * stays anyway. */
+            if (playing.route === "dash" && playing.detail &&
+                    String(data).indexOf("清单已过期") >= 0 &&
+                    (playing.expiredRefetches || 0) < 2) {
+                playing.expiredRefetches = (playing.expiredRefetches || 0) + 1;
+                var atExp = Player.position() || lastKnownPosition || playing.startMs || 0;
+                var wantStrong = !!(playing.dashReady && playing.dashReady.strong &&
+                                    playing.detail.aid);
+                playing.failed = false;
+                playing.startMs = atExp;
+                el("player-loading").className = "";
+                Player.startTiming();
+                playing.timed = false;
+                playing.timedLabel = "到画面(过期重取)";
+                report("player", "清单已过期，重取 playurl（" +
+                       (wantStrong ? "app 端点强令牌" : "web 端点") + "），从 " +
+                       fmt(atExp) + " 接着放");
+                var sessExp = playing;
+                Player.stop();
+                var startExp = function (dashExp) {
+                    if (playing !== sessExp) { return; }
+                    var repExp = Player.pickDashVideo(dashExp);
+                    playDash(dashExp, (repExp && repExp.id) || PREFERRED_QN);
+                };
+                var webExp = function () {
+                    API.playurlDash(sessExp.detail.bvid, sessExp.cid, PREFERRED_QN,
+                        startExp, function (whyExp) {
+                            if (playing !== sessExp) { return; }
+                            report("player", "过期重取 playurl 失败（" + whyExp + "）");
+                            finalFallback("清单过期且重取失败 " + whyExp);
+                        });
+                };
+                if (wantStrong) {
+                    API.playurlDashStrong(sessExp.detail.aid, sessExp.cid,
+                        PREFERRED_QN, startExp, function (whyStExp) {
+                            if (playing !== sessExp) { return; }
+                            report("player", "过期重取强令牌失败（" + whyStExp +
+                                   "），改试 web 端点");
+                            webExp();
+                        });
+                } else {
+                    webExp();
+                }
+                return;
+            }
+
             /* A web-token 403 goes to the app endpoint FIRST — before the
              * in-place restart, before mirror rotation, before anything. Those
              * restart the same web manifest whose token the CDN is refusing, so
@@ -2601,6 +2666,12 @@
         /* The last two exits, shared so the strong-token retry can fall through
          * to them from its async failure callback. */
         function finalFallback(data) {
+            /* Where the viewer actually is. lastKnownPosition zeroes when a
+             * failing rebuild ticks t=0 — 2026-08-12 the progressive last
+             * resort restarted a 32-minute position 「从 0:00 起」 for want of
+             * this — and Player.position() falls back to the ladder's own
+             * rebuild-from point, which survives that churn. */
+            var ffAt = Player.position() || lastKnownPosition || 0;
             /* DASH is exhausted — but the progressive durl is a different file
              * on a different stack, already in hand from decide()'s parallel
              * fetch, and 「所有路都试过」 is not true until it has been asked.
@@ -2612,7 +2683,7 @@
                     playing.progReady.urls && playing.progReady.urls.length) {
                 playing.progTried = true;
                 playing.failed = false;
-                playing.startMs = lastKnownPosition;   /* progress restarts here */
+                playing.startMs = ffAt;   /* progress restarts here */
                 playing.route = "progressive";
                 playing.quality = playing.progReady.quality;
                 playing.urls = playing.progReady.urls;
@@ -2620,11 +2691,11 @@
                 playing.refused = false;
                 report("player", "DASH 全灭（" + data + "），最后一手：渐进式 qn=" +
                        playing.progReady.quality + " 走 AVPlay，从 " +
-                       fmt(lastKnownPosition) + " 起");
+                       fmt(ffAt) + " 起");
                 el("player-loading").className = "";
                 setQualityBadge(QUALITY_NAMES[playing.progReady.quality] ||
                                 ("QN " + playing.progReady.quality));
-                Player.playProgressive(playing.urls[0], lastKnownPosition);
+                Player.playProgressive(playing.urls[0], ffAt);
                 return;
             }
             /* The strong token was tried (or was not applicable) and progressive
@@ -2639,9 +2710,16 @@
                     playing.triedStrong && !playing.triedLowDash) {
                 playing.triedLowDash = true;
                 playing.failed = false;
-                playing.startMs = lastKnownPosition;
-                report("player", "强令牌与渐进式都不行，回到 web 端点压中低档，从 " +
-                       fmt(lastKnownPosition) + " 起");
+                playing.startMs = ffAt;
+                /* Name the manifest actually being handed back — with the
+                 * dashReady invariant it is whichever played last, and on
+                 * 2026-08-12 this line claimed 「回到 web 端点」 while handing
+                 * over an expired strong manifest, which sent the log reader
+                 * down the wrong road. The player's own stale guard bounces an
+                 * expired one back for a refetch either way. */
+                report("player", "强令牌与渐进式都不行，回到" +
+                       (playing.dashReady.strong ? "强令牌清单" : " web 端点") +
+                       "压中低档，从 " + fmt(ffAt) + " 起");
                 var repL = Player.pickDashVideo(playing.dashReady);
                 playDash(playing.dashReady, (repL && repL.id) || PREFERRED_QN);
                 return;

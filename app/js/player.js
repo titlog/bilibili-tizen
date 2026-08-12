@@ -310,6 +310,14 @@ var Player = (function () {
         var v = el("html5-video");
         v.addEventListener("timeupdate", function () {
             if (mode !== "mse") { return; }
+            /* A load with a start position ticks t=0 before the initial seek
+             * lands, and a failing rebuild ticks it on every attempt. Letting
+             * that tick through wrote 0 into lastTime, lastKnownPosition and
+             * Resume — which is how the 2026-08-12 wake-up restarted a
+             * 32-minute position 「从 0:00 起」 and wiped the stored resume
+             * point on the way. A zero on a session that started elsewhere is
+             * noise, not a position. */
+            if (!v.currentTime && lastDash && lastDash.startMs > 1000) { return; }
             lastTime = v.currentTime * 1000;
             /* Kept separate from `lastTime`, which seekBy/seekTo also write —
              * this one has to survive as the position *before* a seek. */
@@ -665,6 +673,23 @@ var Player = (function () {
              * codebase. */
             if (err && err.severity !== 2 &&
                     (err.category === 1 || err.category === 3)) {
+                /* A 403 Shaka labels RECOVERABLE is not worth its retry when
+                 * the manifest is a web one: the retry feeds the 403 error
+                 * page into the demuxer, the element reports error 3, and a
+                 * *token* problem then walks the codec/tier ladder as a fake
+                 * decode failure — both 2026-08-12 incidents opened exactly
+                 * this way (cosov refusing the soundtrack), and the 12:53
+                 * replay ground through six rebuilds and forty seconds before
+                 * reaching the strong token that then played instantly. The
+                 * root cause is the token, not the segment
+                 * (docs/播放流令牌-app端点根治.md), so the first web-token 403
+                 * escalates now. On a strong manifest, or once per manifest,
+                 * offerStrongToken declines and the retry runs as before. */
+                if (err.code === 1001 && err.data &&
+                        (err.data[1] === 403 || err.data[1] === 401) &&
+                        offerStrongToken(true)) {
+                    return;
+                }
                 log("shaka 可恢复错误 " + describeShakaError(err) + "，重试取流");
                 try { player.retryStreaming(); } catch (e2) {}
                 return;
@@ -1371,6 +1396,37 @@ var Player = (function () {
     }
 
     function playDashWithShaka(dash, startMs, isRetry, prefer, capId) {
+        /* Every rung of the recovery ladder funnels back through here with the
+         * response it already holds — and a kept response outlives its
+         * signatures (`deadline`, about two hours). 2026-08-12 the TV woke
+         * from an overnight suspend and the ladder rebuilt a ten-hour-dead
+         * manifest nine times across two incidents — avc1, qn64, qn32, qn16,
+         * every rung a guaranteed 403 — and the second incident ended in
+         * 有声退出, while the one fresh playurl fetched in between played
+         * instantly. Expiry is a property of the whole response, not of any
+         * tier or family, so no rung can fix it; only a refetch can. A
+         * response fetched within the last minute is trusted regardless of
+         * the clock comparison — it is the freshest truth available, and that
+         * exemption is also what makes a refetch loop impossible even if this
+         * TV's clock drifts. */
+        var nowMs = new Date().getTime();
+        if (dash && dash.deadline &&
+                (!dash.fetchedAt || nowMs - dash.fetchedAt > 60000) &&
+                nowMs / 1000 > dash.deadline - 300) {
+            log("清单已过期（deadline 已过 " +
+                Math.max(0, Math.round(nowMs / 1000 - dash.deadline)) +
+                "s），拒绝用它重建");
+            emit("error", "清单已过期");
+            return;
+        }
+        /* A fresh top-level handoff of a *web* manifest re-arms the
+         * strong-token escalation. Spent-once-per-video it locked the door
+         * for good: the 00:05 strong rebuild used the flag, the 12:46 兜底
+         * fetched a brand-new web manifest, and when cosov refused that one
+         * at 12:48 the ladder had nowhere to escalate and ground through six
+         * rungs to 有声退出. The flag means "tried for this manifest", and a
+         * new web manifest is a new incident. */
+        if (!isRetry && dash && !dash.strong) { strongEmitted = false; }
         mode = "mse";
         var gen = ++mseGeneration;
         var retriedLoad = !!isRetry;
@@ -1688,8 +1744,13 @@ var Player = (function () {
         /* The real playhead, in ms — video.currentTime, and what seeks write.
          * app.js's own lastKnownPosition freezes at 0 through a stall (no
          * timeupdate fires), so the strong-token rebuild must ask here for where
-         * the viewer actually is, not there. */
-        position: function () { return lastTime; },
+         * the viewer actually is, not there. When lastTime itself has been
+         * zeroed by rebuild churn, lastDash.startMs carries where the ladder
+         * was rebuilding *from* — which is where the viewer is; reset() clears
+         * lastDash, so a stopped player still answers 0. */
+        position: function () {
+            return lastTime || (lastDash && lastDash.startMs) || 0;
+        },
 
         /* The clock starts when the button is pressed, which is before the
          * player is involved at all — so app.js owns starting it. */
