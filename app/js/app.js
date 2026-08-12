@@ -1983,7 +1983,19 @@
             if (got.progWhy) { whyBoth.push("durl " + got.progWhy); }
             var whyText = whyBoth.join(" / ") || "两个请求都没有回答";
             report("player", "两种形式都拿不到播放地址（" + whyText + "）");
-            toast("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
+            /* -404 is bilibili saying the video itself is gone, not that the
+             * streams are being withheld — reuploads of films and shows are
+             * taken down constantly, while the card outlives them in a feed, a
+             * search result or this television's own 继续观看 row. Telling the
+             * viewer 「拿不到播放地址」 sends them looking for a network problem
+             * that does not exist, and they press play again. 2026-08-12:
+             * BV1GAu163EXE answered -404 on both forms, and view() answered
+             * -404 for the whole 稿件 — pressed twice, five seconds apart. */
+            if (whyText.indexOf("-404") >= 0) {
+                toast("这个视频已经被删除或下架了");
+            } else {
+                toast("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
+            }
             stopPlayback();
         }
 

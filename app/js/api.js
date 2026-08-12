@@ -88,7 +88,15 @@ var API = (function () {
             var j;
             try { j = JSON.parse(xhr.responseText); }
             catch (e) { fail("bad JSON"); return; }
-            if (j.code !== 0) { fail(j.message || ("code " + j.code)); return; }
+            /* The code *and* the message. bilibili's -404 reads 「啥都木有」 —
+             * flavour text that cannot be searched for, cannot be told from a
+             * network fault at a glance, and on 2026-08-12 reached the screen
+             * as the entire explanation of why a video would not play. Same
+             * shape postForm has always used. */
+            if (j.code !== 0) {
+                fail("code " + j.code + (j.message ? " " + j.message : ""));
+                return;
+            }
             /* Most endpoints answer under data; search suggestions use result. */
             ok(j.data !== undefined ? j.data : j.result);
         };
