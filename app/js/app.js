@@ -21,7 +21,22 @@
      * while a video plays — so it gets a short timeout and gives up entirely
      * after a few refusals. A television in normal use should not spend its
      * evening dialling a laptop that went to the office. */
-    var reportMisses = 0;
+    /* Five misses stop the dialling, but they must not stop it *forever*. The
+     * permanent form cost a diagnosis on 2026-08-12: the collector had been up
+     * all day, the television suspended and woke with its network a few seconds
+     * behind, five reports missed into that gap, and the channel was dead for
+     * the rest of the process — a playback failure at 19:00 left no trace at
+     * all while `curl` to the collector answered 200. Reinstalling was the only
+     * cure and CLAUDE.md had to warn readers about it.
+     *
+     * So: sleep, don't die. After the fifth miss nothing is sent for five
+     * minutes, then exactly one line is allowed through as a probe — it either
+     * lands (misses reset, the channel is back) or re-arms the sleep for
+     * another five minutes. The cost of an evening with no laptop is one
+     * three-second XHR per five minutes, and only while something is happening:
+     * report() is called by events, so an idle television sends nothing. */
+    var reportMisses = 0, reportWakeAt = 0;
+    var REPORT_SLEEP = 300000;
 
     /* A runaway rebuild loop once wrote three lines a second for minutes —
      * hundreds of collector rows, and as many POSTs riding the same network
@@ -32,8 +47,17 @@
     var reportTokens = 20, reportRefillAt = 0, reportDropped = 0;
 
     function report(kind, detail) {
-        if (!REPORT_TO || reportMisses >= 5) { return; }
+        if (!REPORT_TO) { return; }
         var now = new Date().getTime();
+        if (reportMisses >= 5) {
+            if (!reportWakeAt) { reportWakeAt = now + REPORT_SLEEP; return; }
+            if (now < reportWakeAt) { return; }
+            /* One probe per window: back to four, so a single failure trips the
+             * fifth miss again and the next call opens a fresh window rather
+             * than spending five more sockets to relearn the same answer. */
+            reportWakeAt = 0;
+            reportMisses = 4;
+        }
         if (reportRefillAt) {
             reportTokens = Math.min(20, reportTokens + (now - reportRefillAt) / 1000);
         }
@@ -1948,7 +1972,18 @@
                 playDash(dash, dashQn); return;
             }
             if (prog) { startProgressive(prog); return; }
-            toast("播放失败：拿不到播放地址");
+            /* Both forms refused, and the reasons are the whole diagnosis:
+             * 「HTTP 403」「timeout」「network error」 and bilibili's own code
+             * message are four different faults that this toast used to render
+             * identically. The log already carried them — but on 2026-08-12 the
+             * report channel was asleep and the screen was the only witness
+             * left, so the screen has to know too. */
+            var whyBoth = [];
+            if (got.dashWhy) { whyBoth.push("dash " + got.dashWhy); }
+            if (got.progWhy) { whyBoth.push("durl " + got.progWhy); }
+            var whyText = whyBoth.join(" / ") || "两个请求都没有回答";
+            report("player", "两种形式都拿不到播放地址（" + whyText + "）");
+            toast("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
             stopPlayback();
         }
 
@@ -1963,6 +1998,7 @@
             if (playing !== session) { return; }
             report("player", "no dash (" + dashWhy + ")");
             got.dash = null;
+            got.dashWhy = dashWhy;
             decide();
         });
 
@@ -1976,6 +2012,7 @@
             if (playing !== session) { return; }
             report("player", "no durl (" + why + ")");
             got.prog = null;
+            got.progWhy = why;
             decide();
         });
 
