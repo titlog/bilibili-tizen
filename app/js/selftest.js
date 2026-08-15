@@ -419,6 +419,41 @@ var SelfTest = (function () {
             if (!visible("shell")) { return "没有回到浏览界面"; }
             if (count("#screen .accounts")) { return "账号页没有关掉"; }
             return null;
+        }],
+
+        /* Switching the set off and on again, which is the one journey no key
+         * press can produce: Tizen suspends instead of killing, so it comes back
+         * to the same JS context — and used to come back to last night's feed
+         * with the cursor wherever it was left. `__stWake` is the only internal
+         * this run calls directly, because the event that drives it belongs to
+         * the platform. */
+        ["模拟关机再开机", 400, function () {
+            if (typeof window.__stWake !== "function") { return "没有 __stWake 这个入口"; }
+            window.__stFeedBefore = window.__stItems;
+            window.__stWake();
+            return null;
+        }],
+        ["醒来后首页重刷，光标回到继续观看", 5000, function () {
+            if (!visible("shell")) { return "醒来后没有停在浏览界面"; }
+            if (!count("#screen .card")) { return "醒来后网格是空的"; }
+            /* A new array means the feed was fetched again; repainting the cache
+             * would hand back the very same one, and that is the whole point of
+             * this step. */
+            if (window.__stItems === window.__stFeedBefore) {
+                return "首页没有重新取，还是醒来之前那一份";
+            }
+            var f = document.querySelector("#screen .card.focused");
+            if (!f) { return "醒来后没有任何卡片被选中"; }
+            if (f !== document.querySelector("#screen .card")) {
+                return "光标没有回到第一张卡片";
+            }
+            var row = document.getElementById("resume-row");
+            if (row && row.querySelectorAll(".card")[0] !== f) {
+                return "有继续观看那一行，光标却不在它第一张上";
+            }
+            post(row ? "醒来：重取了首页，光标在继续观看第一张"
+                     : "醒来：重取了首页，没有续播行，光标在推荐第一张");
+            return null;
         }]
     ];
 

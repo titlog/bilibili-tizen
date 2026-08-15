@@ -332,6 +332,23 @@
         return out;
     }
 
+    /* What the strip is currently showing, as one comparable string. The server
+     * history arrives on its own schedule and can be later than the feed, and
+     * then the strip painted with it differs from the strip painted without —
+     * this is how that difference is noticed without repainting on every
+     * response. Which part is in it counts: on a 24-part upload, "carry on"
+     * pointing at the wrong episode is the whole of the answer being wrong. */
+    var resumeRowSig = "";
+
+    function rowSignature(items) {
+        var parts = [];
+        for (var i = 0; i < items.length; i++) {
+            parts.push(items[i].bvid + "@" + (items[i].cid || 0) + "@" +
+                       Math.round((items[i].progressMs || 0) / 1000));
+        }
+        return parts.join(",");
+    }
+
     function renderGrid(items, emptyText) {
         if (!items.length) {
             screenEl.innerHTML = '<div class="empty">' + esc(emptyText || "没有内容") + '</div>';
@@ -343,6 +360,7 @@
          * already under the cursor is what a television is supposed to do; the
          * alternative was 我的, two presses and a wait away. */
         var resume = (state.screen === "rcmd") ? resumeRowItems() : [];
+        resumeRowSig = rowSignature(resume);
 
         var html = "";
         if (resume.length) {
@@ -567,7 +585,7 @@
         }
     }
 
-    function loadFeed(kind, restore) {
+    function loadFeed(kind, restore, retries) {
         state.screen = kind;
         markTab();
         var req = ++feedRequest;
@@ -596,24 +614,50 @@
             feedCache[kind] = { items: items, index: 0, scrollTop: 0, page: 1, exhausted: !items.length };
             window.__stItems = items;   /* selftest addresses the same video */
             renderGrid(items);
+            /* First card in the document, which on the home tab is the first
+             * card of 继续观看 — the strip is painted above the grid. That is
+             * the point of it: what you were in the middle of is already under
+             * the cursor when the screen appears. */
             Nav.reset(".card");
         }, function (why) {
             if (req !== feedRequest) { return; }
+            /* Waking from suspend, this set's network is regularly a few seconds
+             * behind its screen — the same gap that killed the report channel on
+             * 08-12. An error page as the first thing on a television somebody
+             * just switched on is worse than three more seconds of 加载中, so
+             * the wake path asks for one silent retry. Nothing else does: a
+             * feed that fails while the viewer is already looking at the app
+             * should say so. */
+            if (retries > 0) {
+                report("feed", kind + " 加载失败（" + why + "），3 秒后自动重来一次");
+                setTimeout(function () {
+                    if (req !== feedRequest) { return; }
+                    loadFeed(kind, false, retries - 1);
+                }, 3000);
+                return;
+            }
             showError("加载失败：" + why, function () { loadFeed(kind); });
         });
     }
 
     /* The history usually lands with the feed and the strip is simply part of
-     * the first paint. When it is slower it may still be added, but only while
-     * the viewer has not moved: a row appearing above the cursor after someone
-     * has started reading pushes everything down under their eyes, and that is
-     * worse than no row at all. */
-    function maybeAddResumeRow() {
-        if (state.screen !== "rcmd" || el("resume-row")) { return; }
+     * the first paint. When it is slower it may still be added — or corrected,
+     * when the phone watched something this set does not know about — but only
+     * while the viewer has not moved: a row appearing above the cursor after
+     * someone has started reading pushes everything down under their eyes, and
+     * that is worse than no row at all.
+     *
+     * "Has not moved" is the cursor still being on the first card of the page,
+     * whichever row that is. Repainting from there costs nothing visible: the
+     * focus lands on the first card again, which is where it already was. */
+    function maybeRefreshResumeRow() {
+        if (state.screen !== "rcmd") { return; }
         var cache = feedCache.rcmd;
         if (!cache || !cache.items.length) { return; }
-        if (!resumeRowItems().length) { return; }
-        var first = screenEl.querySelector("#feed-grid .card");
+        var items = resumeRowItems();
+        if (!items.length) { return; }
+        if (el("resume-row") && rowSignature(items) === resumeRowSig) { return; }
+        var first = screenEl.querySelector(".card");
         if (!first || Nav.current() !== first) { return; }
         renderGrid(cache.items);
         Nav.reset(".card");
@@ -635,6 +679,87 @@
             c.index = Number(cur.getAttribute("data-i"));
         }
         c.scrollTop = screenEl.scrollTop;
+    }
+
+    /* ---------------- coming back after the set was off ---------------- */
+
+    /* Tizen suspends rather than kills — the same thing that keeps the report
+     * channel's miss counter alive across an evening. So switching the
+     * television off and on again usually returns to the very same JS context:
+     * last night's recommendations still painted, the cursor still on whatever
+     * was last looked at, the feed cache still holding pages fetched before
+     * bed. Opening an app should feel like opening it — a feed fetched now, and
+     * the half-watched thing under the cursor.
+     *
+     * Two signals, because which of them this firmware sends has not been
+     * measured and a wake that goes unnoticed is exactly the stale screen this
+     * removes: `visibilitychange`, and a heartbeat that notices its own timer
+     * stopped. Timers freeze while suspended, so a tick arriving far later than
+     * it was due is itself the evidence — that one survives a firmware that
+     * never fires the event at all. Whichever arrives first does the work; the
+     * debounce keeps a set that sends both from fetching twice.
+     *
+     * A minute is the line. Below it this was not a power cycle but a system
+     * overlay or a glance at another app, and taking somebody's place in the
+     * grid away for that is worse than a slightly stale feed. */
+    var AWAY_MS = 60000;
+    var BEAT_MS = 30000;
+    var hiddenAt = 0, lastBeat = 0, lastWake = 0;
+
+    function wokeUp(why, awayMs) {
+        var now = new Date().getTime();
+        if (now - lastWake < AWAY_MS) { return; }   /* the other signal had it */
+        lastWake = now;
+        report("lifecycle", why + "，离开了 " + Math.round(awayMs / 1000) + " 秒");
+
+        /* A set that suspended in the middle of a video comes back to the video.
+         * Playback owns the screen and its own recovery ladders; a feed reload
+         * underneath it would tear down a session that is about to resume. */
+        if (playing) { report("lifecycle", "正在播放，不动它"); return; }
+        /* The two screens that are asking the viewer a question: somebody may be
+         * standing there with a phone against a QR code, or the set may be
+         * waiting to be told who is watching. Answering it for them is worse
+         * than a stale screen. */
+        if (state.screen === "login" || state.screen === "accounts") {
+            report("lifecycle", "停在" + (state.screen === "login" ? "扫码页" : "账号页") + "，不动它");
+            return;
+        }
+
+        closeIme(false);
+        /* Every tab, not just this one: 热门 and the zones went stale in exactly
+         * the same way, and each costs one request the first time it is opened
+         * again rather than all of them now. */
+        feedCache = {};
+        serverHistory = { at: 0, items: null };
+        loadFeed("rcmd", false, 1);
+        if (Auth.isLoggedIn()) {
+            fetchServerHistory(function () { maybeRefreshResumeRow(); });
+        }
+    }
+
+    /* No key press can produce a suspend/resume cycle, so the selftest reaches
+     * the wake path through here. */
+    window.__stWake = function () { lastWake = 0; wokeUp("自测模拟关机再开机", AWAY_MS); };
+
+    function watchForWake() {
+        /* Nothing is reported when the set goes away: the POST would be dialling
+         * into a suspending network stack, and five of those are what puts the
+         * report channel to sleep for five minutes. The wake line carries how
+         * long it was gone, which says the same thing. */
+        document.addEventListener("visibilitychange", function () {
+            if (document.hidden) { hiddenAt = new Date().getTime(); return; }
+            var away = hiddenAt ? (new Date().getTime() - hiddenAt) : 0;
+            hiddenAt = 0;
+            if (away >= AWAY_MS) { wokeUp("回到前台（visibilitychange）", away); }
+        });
+
+        lastBeat = new Date().getTime();
+        setInterval(function () {
+            var now = new Date().getTime();
+            var gap = now - lastBeat;
+            lastBeat = now;
+            if (gap > BEAT_MS + AWAY_MS) { wokeUp("心跳停跳（挂起过）", gap); }
+        }, BEAT_MS);
     }
 
     /* ---------------- search ---------------- */
@@ -2975,8 +3100,12 @@
          * between the resume strip being part of the first screen and being a
          * row that appears afterwards. */
         if (Auth.isLoggedIn()) {
-            fetchServerHistory(function () { maybeAddResumeRow(); });
+            fetchServerHistory(function () { maybeRefreshResumeRow(); });
         }
+
+        /* Suspend and resume, which on this platform is what "turning the
+         * television off and on again" means. See the section it belongs to. */
+        watchForWake();
 
         /* Constructing Shaka measured about seven hundred milliseconds, and it
          * is built once and kept — so the only thing in question is when. Doing
