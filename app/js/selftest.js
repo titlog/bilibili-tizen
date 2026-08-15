@@ -268,12 +268,32 @@ var SelfTest = (function () {
         ["暂停图标消失", 600, function () {
             return visible("pause-glyph") ? "继续播放后暂停图标还在" : null;
         }],
+        /* The branch the first field sample landed on (08-15, three hours
+         * suspended): the set slept with a video playing, so the wake was
+         * deferred rather than done. What is behind the player is then last
+         * night's screen, and it has to be replaced on the way out — before the
+         * fix, backing out handed it straight back. */
+        ["播放中来了一次挂起恢复", 300, function () {
+            if (typeof window.__stWake !== "function") { return "没有 __stWake 这个入口"; }
+            window.__stPlayFeedBefore = window.__stItems;
+            window.__stWake();
+            if (visible("shell")) { return "唤醒把正在播放的视频掀掉了"; }
+            return null;
+        }],
         ["返回键退出播放", 500, function () { key(KEY.RETURN); return null; }],
-        ["回到首页网格", 2500, function () {
+        ["回到首页网格", 3500, function () {
             if (!visible("shell")) { return "没有回到浏览界面"; }
             if (!count("#screen .card")) { return "回来后网格是空的"; }
             var f = document.querySelector("#screen .card.focused");
-            return f ? null : "回来后没有任何卡片被选中";
+            if (!f) { return "回来后没有任何卡片被选中"; }
+            /* Owed refresh paid: a new array rather than the cache restored. */
+            if (window.__stItems === window.__stPlayFeedBefore) {
+                return "挂起期间欠下的重刷没补上，回来的还是老那份首页";
+            }
+            if (f !== document.querySelector("#screen .card")) {
+                return "补刷之后光标没有回到第一张卡片";
+            }
+            return null;
         }],
 
         /* The decisive one for multiple accounts, and it can only be answered

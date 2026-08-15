@@ -705,26 +705,12 @@
     var AWAY_MS = 60000;
     var BEAT_MS = 30000;
     var hiddenAt = 0, lastBeat = 0, lastWake = 0;
+    /* A wake that arrived while a video was playing, waiting for the end of it. */
+    var pendingWake = false;
 
-    function wokeUp(why, awayMs) {
-        var now = new Date().getTime();
-        if (now - lastWake < AWAY_MS) { return; }   /* the other signal had it */
-        lastWake = now;
-        report("lifecycle", why + "，离开了 " + Math.round(awayMs / 1000) + " 秒");
-
-        /* A set that suspended in the middle of a video comes back to the video.
-         * Playback owns the screen and its own recovery ladders; a feed reload
-         * underneath it would tear down a session that is about to resume. */
-        if (playing) { report("lifecycle", "正在播放，不动它"); return; }
-        /* The two screens that are asking the viewer a question: somebody may be
-         * standing there with a phone against a QR code, or the set may be
-         * waiting to be told who is watching. Answering it for them is worse
-         * than a stale screen. */
-        if (state.screen === "login" || state.screen === "accounts") {
-            report("lifecycle", "停在" + (state.screen === "login" ? "扫码页" : "账号页") + "，不动它");
-            return;
-        }
-
+    /* Everything a fresh arrival at the home screen means. Two callers: the wake
+     * itself, and the end of playback when the wake was owed. */
+    function freshHome() {
         closeIme(false);
         /* Every tab, not just this one: 热门 and the zones went stale in exactly
          * the same way, and each costs one request the first time it is opened
@@ -735,6 +721,50 @@
         if (Auth.isLoggedIn()) {
             fetchServerHistory(function () { maybeRefreshResumeRow(); });
         }
+    }
+
+    /* Called by stopPlayback, which is the one way back out of a video. */
+    function payOwedWake() {
+        if (!pendingWake) { return false; }
+        pendingWake = false;
+        report("lifecycle", "退出播放，把挂起期间欠下的首页重刷补上");
+        freshHome();
+        return true;
+    }
+
+    function wokeUp(why, awayMs) {
+        var now = new Date().getTime();
+        if (now - lastWake < AWAY_MS) { return; }   /* the other signal had it */
+        lastWake = now;
+        report("lifecycle", why + "，离开了 " + Math.round(awayMs / 1000) + " 秒");
+
+        /* A set that suspended in the middle of a video comes back to the video.
+         * Playback owns the screen and its own recovery ladders; a feed reload
+         * underneath it would tear down a session that is about to resume, and
+         * the requests would compete with the player exactly the way the
+         * metadata fetches used to.
+         *
+         * But the refresh is owed, not cancelled. The first field sample of this
+         * whole mechanism (08-15, three hours suspended) landed on this branch:
+         * the set had been left with a video playing, so nothing was refreshed,
+         * and backing out of that dead video would have handed back the morning's
+         * feed with the cursor where it was — the very thing this removes. It is
+         * paid at the end of playback instead. */
+        if (playing) {
+            pendingWake = true;
+            report("lifecycle", "正在播放，先不动它 —— 退出播放时再补上重刷");
+            return;
+        }
+        /* The two screens that are asking the viewer a question: somebody may be
+         * standing there with a phone against a QR code, or the set may be
+         * waiting to be told who is watching. Answering it for them is worse
+         * than a stale screen. */
+        if (state.screen === "login" || state.screen === "accounts") {
+            report("lifecycle", "停在" + (state.screen === "login" ? "扫码页" : "账号页") + "，不动它");
+            return;
+        }
+
+        freshHome();
     }
 
     /* No key press can produce a suspend/resume cycle, so the selftest reaches
@@ -750,7 +780,16 @@
             if (document.hidden) { hiddenAt = new Date().getTime(); return; }
             var away = hiddenAt ? (new Date().getTime() - hiddenAt) : 0;
             hiddenAt = 0;
-            if (away >= AWAY_MS) { wokeUp("回到前台（visibilitychange）", away); }
+            if (away >= AWAY_MS) { wokeUp("回到前台（visibilitychange）", away); return; }
+            /* 08-15, the first field sample: three hours suspended and the line
+             * that came out was the heartbeat's. So this event either never
+             * arrives on this firmware, or it arrives on the way back without
+             * one on the way out, leaving nothing to measure the absence from —
+             * and those two are worth telling apart, because the second means
+             * the event is usable and the first means it is not. Silence in the
+             * log now says "never arrives"; this line says "arrives, but". */
+            report("lifecycle", "visibilitychange 说回到前台，记到的离开时长只有 " +
+                   Math.round(away / 1000) + " 秒" + (away ? "" : "（一次 hidden 都没收到）"));
         });
 
         lastBeat = new Date().getTime();
@@ -2496,6 +2535,10 @@
         Player.stop();
         playing = null;
         showPlayerUi(false);
+        /* Unless the set slept through the middle of this video, in which case
+         * what is behind the player is last night's screen and the owed refresh
+         * is paid here instead of restoring it. */
+        if (payOwedWake()) { return; }
         /* Back to the grid the viewer was browsing, at the card they picked. */
         var home = state.screen;
         if (home === "search") { renderSearch(); }
