@@ -260,6 +260,176 @@ var Player = (function () {
         } catch (e) {}
     }
 
+    /* Which protocol this set actually speaks to the CDN, measured instead of
+     * assumed.
+     *
+     * CLAUDE.md has carried 「MSE 走同代 Chromium 栈，大概率也是 h2（未在设备上
+     * 证实）」 for a fortnight, and a great deal rides on it: over HTTP/1.1 the
+     * six-connections-per-host cap turns one buffering goal into a completely
+     * different shape of burst than the web player's single multiplexed
+     * connection makes — and 「单发 206、成串的没下文」 is exactly what the
+     * difference would look like from here. A constraint carrying that much
+     * weight has to prove itself; that rule is the most expensive one this
+     * repository has.
+     *
+     * Nothing extra goes on the wire: the entries are already there, left by the
+     * segment requests themselves. The catch is that `nextHopProtocol` is one of
+     * the fields a cross-origin response withholds unless it sends
+     * Timing-Allow-Origin, and an empty string means *that*, not HTTP/1.1. The
+     * line separates the two, because 「看不到」 and 「是 1.1」 want opposite next
+     * steps — one needs a different experiment, the other needs the buffering
+     * config rethought. */
+    function transportSummary() {
+        try {
+            if (!window.performance || !performance.getEntriesByType) {
+                return "没有 performance API";
+            }
+            var all = performance.getEntriesByType("resource");
+            var byHost = {}, order = [], blind = 0, seenAny = 0;
+            for (var i = 0; i < all.length; i++) {
+                var name = all[i].name || "";
+                if (name.indexOf("bilivideo") < 0 && name.indexOf("akamaized") < 0 &&
+                    name.indexOf("bilibili") < 0) { continue; }
+                seenAny++;
+                var host = hostOf(name);
+                var p = all[i].nextHopProtocol;
+                if (!p) { blind++; p = "?"; }
+                if (!byHost[host]) { byHost[host] = {}; order.push(host); }
+                byHost[host][p] = (byHost[host][p] || 0) + 1;
+            }
+            if (!seenAny) { return "还没有 CDN 请求可看"; }
+            var out = [];
+            for (var h = 0; h < order.length; h++) {
+                var protos = byHost[order[h]], parts = [];
+                for (var k in protos) {
+                    if (protos.hasOwnProperty(k)) { parts.push(k + "×" + protos[k]); }
+                }
+                out.push(order[h] + "=" + parts.join(","));
+            }
+            return out.join(" ") +
+                   (blind ? "（其中 " + blind + " 条问不到协议：跨域响应没给 " +
+                            "Timing-Allow-Origin，「?」不等于 1.1）" : "");
+        } catch (e) { return "问不出来：" + (e && e.message); }
+    }
+
+    /* One line per playback, well after the start burst so there is something to
+     * count, and again inside the stall diagnostic — the interesting comparison
+     * is healthy traffic against traffic that has just stopped arriving. */
+    var transportTold = false, transportToldAt = 0, shapeProbed = false, shapeProbedStall = false;
+    function tellTransport(when) {
+        log("传输 " + when + " " + transportSummary());
+    }
+
+    /* The url of the representation currently being played, for probes. */
+    function currentStreamUrl() {
+        if (!lastDash) { return ""; }
+        var reps = (lastDash.dash && lastDash.dash.video) || [];
+        var rep = null;
+        for (var i = 0; i < reps.length; i++) {
+            if (String(reps[i].codecs || "").split(".")[0] === lastDash.family) { rep = reps[i]; break; }
+        }
+        rep = rep || reps[0];
+        return (rep && ((rep.urls && rep.urls[0]) || rep.baseUrl)) || "";
+    }
+
+    /* What `nextHopProtocol` refused to say, asked a way the CDN cannot withhold.
+     *
+     * HTTP/1.1 caps a browser at six connections per host: fire eight requests
+     * at once and the last two cannot even start until two of the first six
+     * finish, so their completion times land in a second wave. HTTP/2 carries
+     * all eight down one connection and they finish together. The shape of the
+     * finish times is the answer, and it needs no cooperation from the server.
+     *
+     * Eight kilobytes total, once per app launch. That is genuinely nothing next
+     * to one segment — but it is still a burst at a CDN whose limiter is keyed
+     * on exactly that, so it is one shot, deliberately tiny, and never repeated
+     * while an incident is running. */
+    function probeTransportShape(tag) {
+        var url = currentStreamUrl();
+        if (!url) { return; }
+        var N = 8, t0 = new Date().getTime(), done = 0, rows = [], codes = {};
+        function finish(k, s0, code) {
+            var now = new Date().getTime();
+            rows.push({ k: k, start: s0 - t0, dur: now - s0 });
+            codes[code] = (codes[code] || 0) + 1;
+            if (++done < N) { return; }
+
+            /* Start and duration kept apart, because the first version of this
+             * probe could not tell them apart and read its own dispatch cost as
+             * the network's shape: eight `send()` calls run one after another on
+             * this set's main thread, so timing everything from one t0 draws a
+             * staircase whatever the transport does. What separates the two:
+             * over HTTP/1.1 the seventh and eighth requests cannot start until
+             * two of the first six finish, so their *durations* run long while
+             * their start offsets stay small; a slow dispatch loop staggers the
+             * *starts* and leaves the durations alike. */
+            rows.sort(function (a, b) { return a.start - b.start; });
+            var starts = [], durs = [], sorted = [];
+            for (var i = 0; i < rows.length; i++) {
+                starts.push(rows[i].start); durs.push(rows[i].dur); sorted.push(rows[i].dur);
+            }
+            sorted.sort(function (a, b) { return a - b; });
+            var medDur = sorted[3] || 1;
+            var spread = starts[7] - starts[0];
+
+            /* Three shapes, and the first reading of this probe had a rule for
+             * only two of them — so it printed 「像多路复用」 at a set of numbers
+             * that plainly queued (33,52,73,98,…, one every 21ms). A classifier
+             * with no case for what actually happened does not fall silent, it
+             * lies. The cases, stated so a fourth shape is visible as unclassified
+             * rather than forced into one of these:
+             *   - six-connection cap: six alike, the last two roughly doubled
+             *   - single file: durations climbing by a near-constant step
+             *   - genuinely parallel: all eight alike
+             * The numbers are printed either way; the verdict is a reading of
+             * them, and it says when it has none. */
+            var lateTwo = (durs[6] > medDur * 1.8 + 30) && (durs[7] > medDur * 1.8 + 30);
+            var steps = [], stepSum = 0, s;
+            for (s = 1; s < sorted.length; s++) {
+                steps.push(sorted[s] - sorted[s - 1]);
+                stepSum += sorted[s] - sorted[s - 1];
+            }
+            var stepAvg = stepSum / steps.length, even = 0;
+            for (s = 0; s < steps.length; s++) {
+                if (steps[s] > stepAvg * 0.5 && steps[s] < stepAvg * 2) { even++; }
+            }
+            var serial = stepAvg > 8 && even >= steps.length - 1;
+            var flat = (sorted[7] - sorted[0]) < medDur * 0.4;
+
+            var verdict = serial
+                ? "耗时逐个递增约 " + Math.round(stepAvg) + "ms 一档 —— 响应是排着队一个接一个回来的，不是并行"
+                : lateTwo
+                    ? "第 7、8 个耗时明显翻倍 —— 像 HTTP/1.1 的六连接上限"
+                    : flat
+                        ? "八个耗时齐平 —— 真并行"
+                        : "形状不属于已知三种（六连接上限 / 严格排队 / 真并行），别硬套";
+            var codeList = [];
+            for (var c in codes) { if (codes.hasOwnProperty(c)) { codeList.push(c + "×" + codes[c]); } }
+            log("传输形状" + (tag ? "（" + tag + "）" : "") + " 8 并发×1KB" +
+                " 发出(ms)=" + starts.join(",") + "（相差 " + spread + "ms，排除本机发送开销）" +
+                " 各自耗时(ms)=" + durs.join(",") +
+                " 状态=" + codeList.join(",") + " → " + verdict);
+        }
+        for (var j = 0; j < N; j++) {
+            (function (k) {
+                var s0 = new Date().getTime();
+                try {
+                    var xhr = new XMLHttpRequest();
+                    xhr.open("GET", url, true);
+                    xhr.responseType = "arraybuffer";
+                    xhr.timeout = 8000;
+                    /* Distinct offsets: identical requests can be coalesced, and
+                     * a coalesced set would fake the multiplexed answer. */
+                    xhr.setRequestHeader("Range", "bytes=" + (k * 4096) + "-" + (k * 4096 + 1023));
+                    xhr.onload = function () { finish(k, s0, xhr.status); };
+                    xhr.onerror = function () { finish(k, s0, "失败"); };
+                    xhr.ontimeout = function () { finish(k, s0, "超时"); };
+                    xhr.send();
+                } catch (e) { finish(k, s0, "抛异常"); }
+            })(j);
+        }
+    }
+
     /* The playhead has been observed jumping backwards — 1021s to 14s once,
      * 383s to 358s later — with nobody touching the remote, and the jump is
      * what destroys the resume point: `Resume.record` files anything under
@@ -284,6 +454,7 @@ var Player = (function () {
     function startTiming() {
         marks = { t0: new Date().getTime() };
         markOrder = [];
+        transportTold = false;   /* one transport line per video, not per seek */
     }
 
     function mark(name) {
@@ -388,6 +559,26 @@ var Player = (function () {
             stopStallWatch();
             mark("playing");
             emit("playing", { duration: duration });
+            /* Fifteen seconds in: past the start burst, so the count is of
+             * steady-state segment traffic rather than of the manifest and two
+             * init segments. Once per video — `playing` fires again after every
+             * seek, and this answer does not change within a session. */
+            if (!transportTold) {
+                transportTold = true;
+                setTimeout(function () {
+                    if (mode !== "mse") { return; }
+                    tellTransport("播放中");
+                    /* Only from a healthy stretch, and only once for the whole
+                     * app run: during an incident the eight would be eight more
+                     * requests into a limiter that is already refusing, and the
+                     * answer would be about the incident rather than about the
+                     * transport. */
+                    if (!shapeProbed && !incidentAt) {
+                        shapeProbed = true;
+                        probeTransportShape("健康时");
+                    }
+                }, 15000);
+            }
         });
         v.addEventListener("waiting", function () {
             if (mode !== "mse") { return; }
@@ -743,20 +934,48 @@ var Player = (function () {
          * as claimed. Requested and received the same → the bytes were whole
          * and the fault is in what we asked for (our own SegmentBase offsets)
          * or in the decoder. Two answers, opposite fixes; no way to tell them
-         * apart without this. */
+         * apart without this.
+         *
+         * Both halves have to come from the *same* response, and until
+         * 2026-08-15 they did not: one global slot held the last request's range
+         * while the response filter wrote the next body's length into it, so
+         * with video and audio in flight together the audio body was measured
+         * against the video range. That is where 「要 36599B 收到 1021139B」 came
+         * from — read on the day as the CDN answering with bytes nobody asked
+         * for, and used to explain a decode error. It was this instrument
+         * misreading itself. The response's own `content-range` settles it with
+         * nothing to pair up: it states the range actually served, and the body
+         * is right there beside it. The request filter stays only for responses
+         * that carry no content-range (a 200 answering a range request — itself
+         * worth seeing). */
         try {
             var RT = shaka.net.NetworkingEngine.RequestType;
             var ne = player.getNetworkingEngine();
             ne.registerRequestFilter(function (type, request) {
                 if (type !== RT.SEGMENT) { return; }
                 var h = (request.headers && (request.headers.Range || request.headers.range)) || "";
-                lastSegReq = { range: String(h), uri: (request.uris && request.uris[0]) || "" };
+                lastAskedRange = String(h);
+                segStarted++;
+                segLastStart = new Date().getTime();
             });
             ne.registerResponseFilter(function (type, response) {
-                if (type !== RT.SEGMENT || !lastSegReq) { return; }
-                var m = /bytes=(\d+)-(\d+)/.exec(lastSegReq.range);
-                lastSegReq.want = m ? (Number(m[2]) - Number(m[1]) + 1) : 0;
-                lastSegReq.got = (response.data && response.data.byteLength) || 0;
+                if (type !== RT.SEGMENT) { return; }
+                segFinished++;
+                segLastFinish = new Date().getTime();
+                var hs = response.headers || {};
+                var cr = hs["content-range"] || hs["Content-Range"] || "";
+                var m = /bytes\s+(\d+)-(\d+)/.exec(String(cr));
+                var got = (response.data && response.data.byteLength) || 0;
+                if (m) {
+                    lastSegReq = { range: "bytes=" + m[1] + "-" + m[2],
+                                   want: Number(m[2]) - Number(m[1]) + 1,
+                                   got: got, uri: response.uri || "", ranged: true };
+                    return;
+                }
+                var q = /bytes=(\d+)-(\d+)/.exec(lastAskedRange);
+                lastSegReq = { range: lastAskedRange + "（响应没给 content-range）",
+                               want: q ? (Number(q[2]) - Number(q[1]) + 1) : 0,
+                               got: got, uri: response.uri || "", ranged: false };
             });
         } catch (e) { log("段级仪表装不上：" + e.message); }
 
@@ -948,7 +1167,33 @@ var Player = (function () {
     var LESSON_TTL = 6 * 3600 * 1000;
     var LESSON_CAP = 100;
     var lessonFamily = "";   /* soft first-choice for the current video */
-    var lastSegReq = null;   /* last segment request/response, for the probe */
+    var lastSegReq = null;   /* last segment response, measured against itself */
+    var lastAskedRange = ""; /* only for responses that carry no content-range */
+
+    /* Counts, not pairs. The question at a stall is whether the player is still
+     * asking for bytes, and pairing requests to responses is what this file has
+     * already got wrong once today — two counters and two timestamps answer it
+     * with nothing to mismatch:
+     *
+     *   发出 == 回来, 最后一次发出在 12 秒前  → Shaka stopped asking. Nothing is
+     *       hanging; the fault is on this side (the buffer logic, the index, the
+     *       element) and tearing down to rebuild is the right response.
+     *   发出 > 回来, 最后一次回来在 12 秒前   → a request went out and nothing came
+     *       back. The connection is hanging, or the CDN is sitting on it — and the
+     *       eight-way probe fired in the same breath says which.
+     *
+     * Those two want opposite fixes (rebuild at once vs back off and wait), and
+     * this session has been arguing between them without the one measurement
+     * that separates them. */
+    var segStarted = 0, segFinished = 0, segLastStart = 0, segLastFinish = 0;
+
+    function segTraffic() {
+        var now = new Date().getTime();
+        return "分段请求 发出=" + segStarted + " 回来=" + segFinished +
+               " 在飞=" + Math.max(0, segStarted - segFinished) +
+               " 最后一次发出=" + (segLastStart ? ((now - segLastStart) / 1000).toFixed(1) + "s前" : "无") +
+               " 最后一次回来=" + (segLastFinish ? ((now - segLastFinish) / 1000).toFixed(1) + "s前" : "无");
+    }
 
     function readLessons() {
         var now = new Date().getTime(), keep = {}, k;
@@ -1267,7 +1512,29 @@ var Player = (function () {
                 "B 收到 " + lastSegReq.got + "B" +
                 (lastSegReq.got < lastSegReq.want ? "（短了——确实是半截）" : "（完整）"));
         }
+        /* Is anyone still asking? Printed at every rescue, because it is the one
+         * thing that separates "the wire went quiet" from "we went quiet". */
+        log(segTraffic());
         probeStalledStream();
+        /* Alongside the probe, and at most once a minute so a ladder storm does
+         * not repeat it seven times: the probe says the bytes are reachable,
+         * this says over what — and whether the connection the player was using
+         * is the same kind of connection the probe just succeeded on. */
+        if (now - transportToldAt > 60000) {
+            transportToldAt = now;
+            tellTransport("卡住时");
+            /* The one that settles the argument this session has been having.
+             * The claim on the table is that the CDN refuses this client's
+             * bursts — single requests pass, streams of them die. If eight at
+             * once come back 206 in a hundred milliseconds *while the player is
+             * getting nothing*, that claim is dead and the fault is on this side
+             * of the wire: a socket hung open, or Shaka not asking. Once per app
+             * run, eight kilobytes; the answer is worth more than the bytes. */
+            if (!shapeProbedStall) {
+                shapeProbedStall = true;
+                probeTransportShape("卡住时");
+            }
+        }
 
         /* From where the viewer actually got to, not from the original start —
          * this failure arrives mid-playback, and restarting the episode is a
