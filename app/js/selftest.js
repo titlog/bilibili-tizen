@@ -124,6 +124,33 @@ var SelfTest = (function () {
         return bad.length ? ("这些分区取不到内容：" + bad.join("、")) : null;
     }
 
+    /* The end-of-video chooser, checked and then immediately disarmed.
+     *
+     * The countdown is eight seconds and the video reaches its end somewhere
+     * between five and nine seconds after the seek, so any step that *waits* a
+     * fixed time and then presses a key is racing it: the 19:09 run found the
+     * counter at 1, autoplay fired inside the 900ms before the next step, and
+     * four later steps went red about a screen the run had already left. So the
+     * press that stops the countdown happens in the same step as the check that
+     * finds the screen — nothing can expire in between. */
+    function checkChooser() {
+        var f = document.querySelector("#nextup .focusable.focused");
+        if (!f || f.id !== "nextup-go") { return "焦点没有落在排队的那个视频上"; }
+        var n = document.getElementById("nextup-count");
+        if (!n || !/^\d+$/.test(n.textContent)) { return "倒计时没有在走"; }
+        var row = document.getElementById("nextup-more");
+        var cards = count("#nextup-related .card");
+        if (row && row.className.indexOf("hidden") >= 0) {
+            post("即将播放：这个视频没有相关推荐，只有中间那一张");
+            window.__stNoRelated = true;
+            return null;
+        }
+        post("即将播放：相关推荐 " + cards + " 张，倒计时 " + n.textContent);
+        if (!cards) { return "相关推荐那一行在，但一张卡都没有"; }
+        key(KEY.DOWN);
+        return null;
+    }
+
     var steps = [
         ["首页加载出卡片", 3500, function () {
             return count("#screen .card") > 0 ? null : "网格里没有任何卡片";
@@ -142,6 +169,23 @@ var SelfTest = (function () {
             var n = row.querySelectorAll(".card").length;
             post("续播行 " + n + " 张");
             return n ? null : "续播行在，但一张卡都没有";
+        }],
+        /* Off the resume strip and into the feed before anything is played. Two
+         * reasons, both learned the hard way elsewhere in this file: the strip's
+         * cards carry a `data-i` into a *different* array, so probeStream would
+         * measure a video nobody is playing; and this run now watches its video
+         * to the end, which would mark whatever the viewer was halfway through
+         * as finished and take it out of 继续观看. A test that eats the viewer's
+         * place in a series is worse than no test. */
+        ["焦点从续播行移进推荐网格", 400, function () {
+            var f = document.querySelector("#screen .card.focused");
+            if (f && f.parentNode && f.parentNode.parentNode &&
+                    f.parentNode.parentNode.id === "resume-row") {
+                key(KEY.DOWN);
+            }
+            var now = document.querySelector("#screen .card.focused");
+            return (now && now.parentNode && now.parentNode.id === "feed-grid")
+                ? null : "焦点没有落在推荐网格的卡片上";
         }],
         ["探测流地址", 200, function () { probeStream(); probeZones(); return null; }],
         ["等待探测结果", 4000, function () { return null; }],
@@ -248,14 +292,22 @@ var SelfTest = (function () {
             window.__stSeekTo = t;
             return t > 120 ? null : "远距离拖动之后位置只有 " + t + "s";
         }],
-        ["跨区之后确实播得下去", 7000, function () {
+        /* Fifteen seconds, because a far seek is one of the places a web-token
+         * 403 shows up, and the strong-token rescue behind it measured 13s on
+         * 2026-08-15 (403 → app endpoint → self-read sidx for twelve tiers →
+         * rebuild). At 7s this step checked in the same second playback resumed
+         * and reported 「那里没有缓冲到」 — a confident, specific, wrong diagnosis
+         * of a player that was fine, which is the failure mode this file is
+         * least allowed to have. The message now says what it actually knows. */
+        ["跨区之后确实播得下去", 15000, function () {
             if (!window.__stFar) { return null; }
             var t = secs(document.getElementById("player-pos").textContent);
             /* If the jump was refused or nothing buffered there, the readout
              * sits exactly where the scrub left it and never advances. */
             return t > window.__stSeekTo
                 ? null
-                : "跳到 " + window.__stSeekTo + "s 后进度不前进（现在 " + t + "s）——那里没有缓冲到";
+                : "跳到 " + window.__stSeekTo + "s 后十五秒内进度没前进（现在 " + t +
+                  "s）——要么那里取不到字节，要么救援还没跑完，去日志看这段时间有没有 403/强令牌";
         }],
         ["确认键暂停", 600, function () {
             key(KEY.ENTER);
@@ -280,8 +332,61 @@ var SelfTest = (function () {
             if (visible("shell")) { return "唤醒把正在播放的视频掀掉了"; }
             return null;
         }],
-        ["返回键退出播放", 500, function () { key(KEY.RETURN); return null; }],
-        ["回到首页网格", 3500, function () {
+        /* The end-of-video screen, which no key press can reach inside a run
+         * this short — so the video is sent to four seconds from its end and the
+         * real `ended` event does the rest. It shipped on 08-15 having never run
+         * on the television once. */
+        ["跳到片尾，让视频自己播完", 800, function () {
+            if (typeof window.__stNearEnd !== "function") { return "没有 __stNearEnd 这个入口"; }
+            return window.__stNearEnd() ? null : "拿不到时长，跳不过去";
+        }],
+        ["播完后出现「即将播放」界面", 6000, function () {
+            if (!visible("nextup")) {
+                window.__stNextLate = true;
+                post("即将播放界面还没出现，再等一轮");
+                return null;
+            }
+            return checkChooser();
+        }],
+        ["（慢的话再等一轮）", 3500, function () {
+            if (!window.__stNextLate) { return null; }
+            if (!visible("nextup")) { return "视频播完了但没有出现即将播放界面"; }
+            return checkChooser();
+        }],
+        ["下键之后焦点在相关推荐里，倒计时停住", 600, function () {
+            if (window.__stNoRelated) { post("跳过：这个视频没有相关推荐"); return null; }
+            if (!visible("nextup")) {
+                return "即将播放界面在按下键之后不见了——倒计时抢先开播了下一个";
+            }
+            if (!document.querySelector("#nextup-related .card.focused")) {
+                return "按下键没有走进相关推荐那一行";
+            }
+            if (document.getElementById("nextup-count")) {
+                return "走进相关推荐了，倒计时却还在跑——它会从观众手底下自己开播";
+            }
+            return null;
+        }],
+        ["返回键从即将播放界面退出", 900, function () { key(KEY.RETURN); return null; }],
+        ["即将播放界面收干净了", 700, function () {
+            if (visible("nextup")) { return "即将播放界面没有收起来"; }
+            /* If autoplay won the race anyway, the run is now inside the next
+             * video and every later step would fail about a screen nobody is
+             * on. One press back out, and say so — a cascade of red steps is a
+             * worse report than one honest note. */
+            if (!visible("shell")) {
+                post("提示：倒计时抢先开播了下一个，按返回退出");
+                key(KEY.RETURN);
+            }
+            return null;
+        }],
+
+        /* Six seconds, not three and a half: what this waits for is no longer a
+         * cached grid being restored but a live feed request — payOwedWake
+         * clears the cache and refetches, and the wake path is allowed one
+         * silent three-second retry on top. At 3500ms a slow-but-healthy fetch
+         * failed the step with 「重刷没补上」, which is a confident, specific and
+         * wrong diagnosis — worse than no step at all. */
+        ["回到首页网格", 6000, function () {
             if (!visible("shell")) { return "没有回到浏览界面"; }
             if (!count("#screen .card")) { return "回来后网格是空的"; }
             var f = document.querySelector("#screen .card.focused");

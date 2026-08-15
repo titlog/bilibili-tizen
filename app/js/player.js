@@ -179,11 +179,21 @@ var Player = (function () {
         var end = (v.currentTime || 0) + bufferedAhead(v);
         if (end > watchdogSeen + 0.3) { watchdogSeen = end; watchdogAt = now; return; }
 
-        /* Adaptive patience: an incident already in progress and a screen that
-         * has never shown a frame both get 10 seconds; a healthy mid-play
-         * stall keeps 15, because a false fire there burns a ladder rung on a
-         * video that was fine. */
-        var need = (incidentAt || !marks || marks.playing === undefined) ? 10000 : 15000;
+        /* Adaptive patience. A screen that has never shown a frame gets 10
+         * seconds. Mid-play gets 14–15, and the reason changed on 2026-08-15:
+         * it is no longer only about not burning a ladder rung on a healthy
+         * video, it is about not preempting Shaka. Its connectionTimeout is 5s
+         * and its retry backoff 0.6s, so a hung request fails and gets tried
+         * again inside about eleven seconds — but only if nothing tears the
+         * player down first. The old value here was 10s during an incident,
+         * which meant the rebuild always won the race and the library's own
+         * recovery never ran once (the counters that evening: seven requests in
+         * flight, none answered, nothing new sent, and a rebuild every ten
+         * seconds feeding a connection pool that was already full).
+         *
+         * These three numbers are keyed to each other — see retryParameters. */
+        var need = (!marks || marks.playing === undefined) ? 10000
+                 : (incidentAt ? 14000 : 15000);
         if (now - watchdogAt < need) { return; }
         watchdogAt = now;
         log("卡住 " + Math.round(need / 1000) + " 秒无错误也无进展，当作断连走重载阶梯");
@@ -298,6 +308,16 @@ var Player = (function () {
                 byHost[host][p] = (byHost[host][p] || 0) + 1;
             }
             if (!seenAny) { return "还没有 CDN 请求可看"; }
+            /* Cleared after every read, so each line covers the window since the
+             * last one rather than the whole session. The buffer stops accepting
+             * entries at 250 and nothing else here clears it — every card
+             * thumbnail counts against that, and 我的 now paints up to a hundred
+             * of them, so a set that has browsed for a few minutes would have a
+             * buffer full of cover art and none of the segment requests that are
+             * actually stalling. A 「卡住时」 tally that is really a tally of
+             * startup cannot be compared with 「健康时」, which is the only reason
+             * both lines exist. */
+            try { performance.clearResourceTimings(); } catch (e2) {}
             var out = [];
             for (var h = 0; h < order.length; h++) {
                 var protos = byHost[order[h]], parts = [];
@@ -383,7 +403,17 @@ var Player = (function () {
              *   - genuinely parallel: all eight alike
              * The numbers are printed either way; the verdict is a reading of
              * them, and it says when it has none. */
-            var lateTwo = (durs[6] > medDur * 1.8 + 30) && (durs[7] > medDur * 1.8 + 30);
+            /* Averages, and a gentler multiplier than the first version's
+             * 1.8×+30ms — which was calibrated so tightly that the textbook
+             * six-connection shape (six at 100ms, two at 200ms) fell *through*
+             * it and printed 「不属于已知三种」. A rule that cannot fire for the
+             * signature it was written to catch is the same failure as having no
+             * rule: it reads later as 「从没见过 h1.1」 rather than 「规则漏了」. */
+            var firstSix = 0, lastTwo = 0, q;
+            for (q = 0; q < 6; q++) { firstSix += durs[q]; }
+            for (q = 6; q < 8; q++) { lastTwo += durs[q]; }
+            firstSix /= 6; lastTwo /= 2;
+            var lateTwo = lastTwo > firstSix * 1.5 + 20;
             var steps = [], stepSum = 0, s;
             for (s = 1; s < sorted.length; s++) {
                 steps.push(sorted[s] - sorted[s - 1]);
@@ -455,6 +485,7 @@ var Player = (function () {
         marks = { t0: new Date().getTime() };
         markOrder = [];
         transportTold = false;   /* one transport line per video, not per seek */
+        resetSegTraffic();
     }
 
     function mark(name) {
@@ -1017,8 +1048,50 @@ var Player = (function () {
                  * dozen rapid ones. Six attempts inside a second and a half all
                  * land within that window and all fail, and the video is
                  * declared unplayable when it is merely unlucky. */
+                /* connectionTimeout and stallTimeout are the 2026-08-15 finding,
+                 * and they are set here to fire *before* our own watchdog.
+                 *
+                 * What was measured that evening, with the segment counters that
+                 * had just been added: at every stall, `发出=176 回来=169 在飞=7`
+                 * — six or seven requests out and never answered, nothing new
+                 * sent for twelve seconds, while a plain XHR to the same host at
+                 * the same offset returned 206 in 93ms. So the host was alive and
+                 * the bytes were there; what was dead were the connections
+                 * already open, hanging without ever erroring (this platform
+                 * reports a cut connection as a normal end). Six is not a
+                 * coincidence: it is HTTP/1.1's per-host limit, so the hung
+                 * requests were holding the whole pool and nothing else could
+                 * even start.
+                 *
+                 * Shaka is built for this — fail the request, back off, retry,
+                 * move down the BaseURL list — but its own defaults are
+                 * connectionTimeout 10s / stallTimeout 5s, and our watchdog tore
+                 * the player down at 10s. It never once got to try. The rebuild
+                 * then queued a fresh burst into the same exhausted pool, which
+                 * is the loop the viewer sees as a stutter every ten seconds.
+                 *
+                 * 6s and 5s leave room for a failure and one retry (6 + 0.6 +
+                 * whatever the second attempt needs) inside the watchdog's 14s.
+                 * The three numbers are keyed to each other — change one and
+                 * check the others.
+                 *
+                 * connectionTimeout is the risky one and 6s is a compromise, not
+                 * a measurement: it bounds time to *first byte*, and this CDN's
+                 * documented worst case is a range its edge has never cached,
+                 * which goes back to origin and is thirty times slower when it
+                 * answers at all. A first version of this set it to 5s purely
+                 * from the arithmetic above without checking it against that.
+                 * Healthy time-to-first-byte here measures 68–467ms, so 6s is
+                 * two orders of margin for the normal case; if deep seeks into
+                 * long uploads start failing where they used to merely take a
+                 * while, **this is the number to raise**, and Shaka moving down
+                 * the BaseURL list on failure is part of why failing fast is not
+                 * obviously worse than waiting. stallTimeout stays at Shaka's
+                 * own 5s: a cold range is slow to start, not slow between
+                 * chunks, so that one is not the cold-range risk. */
                 retryParameters: { maxAttempts: 7, baseDelay: 600, backoffFactor: 1.6,
-                                   fuzzFactor: 0.5, timeout: 20000 },
+                                   fuzzFactor: 0.5, timeout: 20000,
+                                   connectionTimeout: 6000, stallTimeout: 5000 },
                 /* Both numbers are the official web player's, measured off it
                  * on 2026-08-03 and adopted on 08-09. The rule they follow:
                  * where the web player's behaviour is known, match it — it is
@@ -1186,6 +1259,20 @@ var Player = (function () {
      * this session has been arguing between them without the one measurement
      * that separates them. */
     var segStarted = 0, segFinished = 0, segLastStart = 0, segLastFinish = 0;
+
+    /* Reset per session, or 「在飞」 is a lie that only ever grows. Every seek and
+     * every adaptation switch aborts requests that are already out, and an
+     * aborted request increments 发出 and never increments 回来 — so without
+     * this, a viewer who scrubs three times gets 「在飞=7」 reported at the next
+     * stall with nothing actually in flight, which reads as exactly the
+     * diagnosis it is not. Caught in review the same evening the counter was
+     * added, and it matters more than usual because this number is the evidence
+     * behind the connectionTimeout change: the 08-15 18:31 sample survives it
+     * (6→7→7→7 across three rebuilds, not 6→12→18, so those were the same hung
+     * requests rather than accumulated debris) but that was luck, not design. */
+    function resetSegTraffic() {
+        segStarted = 0; segFinished = 0; segLastStart = 0; segLastFinish = 0;
+    }
 
     function segTraffic() {
         var now = new Date().getTime();
@@ -1795,6 +1882,11 @@ var Player = (function () {
         var startAt = startMs > 1000 ? startMs / 1000 : undefined;
         shakaOp = shakaOp.then(function () {
             if (gen !== mseGeneration) { return null; }
+            /* New manifest, new accounting: unload() aborts whatever the last
+             * one had in flight, and those aborts never reach a response
+             * filter. Every rebuild rung would otherwise leave its debris in
+             * 在飞 and the next stall would read as a hung connection. */
+            resetSegTraffic();
             return player.load(url, startAt);
         }).then(function () {
             try { URL.revokeObjectURL(url); } catch (e) {}

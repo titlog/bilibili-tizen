@@ -481,9 +481,17 @@
      * be deeper, page it in as the focus nears the end the way the feed does —
      * do not simply raise this. */
     var HISTORY_CAP = 100;
+    /* The first paint is local-only and exists so the screen is never empty; it
+     * is replaced a round trip later by the merged list. Building the full
+     * hundred twice makes the open *slower* than the old forty-card version it
+     * was meant to improve on — a hundred <img> elements go on the wire the
+     * moment they exist, down a pipe this set serves one at a time. Two screens'
+     * worth is enough to look full while the real list is on its way. */
+    var HISTORY_FIRST_PAINT = 24;
 
-    function capHistory(items) {
-        return items.length > HISTORY_CAP ? items.slice(0, HISTORY_CAP) : items;
+    function capHistory(items, limit) {
+        var n = limit || HISTORY_CAP;
+        return items.length > n ? items.slice(0, n) : items;
     }
 
     /* bilibili's own history, held briefly. Two screens want it — the home
@@ -492,6 +500,15 @@
      * startup so the home screen has it by the time the feed paints, rather
      * than inserting a row under someone who has already started navigating. */
     var serverHistory = { at: 0, items: null };
+
+    /* Callers waiting on the chain that is already running. Without this, three
+     * pages become six: `freshHome()` clears the cache and then both it and the
+     * `loadFeed` it calls ask for history, and neither can see the other's
+     * request — six round trips down a pipe measured as strictly serialized, at
+     * the one moment (a wake) this set's network is documented to be slowest.
+     * The settled-cache check cannot cover it, because during the fetch there
+     * is nothing settled to check. */
+    var historyWaiters = null;
 
     function fetchServerHistory(onOk, onFail) {
         /* Only a complete answer is worth reusing: a cached first page would
@@ -502,12 +519,25 @@
             onOk(serverHistory.items, serverHistory.items.length, true);
             return;
         }
-        /* Called once per page with everything so far — the cache and both
-         * callers take the growing list as it comes. */
+        if (historyWaiters) { historyWaiters.push({ ok: onOk, fail: onFail }); return; }
+        historyWaiters = [{ ok: onOk, fail: onFail }];
+
+        /* Called once per page with everything so far — the cache and every
+         * caller take the growing list as it comes. `done` is forwarded: 我的
+         * uses it to repaint on the first page and the last one rather than on
+         * all three. */
         API.history(function (items, rawCount, done) {
             serverHistory = { at: new Date().getTime(), items: items, complete: !!done };
-            onOk(items, rawCount, false);
-        }, onFail || function () {});
+            var list = historyWaiters || [];
+            if (done) { historyWaiters = null; }
+            for (var i = 0; i < list.length; i++) { list[i].ok(items, rawCount, !!done); }
+        }, function (why) {
+            var list = historyWaiters || [];
+            historyWaiters = null;
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].fail) { list[i].fail(why); }
+            }
+        });
     }
 
     /* Feeds are cached so that coming back from a video lands where the user
@@ -717,6 +747,13 @@
     function rememberPosition() {
         var c = feedCache[state.screen];
         if (!c) { return; }
+        /* Nothing about a screen nobody is looking at is worth recording. While
+         * the player or the end-of-video chooser is up, `#shell` is
+         * display:none and `screenEl.scrollTop` reads 0 — writing that over a
+         * remembered position keeps the deep card index and loses the scroll,
+         * so coming back focuses card #37 and then scrolls to the top, leaving
+         * the ring off screen. */
+        if (el("shell").className.indexOf("hidden") >= 0) { return; }
         /* Related videos in the player panel carry data-i too, so without this
          * picking one wrote its index over the feed's and returning landed on
          * an unrelated card. */
@@ -763,21 +800,44 @@
      * itself, and the end of playback when the wake was owed. */
     function freshHome() {
         closeIme(false);
+        /* closeIme hands focus to a `.key` — inside the screen the next line
+         * destroys. Focus on a detached node throws nothing and looks like a
+         * dead remote for as long as the load takes (and the wake path can add
+         * a silent three-second retry to that). The tab bar is never rebuilt,
+         * so it is somewhere real to stand until the grid paints. */
+        if (imeWasOpen) { Nav.reset("#tabs .tab"); }
         /* Every tab, not just this one: 热门 and the zones went stale in exactly
          * the same way, and each costs one request the first time it is opened
          * again rather than all of them now. */
         feedCache = {};
         serverHistory = { at: 0, items: null };
+        /* loadFeed's own arrival hook asks for the history — see
+         * refreshHistoryIfStale. Asking again here is what made it six requests
+         * instead of three. */
         loadFeed("rcmd", false, 1);
-        if (Auth.isLoggedIn()) {
-            fetchServerHistory(function () { maybeRefreshResumeRow(); });
-        }
     }
 
-    /* Called by stopPlayback, which is the one way back out of a video. */
+    /* Called by stopPlayback, which is the one way back out of a video.
+     *
+     * Returns true only when it has taken over the navigation — that is, when
+     * the screen behind the player is the feed. It used to return true always,
+     * and stopPlayback's early exit then threw away the 搜索 and 我的 branches
+     * with it: a viewer who searched for a series, opened an episode, and had
+     * the set sleep mid-episode pressed 返回 and landed on 推荐 with their
+     * results gone, though `state.results` was still in memory a function call
+     * away. Only the feed is stale; the screen the viewer chose is not ours to
+     * replace. Clearing the caches still happens either way, so coming back to
+     * 推荐 later refetches. */
     function payOwedWake() {
         if (!pendingWake) { return false; }
         pendingWake = false;
+        feedCache = {};
+        serverHistory = { at: 0, items: null };
+        if (state.screen === "search" || state.screen === "mine") {
+            report("lifecycle", "退出播放，缓存已清 —— 但观众停在" +
+                   (state.screen === "search" ? "搜索" : "我的") + "，屏幕不动它");
+            return false;
+        }
         report("lifecycle", "退出播放，把挂起期间欠下的首页重刷补上");
         freshHome();
         return true;
@@ -801,7 +861,15 @@
          * and backing out of that dead video would have handed back the morning's
          * feed with the cursor where it was — the very thing this removes. It is
          * paid at the end of playback instead. */
-        if (playing) {
+        /* `pendingNext` counts as playing here. The end-of-video chooser runs
+         * with `playing === null` — that is how it is built — so a wake during
+         * it used to fall straight through to freshHome, which repaints the
+         * hidden browse screen underneath and hands the ring to a card nobody
+         * can see, while 「即将播放」 is still up and still swallowing every key
+         * through handleNextKeys. A remote that looks dead in front of a screen
+         * that is still there. Owe it instead: 返回 from the chooser goes
+         * through stopPlayback, which pays it. */
+        if (playing || pendingNext) {
             pendingWake = true;
             report("lifecycle", "正在播放，先不动它 —— 退出播放时再补上重刷");
             return;
@@ -821,6 +889,18 @@
     /* No key press can produce a suspend/resume cycle, so the selftest reaches
      * the wake path through here. */
     window.__stWake = function () { lastWake = 0; wokeUp("自测模拟关机再开机", AWAY_MS); };
+
+    /* Nor can a key press make a video end — not inside a run that has to
+     * finish in a couple of minutes. The end-of-video screen went onto the
+     * television on 08-15 without ever having run there, which is the one thing
+     * this repository keeps promising not to do, so it gets a way in: jump to
+     * four seconds from the end and let the real `ended` event do the rest. */
+    window.__stNearEnd = function () {
+        var d = Player.durationMs();
+        if (!d) { return false; }
+        Player.seekTo(Math.max(0, d - 4000));
+        return true;
+    };
 
     function watchForWake() {
         /* Nothing is reported when the set goes away: the POST would be dialling
@@ -918,7 +998,12 @@
      * the user their usual keyboard rather than one invented here. */
     var imeOpen = false;
 
+    /* Whether the last closeIme actually closed something — freshHome needs to
+     * know, because closeIme's parting act is to put focus on a key. */
+    var imeWasOpen = false;
+
     function closeIme(commit) {
+        imeWasOpen = imeOpen;
         if (!imeOpen) { return; }
         imeOpen = false;
         var input = el("ime");
@@ -1299,9 +1384,17 @@
             }
         }
 
-        fetchServerHistory(function (items, raw) {
+        /* Painted on the first page and on the last, not on all three. Each
+         * paint rebuilds up to a hundred cards from innerHTML — a hundred
+         * <img> elements queued down a pipe that serves one request at a time —
+         * and re-runs the focus-recovery loop, so the ring hops as the list
+         * re-sorts under it. First page: the screen fills in one round trip.
+         * Last page: it is as deep as it is going to get. The middle one buys
+         * nothing anybody can see. */
+        var histPaints = 0;
+        fetchServerHistory(function (items, raw, done) {
             hist.done = true; hist.items = items; hist.raw = raw;
-            paintHistory();
+            if (histPaints === 0 || done) { histPaints++; paintHistory(); }
         }, function (why) {
             hist.done = true; hist.items = null; hist.why = why;
             paintHistory();
@@ -1336,7 +1429,7 @@
              * 24-part series produces one card for the lot — 40 looked like a
              * generous cap and read on the sofa as "the history is too short". */
             mine = Resume.recent(200);
-            shown = capHistory(mergeHistory(mine, []));
+            shown = capHistory(mergeHistory(mine, []), HISTORY_FIRST_PAINT);
             var h0 = el("hist");
             if (h0) {
                 if (shown.length) { paintCards(h0, shown); }
@@ -1608,6 +1701,7 @@
 
     var HINT = "确认键 播放/暂停 · 左右 快退/快进 · 下键 简介/相关 · 返回键 退出";
     var chromeTimer = null;
+    var bufferNoticeTimer = null;   /* a stall that outlasts this brings the banner back */
 
     /* A paused video should read as paused from the sofa, not just by a frozen
      * number in the corner. */
@@ -1974,6 +2068,24 @@
             if (more.length) {
                 el("nextup-more").className = "nextup-more";
                 paintCards(el("nextup-related"), more);
+                /* Rewired rather than left to paintCards, for two reasons the
+                 * shared version cannot know about. One: `fromPanel` — the
+                 * browse screen is hidden here, so rememberPosition would read
+                 * scrollTop as 0 and write that over the remembered feed
+                 * position while keeping the deep card index, which lands the
+                 * viewer at the top of the grid with the ring off screen. Two:
+                 * a video picked here belongs in `playedInChain`, or the
+                 * autoplay chain can queue it again later in the same evening —
+                 * that set exists for exactly that. */
+                var rcards = el("nextup-related").querySelectorAll(".card");
+                for (var rc = 0; rc < rcards.length; rc++) {
+                    (function (v) {
+                        rcards[rc].onselect = function () {
+                            if (v.bvid) { playedInChain[v.bvid] = 1; }
+                            playVideo(v, true);
+                        };
+                    })(more[Number(rcards[rc].getAttribute("data-i"))]);
+                }
             } else {
                 el("nextup-more").className = "nextup-more hidden";
             }
@@ -1984,8 +2096,14 @@
             Nav.focus(el("nextup-go"));
 
             var left = 8;
+            /* 「下键 挑别的」 only when there is something down there. Promising a
+             * key that does nothing is worse than not mentioning it: the press
+             * still stops the countdown, so following the instruction leaves the
+             * viewer on a frozen screen where autoplay was about to work. */
             el("nextup-hint").innerHTML = '<span id="nextup-count">' + left +
-                '</span> 秒后开始 &middot; 确认键 立即播放 &middot; 下键 挑别的 &middot; 返回键 退出';
+                '</span> 秒后开始 &middot; 确认键 立即播放' +
+                (more.length ? ' &middot; 下键 挑别的' : "") +
+                ' &middot; 返回键 退出';
             nextTimer = setInterval(function () {
                 left--;
                 var c = el("nextup-count");
@@ -2013,7 +2131,12 @@
          * queued video no matter which card the ring was on. */
         if (k === Nav.KEY.LEFT || k === Nav.KEY.RIGHT ||
                 k === Nav.KEY.UP || k === Nav.KEY.DOWN) {
-            stopCountdown();
+            /* Only when there is somewhere to go. With no related row there is
+             * exactly one card on this screen, so an arrow press moves nothing —
+             * and stopping the countdown for it would cancel autoplay on a press
+             * that visibly did nothing at all. */
+            var more = el("nextup-more");
+            if (more && more.className.indexOf("hidden") < 0) { stopCountdown(); }
             return false;
         }
         if (k === Nav.KEY.ENTER) { return false; }
@@ -2768,6 +2891,29 @@
             paintChapters();
         } else if (kind === "buffering") {
             el("player-hint").textContent = data ? "缓冲中…" : HINT;
+            /* 「缓冲中…」 is written inside the banner, and the banner is gone four
+             * seconds after the last keypress — so for a viewer who is simply
+             * watching, a stall has always been a frozen picture with nothing on
+             * screen to explain it. That window used to end at 10s when the
+             * watchdog fired and the ladder put 「网络不顺，正在自动重试…」 on the
+             * loading overlay; today's connectionTimeout change moved the
+             * watchdog to 14s so that Shaka's own retry gets a turn first, which
+             * quietly made the silent window longer. So the banner comes back by
+             * itself when a stall outlasts two and a half seconds — long enough
+             * that an ordinary buffer blip does not flash it up, short enough
+             * that nobody sits looking at a frozen frame wondering. It hides
+             * itself again once playback resumes, the way it always did. */
+            if (data) {
+                if (!bufferNoticeTimer) {
+                    bufferNoticeTimer = setTimeout(function () {
+                        bufferNoticeTimer = null;
+                        if (playing && !scrub) { showChrome(); }
+                    }, 2500);
+                }
+            } else if (bufferNoticeTimer) {
+                clearTimeout(bufferNoticeTimer);
+                bufferNoticeTimer = null;
+            }
         } else if (kind === "ended") {
             if (playing) {
                 Resume.finished(playing.detail.bvid, playing.cid);
