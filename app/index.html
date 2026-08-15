@@ -91,13 +91,23 @@
     </div>
 </div>
 
+<!-- The end of a video is a decision, not a notice: carry on with what is
+     queued, or pick something else. So the queued one sits in the middle where
+     the picture just was, and what else there is sits under it — reachable by
+     pressing down, which also stops the countdown. -->
 <div id="nextup" class="hidden">
-    <div class="nextup-label">即将播放</div>
-    <div class="nextup-body">
-        <img id="nextup-thumb" class="hidden" alt="">
-        <div class="nextup-title" id="nextup-title"></div>
+    <div class="nextup-main">
+        <div class="nextup-label">即将播放</div>
+        <div class="nextup-card focusable" id="nextup-go">
+            <img id="nextup-thumb" class="hidden" alt="">
+            <div class="nextup-title" id="nextup-title"></div>
+        </div>
+        <div class="nextup-hint" id="nextup-hint"><span id="nextup-count">8</span> 秒后开始 &middot; 确认键 立即播放 &middot; 返回键 退出</div>
     </div>
-    <div class="nextup-hint"><span id="nextup-count">5</span> 秒后开始 &middot; 确认键 立即播放 &middot; 返回键 取消</div>
+    <div class="nextup-more hidden" id="nextup-more">
+        <div class="section">相关推荐</div>
+        <div id="nextup-related"></div>
+    </div>
 </div>
 
 <div id="ime-wrap" class="hidden">

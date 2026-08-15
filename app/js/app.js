@@ -560,7 +560,10 @@
      * button, which costs a press and a focus jump, the next page is fetched as
      * the focus nears the end of what is already rendered. */
     function maybeLoadMore(focused) {
-        if (loadingMore || playing || optionsOpen) { return; }
+        /* pendingNext: the end-of-video chooser paints cards with a `data-i` of
+         * their own, and focus landing on one of those must not be read as the
+         * viewer reaching the end of the feed behind it. */
+        if (loadingMore || playing || optionsOpen || pendingNext) { return; }
         var cache = feedCache[state.screen];
         if (!cache || cache.exhausted) { return; }
         if (!focused || !focused.getAttribute || focused.getAttribute("data-i") === null) { return; }
@@ -992,7 +995,8 @@
     /* Search stopped at whatever one page returned. It pages like the feeds do,
      * from the same focus-nears-the-end trigger. */
     function maybeLoadMoreSearch(focused) {
-        if (loadingMore || playing || optionsOpen || state.screen !== "search") { return; }
+        if (loadingMore || playing || optionsOpen || pendingNext) { return; }
+        if (state.screen !== "search") { return; }
         if (!state.results || !focused || !focused.getAttribute) { return; }
         if (focused.getAttribute("data-i") === null) { return; }
         if (Number(focused.getAttribute("data-i")) < state.results.length - 6) { return; }
@@ -1957,18 +1961,62 @@
                 thumb.className = "";
             } else { thumb.className = "hidden"; }
 
+            /* What else there is, under the queued one. The list is already in
+             * hand — it was fetched during playback for the panel — so this
+             * costs four thumbnails and no round trip. The queued video itself
+             * is left out of it: it is already the big card above. */
+            var rel = (finished && finished.detail && finished.detail.related) || [];
+            var more = [];
+            for (var r = 0; r < rel.length && more.length < 4; r++) {
+                if (next.detail && rel[r].bvid === next.detail.bvid) { continue; }
+                more.push(rel[r]);
+            }
+            if (more.length) {
+                el("nextup-more").className = "nextup-more";
+                paintCards(el("nextup-related"), more);
+            } else {
+                el("nextup-more").className = "nextup-more hidden";
+            }
+
+            /* Focus is on the queued video, so 确认 still means "play it now"
+             * without anyone having to aim. */
+            el("nextup-go").onselect = playNext;
+            Nav.focus(el("nextup-go"));
+
             var left = 8;
-            el("nextup-count").textContent = left;
+            el("nextup-hint").innerHTML = '<span id="nextup-count">' + left +
+                '</span> 秒后开始 &middot; 确认键 立即播放 &middot; 下键 挑别的 &middot; 返回键 退出';
             nextTimer = setInterval(function () {
                 left--;
-                el("nextup-count").textContent = left;
+                var c = el("nextup-count");
+                if (c) { c.textContent = left; }
                 if (left <= 0) { playNext(); }
             }, 1000);
         });
     }
 
+    /* The countdown is a default, not a deadline. Any move of the focus is the
+     * viewer saying "wait, I want to pick" — so it stops there and then, and the
+     * screen stays up until they choose or press 返回. Without this, reaching
+     * the related row would start the queued video out from under them. */
+    function stopCountdown() {
+        if (!nextTimer) { return; }
+        clearInterval(nextTimer);
+        nextTimer = null;
+        el("nextup-hint").textContent = "确认键 播放 · 返回键 退出";
+    }
+
     function handleNextKeys(k) {
-        if (k === Nav.KEY.ENTER || k === Nav.KEY.PLAY_PAUSE) { playNext(); return true; }
+        if (k === Nav.KEY.PLAY_PAUSE) { playNext(); return true; }
+        /* Arrows and 确认 belong to Nav here: this screen is a chooser, and its
+         * cards carry their own onselect. Handling 确认 ourselves would play the
+         * queued video no matter which card the ring was on. */
+        if (k === Nav.KEY.LEFT || k === Nav.KEY.RIGHT ||
+                k === Nav.KEY.UP || k === Nav.KEY.DOWN) {
+            stopCountdown();
+            return false;
+        }
+        if (k === Nav.KEY.ENTER) { return false; }
         if (k === Nav.KEY.RETURN) {
             var finished = pendingNext.from;
             cancelNext();
@@ -2027,7 +2075,7 @@
     function showPlayerUi(on) {
         el("shell").className = on ? "hidden" : "";
         el("playerui").className = on ? "" : "hidden";
-        if (!on) { el("nextup").className = "hidden"; }
+        el("nextup").className = "hidden";   /* never survives either direction */
         if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
         if (on) { showChrome(); }
     }
@@ -2045,6 +2093,13 @@
          * own ending. */
         closeOptions();
         cancelScrub();
+        /* The end-of-video screen is one of the things a new playback tears
+         * down. Picking a related card from it calls straight in here, and
+         * leaving `pendingNext` set would keep every key going to
+         * handleNextKeys while the video played — the remote would look dead.
+         * Same rule as the rest: whatever starts a playback dismantles what was
+         * on screen before it, first. */
+        cancelNext();
         /* The handover from one video to the next is a teardown point too —
          * the least obvious one yet. Without the stop, the outgoing session
          * keeps playing for the ~300ms until playurl answers, and each of its
