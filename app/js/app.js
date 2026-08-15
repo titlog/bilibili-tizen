@@ -471,6 +471,21 @@
         return out;
     }
 
+    /* There is a ceiling, and it is about thumbnails rather than about rows.
+     * Every card fetches a picture, and 08-15 measured this set completing
+     * concurrent requests to one host strictly one at a time, about 21ms apart —
+     * so a screen of 270 cards is 270 queued image requests down the same pipe
+     * the player uses. A hundred is roughly six seconds of that at worst, deep
+     * enough that the complaint it answers ("历史太少") does not come back, and
+     * shallow enough to stay a list rather than a download. If it ever needs to
+     * be deeper, page it in as the focus nears the end the way the feed does —
+     * do not simply raise this. */
+    var HISTORY_CAP = 100;
+
+    function capHistory(items) {
+        return items.length > HISTORY_CAP ? items.slice(0, HISTORY_CAP) : items;
+    }
+
     /* bilibili's own history, held briefly. Two screens want it — the home
      * strip and 我的 — and asking twice inside a minute for the same two dozen
      * entries is a request a television has no reason to make. Fetched once at
@@ -479,12 +494,18 @@
     var serverHistory = { at: 0, items: null };
 
     function fetchServerHistory(onOk, onFail) {
-        if (serverHistory.items && (new Date().getTime() - serverHistory.at) < 60000) {
+        /* Only a complete answer is worth reusing: a cached first page would
+         * pin the list at 24 entries for the next minute, which is the very
+         * shortfall the paging was added for. */
+        if (serverHistory.items && serverHistory.complete &&
+                (new Date().getTime() - serverHistory.at) < 60000) {
             onOk(serverHistory.items, serverHistory.items.length, true);
             return;
         }
-        API.history(function (items, rawCount) {
-            serverHistory = { at: new Date().getTime(), items: items };
+        /* Called once per page with everything so far — the cache and both
+         * callers take the growing list as it comes. */
+        API.history(function (items, rawCount, done) {
+            serverHistory = { at: new Date().getTime(), items: items, complete: !!done };
             onOk(items, rawCount, false);
         }, onFail || function () {});
     }
@@ -1230,7 +1251,7 @@
                 keep = was ? was.bvid : "";
             }
 
-            shown = mergeHistory(mine, hist.items);
+            shown = capHistory(mergeHistory(mine, hist.items));
             if (!shown.length) {
                 h.innerHTML = '<div class="empty">' + (hist.raw
                     ? "bilibili 上这 " + hist.raw + " 条都不是普通视频（番剧/直播/专栏），这里打不开"
@@ -1279,8 +1300,12 @@
                     '<div id="hist-note"></div></div>';
             screenEl.innerHTML = html;
 
-            mine = Resume.recent(40);
-            shown = mergeHistory(mine, []);
+            /* The local store keeps 300; asking for 40 was throwing away most of
+             * it. One card per video after the merge, so a set that watches a
+             * 24-part series produces one card for the lot — 40 looked like a
+             * generous cap and read on the sofa as "the history is too short". */
+            mine = Resume.recent(200);
+            shown = capHistory(mergeHistory(mine, []));
             var h0 = el("hist");
             if (h0) {
                 if (shown.length) { paintCards(h0, shown); }

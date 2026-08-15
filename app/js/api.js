@@ -397,8 +397,36 @@ var API = (function () {
          * here, so they are dropped; `rawCount` still counts them, which is how
          * "24 entries, none of them openable" stays distinguishable from "the
          * request failed". */
-        history: function (onOk, onFail) {
-            getJson(BASE + "/x/web-interface/history/cursor?ps=24", function (d) {
+        /* Paged, because one page is 24 entries and a set that is also merging
+         * its own record against them ends up showing far fewer than either
+         * side has — the same video counts once. `history/cursor` pages by
+         * cursor rather than by number: the answer carries `max`/`view_at`, and
+         * handing both back asks for what comes after that point.
+         *
+         * Progressive on purpose: `onOk` fires after every page with everything
+         * so far, so the first two dozen are on screen in one round trip and the
+         * list grows underneath. Both callers are built for being called again —
+         * 我的 repaints and finds the focused card by bvid, the home strip only
+         * takes the first four. Waiting for all three pages before painting
+         * anything would trade a visible list for a spinner. */
+        history: function (onOk, onFail, pages) {
+            var want = pages || 3, got = [], rawTotal = 0, page = 0;
+
+            function fetchPage(cursor) {
+                var url = BASE + "/x/web-interface/history/cursor?ps=24";
+                if (cursor && cursor.max) {
+                    url += "&max=" + cursor.max + "&view_at=" + (cursor.view_at || 0) +
+                           "&business=" + encodeURIComponent(cursor.business || "archive");
+                }
+                getJson(url, function (d) { take(d); }, function (why) {
+                    /* A later page failing is not the list failing: what has
+                     * already arrived is good, and the viewer would rather have
+                     * two dozen entries than an error where a list was. */
+                    if (page) { onOk(got, rawTotal, true); } else { onFail(why); }
+                });
+            }
+
+            function take(d) {
                 var all = d.list || [];
                 var out = [];
                 for (var i = 0; i < all.length; i++) {
@@ -436,8 +464,16 @@ var API = (function () {
                         at: (x.view_at || 0) * 1000
                     });
                 }
-                onOk(out, all.length);
-            }, onFail);
+                page++;
+                rawTotal += all.length;
+                got = got.concat(out);
+                var cur = d.cursor || {};
+                var done = page >= want || !all.length || !cur.max;
+                onOk(got, rawTotal, done);
+                if (!done) { fetchPage(cur); }
+            }
+
+            fetchPage(null);
         },
 
         /* Where this account left this particular video, straight from
