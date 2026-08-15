@@ -99,7 +99,7 @@ var SelfTest = (function () {
 
     function probeZones() {
         zoneProbe = {};
-        var want = [["美食", 1020], ["舞蹈", 1004], ["人工智能", 1011], ["科技数码", 1012]];
+        var want = [["美食", 1020], ["舞蹈", 1004]];
         for (var i = 0; i < want.length; i++) {
             (function (name, rid) {
                 API.ranking(rid, function (items) {
@@ -114,7 +114,7 @@ var SelfTest = (function () {
      * code 0 with nothing in it rather than an error. */
     function zoneVerdict() {
         if (!zoneProbe) { return "分区探测没有跑"; }
-        var bad = [], names = ["美食", "舞蹈", "人工智能", "科技数码"], line = [];
+        var bad = [], names = ["美食", "舞蹈"], line = [];
         for (var i = 0; i < names.length; i++) {
             var v = zoneProbe[names[i]];
             line.push(names[i] + "=" + (v === undefined ? "没回来" : v));
@@ -145,7 +145,7 @@ var SelfTest = (function () {
         }],
         ["探测流地址", 200, function () { probeStream(); probeZones(); return null; }],
         ["等待探测结果", 4000, function () { return null; }],
-        ["四个分区都有内容", 100, zoneVerdict],
+        ["分区都有内容", 100, zoneVerdict],
         ["按确认键开始播放", 200, function () { key(KEY.ENTER); return null; }],
         ["播放器接管画面", 6000, function () {
             if (visible("shell")) { return "浏览界面没有让位给播放器"; }

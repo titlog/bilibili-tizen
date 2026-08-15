@@ -539,7 +539,13 @@
      * the zone page and read the `region_id` its own requests carry — the
      * search and ranking endpoints will not tell you, and guessing by name
      * finds nothing. */
-    var ZONES = { food: 1020, dance: 1004, ai: 1011, tech: 1012 };
+    /* 人工智能 (1011) and 科技数码 (1012) were tabs until 2026-08-15 and were
+     * taken out of the bar because nobody in this room watches them. The ids
+     * stay written down: they cost nothing here, and there is no public list of
+     * partition ids to look them up in again — each one has to be read off the
+     * website's own requests. Adding a tab back is one line in index.html plus
+     * one entry here. */
+    var ZONES = { food: 1020, dance: 1004 };
 
     /* ranking answers with its full 100 in one go and has no second page. */
     function fetchPage(kind, page, onOk, onFail) {
