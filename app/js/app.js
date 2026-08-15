@@ -606,9 +606,30 @@
         }
     }
 
+    /* Coming back to the home tab is the moment to notice that the phone has
+     * been watching. Nothing polls: a set left on the home screen never asks
+     * again, so an evening's worth of phone viewing was invisible until the app
+     * was restarted. This asks once, on arrival, and only when what is in hand
+     * has gone stale — five minutes, so switching tabs about does not turn into
+     * a request per press, and an idle television still sends nothing at all.
+     *
+     * The repaint keeps the existing rule: only while the cursor is still on the
+     * first card. With it parked deep in the grid the row waits for the next
+     * rebuild — a strip that re-lays itself out under someone who is reading is
+     * worse than a strip that is five minutes old. */
+    var HISTORY_STALE_MS = 300000;
+
+    function refreshHistoryIfStale() {
+        if (!Auth.isLoggedIn()) { return; }
+        if (serverHistory.items && serverHistory.complete &&
+                (new Date().getTime() - serverHistory.at) < HISTORY_STALE_MS) { return; }
+        fetchServerHistory(function () { maybeRefreshResumeRow(); });
+    }
+
     function loadFeed(kind, restore, retries) {
         state.screen = kind;
         markTab();
+        if (kind === "rcmd") { refreshHistoryIfStale(); }
         var req = ++feedRequest;
         newView();
 
@@ -1966,10 +1987,35 @@
     function showChrome() {
         if (!playing) { return; }
         el("playerui").className = "";
+        armChromeHide(4000);
+    }
+
+    /* Why this is a loop and not a single timer.
+     *
+     * It used to be one shot: four seconds later, hide it *if* the video was not
+     * paused — and `Player.isPaused()` reads the media element, which reports
+     * paused for the whole of a load. A start slower than four seconds therefore
+     * met a timer that declined to hide, and nothing re-armed it: the banner then
+     * sat across the picture for the rest of the video, until some key press
+     * happened to call showChrome again. Slow starts are not rare — a rescue or
+     * a strong-token rebuild has been measured at 10 and 14 seconds to first
+     * frame — so the commonest way to get a stuck banner was to have had a bad
+     * start, which is also the moment the viewer is least inclined to forgive it.
+     *
+     * Two fixes, and they are the same two the stall watchdog needed on 08-09:
+     * ask an explicit flag rather than the element (`userPaused` is what the
+     * viewer pressed; `element.paused` is also true while loading), and when the
+     * answer is "not yet", look again instead of giving up. A viewer who paused
+     * on purpose keeps the banner and `setPaused(false)` re-arms this. */
+    function armChromeHide(after) {
         if (chromeTimer) { clearTimeout(chromeTimer); }
         chromeTimer = setTimeout(function () {
-            if (playing && !Player.isPaused()) { el("playerui").className = "hidden"; }
-        }, 4000);
+            chromeTimer = null;
+            if (!playing || scrub || optionsOpen) { return; }
+            if (Player.userPaused()) { return; }
+            if (Player.isPaused()) { armChromeHide(1000); return; }   /* still loading */
+            el("playerui").className = "hidden";
+        }, after);
     }
 
     function showPlayerUi(on) {

@@ -2069,6 +2069,10 @@ var Player = (function () {
             if (mode === "avplay") { try { webapis.avplay.play(); } catch (e) {} }
             else if (mode === "mse") { el("html5-video").play(); }
         },
+        /* What the viewer pressed, as opposed to what the element reports — the
+         * element is paused for the whole of a load, and code that hides chrome
+         * or watches for stalls has to tell those two apart. */
+        userPaused: function () { return userPaused; },
         isPaused: function () {
             if (mode === "avplay") {
                 try { return webapis.avplay.getState() === "PAUSED"; } catch (e) { return false; }
