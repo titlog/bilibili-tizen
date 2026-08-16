@@ -243,7 +243,20 @@ var API = (function () {
     function normalise(v) {
         return {
             bvid: v.bvid,
-            aid: v.aid,
+            /* The home feed calls it `id`; popular, ranking and related all call
+             * it `aid` (verified against all four endpoints on 2026-08-16, and
+             * none of the three carries an `id` of its own, so the fallback
+             * cannot pick up a different number by mistake). Worth the extra
+             * term: an aid that is missing here is not missing harmlessly —
+             * the app-endpoint strong token is keyed on it, and the one place
+             * that token is needed is a video that failed to start, which is
+             * also the one place view() has not yet run to fill it in. Every
+             * video opened from the home feed was therefore unable to reach
+             * the 08-11 fix at all (16:16 on 08-16: three videos dead on
+             * 「DASH 全灭」 while a fourth, already playing and so already
+             * holding an aid, recovered through the strong token in the same
+             * minute). */
+            aid: v.aid || v.id || 0,
             /* Kept when the feed supplies it, but most do not — Resume therefore
              * keys on bvid alone for the card marker. */
             cid: v.cid || null,

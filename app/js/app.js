@@ -447,6 +447,17 @@
              * so for half a minute after watching P3 here the phone's older P7
              * is still the further of the two. Carrying it over would send the
              * next press back to P7. Across parts the recent side decides. */
+            /* aid belongs to the archive, not to the part, so it carries across
+             * even when the two sides name different parts — and it has to
+             * carry: the local card never has one (resume.js does not store it)
+             * while the server's always does, so every video watched on this
+             * television most recently — which is to say the whole top of 继续
+             * 观看 — reached the player without an aid, and so without a way to
+             * mint the app-endpoint strong token when the CDN refuses the web
+             * one. withAid() now buys it back with a round trip; this saves the
+             * round trip. */
+            if (!winner.aid && loser.aid) { winner.aid = loser.aid; }
+
             var samePart = !winner.cid || !loser.cid || winner.cid === loser.cid;
             if (samePart) {
                 if ((loser.progressMs || 0) > (winner.progressMs || 0)) {
@@ -2663,6 +2674,30 @@
         }
     }
 
+    /* The app endpoint mints its stream token from an aid, and an aid is not
+     * always in hand — the strong-token branch explains why the videos that
+     * need it are precisely the ones least likely to have one. One view() round
+     * trip, paid only on the 403 path and never on a healthy start. Fills the
+     * aid back into the session so a second 403 on the same video does not pay
+     * it twice, and patches the field rather than replacing detail wholesale:
+     * that object is also carrying `related`, which the finished-screen grid
+     * reads. */
+    function withAid(session, cb) {
+        var d = session.detail;
+        if (d && d.aid) { cb(d.aid); return; }
+        if (!d || !d.bvid) { cb(0); return; }
+        report("player", "手里没有 aid（这个入口的卡片不带），先用 bvid 换一次");
+        API.view(d.bvid, function (full) {
+            if (playing !== session) { return; }
+            if (full && full.aid) { session.detail.aid = full.aid; }
+            cb((full && full.aid) || 0);
+        }, function (why) {
+            if (playing !== session) { return; }
+            report("player", "用 bvid 换 aid 失败（" + why + "）");
+            cb(0);
+        });
+    }
+
     /* Ask a plain XHR for the same bytes AVPlay just refused. A 206 here means
      * the url and the network are fine and the fault is in how AVPlay asks —
      * which is the distinction that took several deploys to establish the first
@@ -3000,7 +3035,7 @@
             if (playing.route === "dash" && !playing.triedStrong &&
                     String(data).indexOf("403") >= 0 &&
                     playing.dashReady && !playing.dashReady.strong &&
-                    playing.detail && playing.detail.aid) {
+                    playing.detail && (playing.detail.aid || playing.detail.bvid)) {
                 /* The real playhead — lastKnownPosition freezes at 0 through the
                  * stall that precedes a 403 storm, and 2026-08-11 that rebuilt
                  * the strong manifest from 0:00 instead of where the viewer was. */
@@ -3023,20 +3058,38 @@
                  * 都是拆掉旧的」— the rule downgrade() was fixed to obey. atMs was
                  * read above, before this zeroes the playhead. */
                 Player.stop();
-                API.playurlDashStrong(playing.detail.aid, playing.cid, PREFERRED_QN,
-                    function (strongDash) {
-                        if (playing !== sessST) { return; }
-                        playing.dashReady = strongDash;
-                        var repST = Player.pickDashVideo(strongDash);
-                        report("player", "app 端点强令牌就绪，" +
-                               (strongDash.tierNote || (strongDash.video ? strongDash.video.length + " 档" : "0 档")) +
-                               "，从 " + fmt(atMs) + " 重建");
-                        playDash(strongDash, (repST && repST.id) || PREFERRED_QN);
-                    }, function (whyST) {
-                        if (playing !== sessST) { return; }
-                        report("player", "app 端点强令牌也不行（" + whyST + "）");
-                        finalFallback("强令牌失败 " + whyST);
-                    });
+                /* The aid may not be in hand, and the case where it is missing
+                 * is exactly this one. The home feed's cards carry `id` rather
+                 * than `aid` (normalise now reads both), and for any card that
+                 * still arrives without one, the view() call that would supply
+                 * it runs from loadMetaForPlaying — deliberately deferred until
+                 * the picture is up so it does not contend with the player. A
+                 * video that never gets a picture therefore never gets an aid,
+                 * so the route built for videos that cannot start was reachable
+                 * only by videos that had already started. Fetch it here rather
+                 * than fall through to 「DASH 全灭」. */
+                withAid(sessST, function (aidST) {
+                    if (playing !== sessST) { return; }
+                    if (!aidST) {
+                        report("player", "铸不了强令牌：手里没有 aid，用 bvid 也换不到");
+                        finalFallback("强令牌缺 aid");
+                        return;
+                    }
+                    API.playurlDashStrong(aidST, sessST.cid, PREFERRED_QN,
+                        function (strongDash) {
+                            if (playing !== sessST) { return; }
+                            playing.dashReady = strongDash;
+                            var repST = Player.pickDashVideo(strongDash);
+                            report("player", "app 端点强令牌就绪，" +
+                                   (strongDash.tierNote || (strongDash.video ? strongDash.video.length + " 档" : "0 档")) +
+                                   "，从 " + fmt(atMs) + " 重建");
+                            playDash(strongDash, (repST && repST.id) || PREFERRED_QN);
+                        }, function (whyST) {
+                            if (playing !== sessST) { return; }
+                            report("player", "app 端点强令牌也不行（" + whyST + "）");
+                            finalFallback("强令牌失败 " + whyST);
+                        });
+                });
                 return;
             }
             /* The probe runs on every failure, not only the ones that rotate.
