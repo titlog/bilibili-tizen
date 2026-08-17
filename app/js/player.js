@@ -21,6 +21,23 @@ var Player = (function () {
     var onEvent = function () {};
     var duration = 0;
     var lastTime = 0;
+    /* Whether `lastTime` holds a position or merely its initial value.
+     *
+     * `position()` used to answer `lastTime || lastDash.startMs`, and that `||`
+     * cannot tell "nothing has reported a position yet" from "the position is
+     * zero". The two only diverge when a viewer deliberately goes back to the
+     * very beginning, which is why it hid for so long — and 2026-08-17 21:47 is
+     * what it costs when they do: opening a film at its stored 1:08:52, the
+     * viewer held rewind back to 0:00; the element wedged mid-seek; the watchdog
+     * rebuilt — and asked `position()`, which called the requested 0 falsy and
+     * handed back 4132s. They were dropped back at 1:08:52 and had to rewind the
+     * whole way a second time.
+     *
+     * A flag rather than a sentinel, because the hard part is already solved
+     * elsewhere: the `timeupdate` handler's filter decides which zeros are the
+     * element's start-up noise and which are real. This just carries that
+     * verdict — and an app-issued seek is a position by definition. */
+    var haveTime = false;
     var mseGeneration = 0;   /* invalidates a load that a newer one superseded */
     var avGeneration = 0;    /* same, for the avplay singleton's listener */
     var shakaPlayer = null;  /* the live DASH player, kept across videos */
@@ -570,6 +587,7 @@ var Player = (function () {
              * noise, not a position. */
             if (!v.currentTime && lastDash && lastDash.startMs > 1000) { return; }
             lastTime = v.currentTime * 1000;
+            haveTime = true;   /* past the filter above, so this zero is a real one */
             /* Kept separate from `lastTime`, which seekBy/seekTo also write —
              * this one has to survive as the position *before* a seek. */
             lastTickSec = v.currentTime;
@@ -774,6 +792,7 @@ var Player = (function () {
         mode = null;
         duration = 0;
         lastTime = 0;
+        haveTime = false;
         /* Belongs to the video being torn down. Left behind, a decode failure on
          * the next one would replay the previous one's manifest, and the retry
          * budget would already be spent before it started. */
@@ -2168,8 +2187,16 @@ var Player = (function () {
          * was rebuilding *from* — which is where the viewer is; reset() clears
          * lastDash, so a stopped player still answers 0. */
         position: function () {
-            return lastTime || (lastDash && lastDash.startMs) || 0;
+            /* Not `lastTime || …` — see haveTime. A zero somebody asked for is
+             * a position; a zero nobody has written is not. */
+            if (haveTime) { return lastTime; }
+            return (lastDash && lastDash.startMs) || 0;
         },
+        /* Whether the number above means anything. Callers that would otherwise
+         * write `Player.position() || somethingElse` need this: that `||` is
+         * the same falsy-zero trap one level up, and fixing only position()
+         * would have changed nothing at all. */
+        hasPosition: function () { return haveTime; },
 
         /* The clock starts when the button is pressed, which is before the
          * player is involved at all — so app.js owns starting it. */
@@ -2244,6 +2271,7 @@ var Player = (function () {
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
             else if (mode === "mse") { el("html5-video").currentTime = target / 1000; }
             lastTime = target;
+            haveTime = true;
             emit("time", { position: target, duration: duration });
         },
         /* Absolute seek, for the scrub bar. seekBy stays for the +/-10 s keys. */
@@ -2254,6 +2282,7 @@ var Player = (function () {
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
             else if (mode === "mse") { el("html5-video").currentTime = target / 1000; }
             lastTime = target;
+            haveTime = true;
             emit("time", { position: target, duration: duration });
         },
 

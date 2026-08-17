@@ -3207,7 +3207,8 @@
                     String(data).indexOf("清单已过期") >= 0 &&
                     (playing.expiredRefetches || 0) < 2) {
                 playing.expiredRefetches = (playing.expiredRefetches || 0) + 1;
-                var atExp = Player.position() || lastKnownPosition || playing.startMs || 0;
+                var atExp = Player.hasPosition() ? Player.position()
+                          : (lastKnownPosition || playing.startMs || 0);
                 var wantStrong = !!(playing.dashReady && playing.dashReady.strong &&
                                     playing.detail.aid);
                 playing.failed = false;
@@ -3266,7 +3267,8 @@
                 /* The real playhead — lastKnownPosition freezes at 0 through the
                  * stall that precedes a 403 storm, and 2026-08-11 that rebuilt
                  * the strong manifest from 0:00 instead of where the viewer was. */
-                var atMs = Player.position() || lastKnownPosition || playing.startMs || 0;
+                var atMs = Player.hasPosition() ? Player.position()
+                         : (lastKnownPosition || playing.startMs || 0);
                 playing.triedStrong = true;
                 playing.failed = false;
                 playing.startMs = atMs;
@@ -3481,8 +3483,14 @@
              * failing rebuild ticks t=0 — 2026-08-12 the progressive last
              * resort restarted a 32-minute position 「从 0:00 起」 for want of
              * this — and Player.position() falls back to the ladder's own
-             * rebuild-from point, which survives that churn. */
-            var ffAt = Player.position() || lastKnownPosition || 0;
+             * rebuild-from point, which survives that churn.
+             *
+             * Asked through `hasPosition` rather than through `||`: a viewer who
+             * rewinds to 0:00 has a position, and it is zero. 2026-08-17 the
+             * `||` here and in the two rungs above sent one back to 1:08:52
+             * twice in two minutes. */
+            var ffAt = Player.hasPosition() ? Player.position()
+                     : (lastKnownPosition || 0);
             /* DASH is exhausted — but the progressive durl is a different file
              * on a different stack, already in hand from decide()'s parallel
              * fetch, and 「所有路都试过」 is not true until it has been asked.
