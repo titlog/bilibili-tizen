@@ -965,7 +965,8 @@ Spike 01 和 02 **已完成，五项测试全过**。CDN、API 和两条播放�
 > 不是接口坏了。两个 id 留在 `app.js` 的 `ZONES` 注释里：查一个 rid 要去网站的请求里
 > 捞 `region_id`，扔掉等于下次要重新捞。加回来是 `index.html` 一行加 `ZONES` 一项。
 
-**客户端 —— 已完成**：推荐、热门、排行、两个分区页签、动态、用电视自带 IME 的搜索、带分 P 和
+**客户端 —— 已完成**：推荐、热门、排行、两个分区页签、动态、稍后再看（顶栏「稍后」，
+手机上点、电视上看，见「手机投屏」一节末尾）、用电视自带 IME 的搜索、带分 P 和
 相关视频的详情、续播（含记住看到哪一 P）、自动续播下一个，以及两条播放路径 ——
 渐进式走 AVPlay，DASH 走 Shaka。DASH 是常用的那条，因为单文件形式封顶 720P。
 
@@ -1220,6 +1221,22 @@ HTTP 控制服务，AirPlay 要 mDNS 加 HTTP 服务，bilibili 自家那套（�
 > 才算数。所以「手机加进稍后再看 → 电视上读出来」这条**拉取式的投屏替代品是可行的**，
 > 只是当天决定不做。真要做，第一步是拿一条非空列表把字段名打出来再写卡片，别照
 > history 的形状猜。
+>
+> **⟶ 2026-08-17 做了，顶栏「稍后」那个标签就是它，字段名当天在设备上打出来了。**
+> 上面那句告诫是对的：它是**稿件形状**（和热门/排行同一套 `owner` / `stat` / `duration`
+> / `bvid` / `cid`，`normalise()` 直接吃得下），**不是** history 那种 `history.bvid` 嵌套
+> 结构 —— 照 history 写会得到一屏空白卡片，而那和「这个账号里本来就没东西」长得一模
+> 一样。实测拿到的 49 个字段：
+> `aid,videos,tid,tname,copyright,pic,title,pubdate,ctime,desc,state,duration,mission_id,rights,owner,stat,dynamic,dimension,short_link_v2,first_frame,pub_location,cover43,tidv2,tnamev2,pid_v2,pid_name_v2,page,count,cid,progress,add_at,bvid,uri,enable_vt,view_text_1,card_type,left_icon_type,left_text,right_icon_type,right_text,arc_state,pgc_label,show_up,forbid_fav,forbid_sort,season_title,long_title,index_title,c_source,translate_info`。
+> 用上的是 `bvid/aid/cid/title/pic/owner.name/stat.view/duration` 加三个这个接口特有的：
+> `progress`（秒，-1 是看完，画成卡片上那道进度条，也当手机接力的起点）、`add_at`（秒，
+> **列表按它倒序**，手机上刚点的那个走到沙发前就在光标底下）、`state`（负数=稿件已下架）。
+> 整份列表一个请求回来，没有游标也没有分页。**还没用但记着**：`videos`/`count` 是分P 数，
+> `arc_state` 和 `state` 一对，`long_title`/`index_title`/`season_title` 是合集里那一集的
+> 名字。`app.js` 每次运行第一次打开这个标签会上报一行 `toview:`，里面就是原始字段名和
+> 映射结果的对照 —— 这类「字段猜错 = 一屏空白」的接口，验证要留在日志里，不能靠记忆。
+> **写操作没做**：看完不从列表移除、电视上也不能加入，两者都要 `csrf`，而网页扫码兜底
+> 进来的账号没有它，得为它们降级才行。
 
 **仍然缺失**，大致按缺失感强弱排序：UP 主页面（space 接口不带 WBI 签名会返回
 -352）、全站以外的分区、搜索历史与热搜、字幕（接口可用，很多视频有）、以及一个

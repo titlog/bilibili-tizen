@@ -683,12 +683,57 @@
      * one entry here. */
     var ZONES = { food: 1020, dance: 1004 };
 
+    /* Nobody in this repository has seen a 稍后再看 response, and CLAUDE.md says
+     * in as many words not to assume it has history's shape. So the first list
+     * of a run prints what actually came back: the raw field names of entry one,
+     * next to what the mapping made of them. Wrong cards otherwise look exactly
+     * like an empty account — the failure this whole layer is prone to.
+     *
+     * Once per run: it is a diagnostic, not a log of browsing. */
+    var toviewTold = false;
+
+    function reportToview(items, raw) {
+        if (toviewTold) { return; }
+        toviewTold = true;
+        var first = raw && raw[0];
+        if (!first) { report("toview", "列表是空的（服务器给了 0 条）"); return; }
+        var keys = [];
+        for (var k in first) { if (first.hasOwnProperty(k)) { keys.push(k); } }
+        var v = items[0] || {};
+        report("toview", raw.length + " 条，能开的 " + items.length + " 条" +
+               " | 第一条的字段：" + keys.join(",") +
+               " | 映射结果 bvid=" + (v.bvid || "无") + " aid=" + (v.aid || 0) +
+               " cid=" + (v.cid || "无") + " 时长=" + (v.duration || "无") +
+               " 作者=" + (v.author || "无") + " 播放=" + (v.play || "无") +
+               " 看过=" + Math.round((v.seen || 0) * 100) + "%" +
+               " 加入=" + (v.at || 0) + " state=" + v.state +
+               " 标题=" + String(v.title || "").slice(0, 20));
+    }
+
     /* ranking answers with its full 100 in one go and has no second page. */
     function fetchPage(kind, page, onOk, onFail) {
         if (kind === "ranking") { return page === 1 ? API.ranking(0, onOk, onFail) : onOk([]); }
         if (ZONES[kind]) { return page === 1 ? API.ranking(ZONES[kind], onOk, onFail) : onOk([]); }
         if (kind === "rcmd") { return API.recommended(page, onOk, onFail); }
         if (kind === "dynamic") { return API.dynamic(page, onOk, onFail); }
+        if (kind === "toview") {
+            /* Whole list in one answer, like ranking. */
+            if (page !== 1) { return onOk([]); }
+            return API.toview(function (items, raw) {
+                reportToview(items, raw);
+                /* Newest first, so the thing just tapped on the phone is the
+                 * card under the cursor when the viewer reaches the sofa. That
+                 * may well be the order it already arrives in — but the whole
+                 * point of this tab is that one journey, and it should not
+                 * depend on an ordering nobody has checked. Only when every
+                 * entry has a timestamp: sorting on a field the mapping got
+                 * wrong would shuffle the list into no order at all. */
+                var dated = true;
+                for (var i = 0; i < items.length; i++) { if (!items[i].at) { dated = false; break; } }
+                if (dated) { items.sort(function (a, b) { return b.at - a.at; }); }
+                onOk(items);
+            }, onFail);
+        }
         return API.popular(page, onOk, onFail);
     }
 
@@ -789,8 +834,10 @@
         }
 
         screenEl.innerHTML = '<div class="empty">加载中…</div>';
-        if (kind === "dynamic" && !Auth.isLoggedIn()) {
-            screenEl.innerHTML = '<div class="empty">动态需要登录，先去「我的」扫码</div>';
+        if ((kind === "dynamic" || kind === "toview") && !Auth.isLoggedIn()) {
+            screenEl.innerHTML = '<div class="empty">' +
+                (kind === "dynamic" ? "动态" : "稍后再看") +
+                '需要登录，先去「我的」扫码</div>';
             Nav.reset(".tab");
             return;
         }
@@ -800,7 +847,13 @@
             if (req !== feedRequest) { return; }
             feedCache[kind] = { items: items, index: 0, scrollTop: 0, page: 1, exhausted: !items.length };
             window.__stItems = items;   /* selftest addresses the same video */
-            renderGrid(items);
+            /* An empty 稍后再看 is the normal state of a list nobody has added
+             * to yet, and 「没有内容」 reads as a fault. It is also the one
+             * screen where saying how the list gets filled is the whole feature:
+             * the adding happens on a phone, somewhere else entirely. */
+            renderGrid(items, kind === "toview"
+                ? "稍后再看是空的 —— 在手机或网页上点「稍后再看」，加进去的视频就会出现在这里"
+                : undefined);
             /* First card in the document, which on the home tab is the first
              * card of 继续观看 — the strip is painted above the grid. That is
              * the point of it: what you were in the middle of is already under

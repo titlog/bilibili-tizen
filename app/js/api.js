@@ -489,6 +489,57 @@ var API = (function () {
             fetchPage(null);
         },
 
+        /* 稍后再看 — the pull-side substitute for casting.
+         *
+         * Casting to this app is impossible and always will be: a receiver has
+         * to listen on the network (SSDP, mDNS, a control server) and a Tizen
+         * web widget cannot open a port — the same wall that stopped AVPlay
+         * being handed a local MPD. This is the way round it that needs no
+         * listening at all: tap 稍后再看 on the phone, walk to the television,
+         * it is on the tab. The phone is where things get found, the set is
+         * where they get watched — the same division 我的 already runs on.
+         *
+         * It authenticates on `access_key`, measured 2026-08-15 with both arms
+         * because one arm proves nothing: with the key `code 0`, bare request
+         * `code -101 账号未登录`. `withSession` puts the key in the query, so
+         * nothing here has to know about it.
+         *
+         * The list arrives whole — no cursor, no pages.
+         *
+         * `raw` goes back to the caller alongside the mapped cards, and that is
+         * deliberate: nobody in this repository has ever seen this response, so
+         * app.js prints the field names of the first entry once per run rather
+         * than letting a wrong guess turn into blank cards. Cards whose shape
+         * is assumed from a sibling endpoint fail silently and look like an
+         * empty account. */
+        toview: function (onOk, onFail) {
+            getJson(BASE + "/x/v2/history/toview", function (d) {
+                var all = (d && d.list) || [];
+                var out = [];
+                for (var i = 0; i < all.length; i++) {
+                    var x = all[i];
+                    if (!x || !x.bvid) { continue; }
+                    var v = normalise(x);
+                    /* Same two numbers history carries, read the same way: how
+                     * far in, and -1 for finished. A card added on the phone and
+                     * half-watched there should open where it was left. */
+                    var secs = x.duration || 0, pos = x.progress;
+                    v.seen = (pos === -1) ? 1
+                           : (secs > 0 && pos > 0 ? Math.min(1, pos / secs) : 0);
+                    v.progressMs = (pos > 0) ? pos * 1000 : 0;
+                    /* When it was put on the list. Not decoration: it is what
+                     * puts the thing just tapped on the phone under the cursor. */
+                    v.at = (x.add_at || 0) * 1000;
+                    /* Negative means the archive is gone (taken down, under
+                     * review). Carried rather than acted on until there is a
+                     * real one to look at. */
+                    v.state = (typeof x.state === "number") ? x.state : 0;
+                    out.push(v);
+                }
+                onOk(out, all);
+            }, onFail);
+        },
+
         /* Where this account left this particular video, straight from
          * bilibili — `last_play_cid` and `last_play_time` (milliseconds).
          *
