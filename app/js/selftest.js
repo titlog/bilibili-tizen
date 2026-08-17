@@ -220,6 +220,34 @@ var SelfTest = (function () {
             return after > window.__stScroll ? null
                 : "焦点下移但面板没滚动（before=" + window.__stScroll + " after=" + after + "）";
         }],
+        /* The panel's related grid is paged rather than capped: two rows go up
+         * with the panel (over a stream that is still buffering) and the rest
+         * follows the ring down. What this catches is the grid quietly refusing
+         * to grow — which looks exactly like a video that only had two rows of
+         * related videos, and is why the total is asked for rather than guessed
+         * at from the DOM. */
+        ["面板里的相关推荐能一直往下翻", 700, function () {
+            if (!visible("options")) { return "面板不见了"; }
+            var total = typeof window.__stPanelTotal === "function"
+                        ? window.__stPanelTotal() : 0;
+            var cards = count("#opt-related .card");
+            post("面板：相关推荐一共 " + total + " 个，已经画出 " + cards + " 张");
+            if (!total) { return "面板里一个相关推荐都没有"; }
+            if (total <= 8) {
+                window.__stPanelShort = true;   /* legitimately short list */
+                return null;
+            }
+            key(KEY.DOWN); key(KEY.DOWN);
+            return null;
+        }],
+        ["面板的推荐网格接着长出来了", 700, function () {
+            if (window.__stPanelShort) { return null; }
+            if (!visible("options")) { return "面板不见了"; }
+            var cards = count("#opt-related .card");
+            post("面板：往下走之后画出 " + cards + " 张");
+            return cards > 8 ? null
+                : "焦点走进相关推荐深处了，网格却没有接着长（还是 " + cards + " 张）";
+        }],
         ["返回键收起面板", 700, function () {
             key(KEY.RETURN);
             return null;
@@ -363,6 +391,49 @@ var SelfTest = (function () {
             }
             if (document.getElementById("nextup-count")) {
                 return "走进相关推荐了，倒计时却还在跑——它会从观众手底下自己开播";
+            }
+            return null;
+        }],
+        /* The grid is meant to keep going: one row is painted while the
+         * countdown runs (those thumbnails compete with the next video's start),
+         * and the rest arrives as the focus walks into it. Both halves are
+         * checked here — that more cards showed up than were first painted, and
+         * that the screen actually followed the focus below the fold. The second
+         * half is the one that fails silently: losing the `scroll` class on
+         * #nextup leaves the ring moving onto cards nobody can see. */
+        ["相关推荐能一直往下翻", 700, function () {
+            if (window.__stNoRelated) { post("跳过：这个视频没有相关推荐"); return null; }
+            if (!visible("nextup")) { return "即将播放界面不见了"; }
+            var total = typeof window.__stNextupTotal === "function"
+                        ? window.__stNextupTotal() : 0;
+            var cards = count("#nextup-related .card");
+            post("即将播放：相关推荐一共 " + total + " 个，已经画出 " + cards + " 张");
+            if (total <= 4) {
+                /* A short related list is a legitimate answer, not a failure —
+                 * say which one it is rather than going red on the viewer's
+                 * behalf. */
+                window.__stNextupShort = true;
+                return null;
+            }
+            if (cards <= 4) {
+                return "走进相关推荐了，却还是只有第一行那四张——网格没有接着长";
+            }
+            window.__stNextupScroll = document.getElementById("nextup").scrollTop;
+            key(KEY.DOWN);
+            return null;
+        }],
+        ["翻到第二行，屏幕跟着滚下去了", 600, function () {
+            if (window.__stNoRelated || window.__stNextupShort) { return null; }
+            if (!visible("nextup")) { return "即将播放界面不见了"; }
+            var f = document.querySelector("#nextup-related .card.focused");
+            if (!f) { return "再按下键没有停在相关推荐里"; }
+            if (Number(f.getAttribute("data-i")) < 4) {
+                return "再按下键没有走到第二行";
+            }
+            var top = document.getElementById("nextup").scrollTop;
+            post("即将播放：焦点第 " + f.getAttribute("data-i") + " 张，屏幕滚到 " + Math.round(top));
+            if (!(top > window.__stNextupScroll)) {
+                return "焦点走到第二行了，屏幕却没有跟着滚——卡片在看不见的地方";
             }
             return null;
         }],

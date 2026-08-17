@@ -402,6 +402,101 @@
         }
     }
 
+    /* A card grid that arrives a few rows at a time, growing as the focus walks
+     * into it.
+     *
+     * Both lists of related videos — the panel over a playing video, and the
+     * end-of-video chooser — used to be truncated (16 and 4), and the reason was
+     * never layout. Every thumbnail is an image request, and both of these
+     * screens are up at a moment when something else wants the link: the panel
+     * sits over a stream that is buffering, and the chooser has a countdown
+     * about to start one. This is the same constraint that made the metadata
+     * fetches wait for the first frame and cut the home grid down from a hundred
+     * cards — a hundred `img` tags all set off at once, on a set that is not
+     * quick about any of it.
+     *
+     * A cap is the wrong answer to that, though: it silently decides the viewer
+     * has seen enough. Pacing is the right one. The first screenful goes up
+     * immediately, the rest follows the ring down — and by the time the ring is
+     * moving, the viewer is choosing rather than watching, which is exactly when
+     * the link is free.
+     *
+     * Appended, never repainted: re-rendering the grid would put every thumbnail
+     * already on screen back on the wire, which is the cost this exists to
+     * avoid. `pick` is what a card means when it is chosen, which is the only
+     * thing the two callers disagree about. */
+    function cardPager(boxId, pick) {
+        var items = [], shown = 0;
+
+        function grow(upto) {
+            upto = Math.min(upto, items.length);
+            if (upto <= shown) { return; }
+            var box = el(boxId);
+            var grid = box.querySelector(".grid");
+            if (!grid) {
+                box.innerHTML = '<div class="grid"></div>';
+                grid = box.querySelector(".grid");
+            }
+            var html = "";
+            for (var i = shown; i < upto; i++) { html += cardHtml(items[i], i); }
+            grid.insertAdjacentHTML("beforeend", html);
+            shown = upto;
+            /* Only the new cards need wiring — the ones already up kept their
+             * onselect through the append. */
+            var cards = grid.querySelectorAll(".card");
+            for (var c = 0; c < cards.length; c++) {
+                if (cards[c].onselect) { continue; }
+                (function (node, v) {
+                    node.onselect = function () { if (v) { pick(v); } };
+                })(cards[c], items[Number(cards[c].getAttribute("data-i"))]);
+            }
+        }
+
+        return {
+            reset: function (list, first) {
+                items = list || [];
+                shown = 0;
+                el(boxId).innerHTML = "";
+                if (first) { grow(first); }
+            },
+            /* Dropped with the screen: twenty-odd decoded thumbnails left
+             * behind a playing video is memory this set does not have spare. */
+            clear: function () { items = []; shown = 0; el(boxId).innerHTML = ""; },
+            total: function () { return items.length; },
+            shown: function () { return shown; },
+            /* The focus-nears-the-end trigger, the same shape the feeds use.
+             * Nothing is fetched here — the list has been in hand since playback
+             * started; what is being paced is thumbnails, not requests. */
+            follow: function (focused, page) {
+                if (shown >= items.length) { return; }
+                if (!focused || !focused.getAttribute) { return; }
+                if (focused.getAttribute("data-i") === null) { return; }
+                if (!/(^|\s)card(\s|$)/.test(focused.className)) { return; }
+                var box = el(boxId);
+                if (!box || !box.contains(focused)) { return; }
+                if (Number(focused.getAttribute("data-i")) < shown - 4) { return; }
+                grow(shown + page);
+            }
+        };
+    }
+
+    /* Picking from the chooser: the video belongs in `playedInChain`, or the
+     * autoplay chain can queue it again later the same evening — that set exists
+     * for exactly this. `fromPanel` because the browse screen is hidden here, so
+     * rememberPosition would read scrollTop as 0 and write that over the
+     * remembered feed position while keeping the deep card index, landing the
+     * viewer at the top of the grid with the ring off screen. */
+    var nextupGrid = cardPager("nextup-related", function (v) {
+        if (v.bvid) { playedInChain[v.bvid] = 1; }
+        playVideo(v, true);
+    });
+    /* Picking from the panel: same `fromPanel` reason, and the panel has to come
+     * down first or the new video starts underneath it. */
+    var panelGrid = cardPager("opt-related", function (v) {
+        closeOptions();
+        playVideo(v, true);
+    });
+
     /* The two histories, folded into one run of cards in time order.
      *
      * They were two sections for a while, on the theory that "watched here" and
@@ -912,6 +1007,12 @@
         Player.seekTo(Math.max(0, d - 4000));
         return true;
     };
+
+    /* How many cards the end-of-video grid has to give in total, so the
+     * selftest can tell "the grid refused to grow" from "this video only had
+     * one row's worth of related videos" — the DOM alone cannot. */
+    window.__stNextupTotal = function () { return nextupGrid.total(); };
+    window.__stPanelTotal = function () { return panelGrid.total(); };
 
     function watchForWake() {
         /* Nothing is reported when the set goes away: the POST would be dialling
@@ -1933,6 +2034,13 @@
 
     var optionsOpen = false;
 
+    /* Two rows on open, two more per step down. Two rather than the old sixteen
+     * because this panel comes up over a video that is still buffering: the
+     * cheapest moment to spend on thumbnails is after the ring starts moving,
+     * which is also the only moment they are being looked at. */
+    var PANEL_FIRST = 8;
+    var PANEL_PAGE = 8;
+
     var QUALITY_NAMES = {
         127: "8K", 120: "4K", 116: "1080P60", 112: "1080P+",
         80: "1080P", 74: "720P60", 64: "720P", 32: "480P", 16: "360P"
@@ -1957,7 +2065,17 @@
         if (d.pages && d.pages.length > 1) {
             group.className = "opt-group";
             var ph = "";
-            for (var p = 0; p < d.pages.length && p < 40; p++) {
+            /* Every part, not the first forty. The cap was borrowed from the
+             * related grid's, where it was at least paying for something —
+             * thumbnails on a busy link. A part is a text box: no image, no
+             * request, nothing to pace. All it bought was P41 and beyond being
+             * unreachable from the only screen that lists them, silently, on
+             * exactly the uploads that need the list most (collections and
+             * courses run to hundreds). The row wraps, nav.js walks a ragged
+             * grid without being told its width, and Nav.reset scrolls the panel
+             * to `.opt.current`, so a long list lands on the part being watched
+             * rather than at P1. */
+            for (var p = 0; p < d.pages.length; p++) {
                 ph += '<div class="opt focusable' + (d.pages[p].cid === playing.cid ? " current" : "") +
                       '" data-cid="' + d.pages[p].cid + '">P' + (p + 1) + "</div>";
             }
@@ -1968,29 +2086,16 @@
         }
 
         /* Related videos live in the panel now, so "what else" never costs the
-         * viewer their place in the video. */
+         * viewer their place in the video. All of them, not the first sixteen:
+         * the cap was there because sixteen thumbnails already compete with the
+         * stream underneath, and the pager answers that properly — two rows on
+         * open, the rest as the ring walks down. */
         var rg = el("opt-related-group");
+        rg.className = "opt-group";
         if (d.related && d.related.length) {
-            rg.className = "opt-group";
-            var rh = '<div class="grid">';
-            for (var r = 0; r < d.related.length && r < 16; r++) {
-                rh += cardHtml(d.related[r], r);
-            }
-            el("opt-related").innerHTML = rh + "</div>";
-            var rcards = el("opt-related").querySelectorAll(".card");
-            for (var rc = 0; rc < rcards.length; rc++) {
-                (function (card, vv) {
-                    card.onselect = function () {
-                        /* playVideo remembers the browse position, and it must
-                         * not see the panel's own cards as the feed's. */
-                        var fromPanel = true;
-                        closeOptions();
-                        playVideo(vv, fromPanel);
-                    };
-                })(rcards[rc], d.related[Number(rcards[rc].getAttribute("data-i"))]);
-            }
+            panelGrid.reset(d.related, PANEL_FIRST);
         } else {
-            rg.className = "opt-group";
+            panelGrid.clear();
             el("opt-related").innerHTML = '<div class="empty">正在加载相关视频…</div>';
         }
 
@@ -2012,6 +2117,11 @@
         if (!optionsOpen) { return; }
         optionsOpen = false;
         el("options").className = "hidden scroll";
+        /* The thumbnails go with the screen: openOptions repaints from the list
+         * every time anyway (that is how a late `related` response reaches an
+         * open panel), so keeping them would only be images decoding behind a
+         * video that is playing. */
+        panelGrid.clear();
         if (!playing) { return; }
         el("playerui").className = "";
         showChrome();
@@ -2023,8 +2133,16 @@
         nextToken++;   /* an in-flight nextUp lookup must not surface later */
         if (nextTimer) { clearInterval(nextTimer); nextTimer = null; }
         pendingNext = null;
-        el("nextup").className = "hidden";
+        el("nextup").className = "hidden scroll";   /* nav.js finds the scroller by that class */
+        nextupGrid.clear();
     }
+
+    /* One row above the fold, two more rows per step down. The first row is
+     * painted while the countdown is still running — that is the one paint that
+     * competes with the next video's start, so it stays the size it has always
+     * been. */
+    var NEXTUP_FIRST = 4;
+    var NEXTUP_PAGE = 8;
 
     function beginAutoNext() {
         /* The panel belongs to the video that just ended; leaving it up meant
@@ -2058,7 +2176,6 @@
             next.from = finished && finished.detail;
             pendingNext = next;
             el("playerui").className = "hidden";
-            el("nextup").className = "";
             el("nextup-title").textContent = next.title;
             var thumb = el("nextup-thumb");
             if (next.detail && next.detail.pic) {
@@ -2066,40 +2183,27 @@
                 thumb.className = "";
             } else { thumb.className = "hidden"; }
 
-            /* What else there is, under the queued one. The list is already in
-             * hand — it was fetched during playback for the panel — so this
-             * costs four thumbnails and no round trip. The queued video itself
-             * is left out of it: it is already the big card above. */
+            /* What else there is, under the queued one — all of it, not a
+             * sample. The list is already in hand (it was fetched during
+             * playback for the panel), so the whole grid costs no round trip;
+             * only the thumbnails are paced, a few rows at a time, by the
+             * shared card pager. The queued video is left out of it: it is
+             * already the big card above. */
             var rel = (finished && finished.detail && finished.detail.related) || [];
             var more = [];
-            for (var r = 0; r < rel.length && more.length < 4; r++) {
+            for (var r = 0; r < rel.length; r++) {
                 if (next.detail && rel[r].bvid === next.detail.bvid) { continue; }
                 more.push(rel[r]);
             }
-            if (more.length) {
-                el("nextup-more").className = "nextup-more";
-                paintCards(el("nextup-related"), more);
-                /* Rewired rather than left to paintCards, for two reasons the
-                 * shared version cannot know about. One: `fromPanel` — the
-                 * browse screen is hidden here, so rememberPosition would read
-                 * scrollTop as 0 and write that over the remembered feed
-                 * position while keeping the deep card index, which lands the
-                 * viewer at the top of the grid with the ring off screen. Two:
-                 * a video picked here belongs in `playedInChain`, or the
-                 * autoplay chain can queue it again later in the same evening —
-                 * that set exists for exactly that. */
-                var rcards = el("nextup-related").querySelectorAll(".card");
-                for (var rc = 0; rc < rcards.length; rc++) {
-                    (function (v) {
-                        rcards[rc].onselect = function () {
-                            if (v.bvid) { playedInChain[v.bvid] = 1; }
-                            playVideo(v, true);
-                        };
-                    })(more[Number(rcards[rc].getAttribute("data-i"))]);
-                }
-            } else {
-                el("nextup-more").className = "nextup-more hidden";
-            }
+            nextupGrid.reset(more, NEXTUP_FIRST);
+            el("nextup-more").className = more.length ? "nextup-more" : "nextup-more hidden";
+            /* `has-more` is what turns the centred column into a scroller — and
+             * it can only be decided here, once it is known whether there is
+             * anything below the fold. `scroll` is nav.js's marker for the same
+             * element; losing it in a className rewrite does not fail loudly,
+             * it just quietly stops the screen following the focus down. */
+            el("nextup").className = more.length ? "has-more scroll" : "scroll";
+            el("nextup").scrollTop = 0;
 
             /* Focus is on the queued video, so 确认 still means "play it now"
              * without anyone having to aim. */
@@ -2209,7 +2313,7 @@
     function showPlayerUi(on) {
         el("shell").className = on ? "hidden" : "";
         el("playerui").className = on ? "" : "hidden";
-        el("nextup").className = "hidden";   /* never survives either direction */
+        el("nextup").className = "hidden scroll";   /* never survives either direction */
         if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
         if (on) { showChrome(); }
     }
@@ -3392,7 +3496,16 @@
         toastEl = el("toast");
 
         Nav.registerKeys();
-        Nav.onFocus(function (elm) { maybeLoadMore(elm); maybeLoadMoreSearch(elm); });
+        Nav.onFocus(function (elm) {
+            maybeLoadMore(elm); maybeLoadMoreSearch(elm);
+            /* The two paged grids of related videos. The feeds' own version is
+             * switched off while either is up (`playing` / `pendingNext` in
+             * maybeLoadMore), because these cards carry a `data-i` of their own
+             * that would otherwise read as the viewer reaching the end of the
+             * grid behind them. */
+            if (pendingNext) { nextupGrid.follow(elm, NEXTUP_PAGE); }
+            if (optionsOpen) { panelGrid.follow(elm, PANEL_PAGE); }
+        });
         /* Settings were only consulted from inside 我的, so a quality picked in
          * the panel was forgotten on the next launch. */
 

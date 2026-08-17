@@ -94,8 +94,14 @@
 <!-- The end of a video is a decision, not a notice: carry on with what is
      queued, or pick something else. So the queued one sits in the middle where
      the picture just was, and what else there is sits under it — reachable by
-     pressing down, which also stops the countdown. -->
-<div id="nextup" class="hidden">
+     pressing down, which also stops the countdown.
+
+     "Under it" is a grid you can keep walking down, not a single row: this is
+     the moment the viewer is most likely to be choosing rather than continuing,
+     and four cards is a glance, not a choice. `scroll` is what nav.js looks for
+     to move the screen when the focus goes below the fold — any code that
+     rewrites this className has to keep it. -->
+<div id="nextup" class="hidden scroll">
     <div class="nextup-main">
         <div class="nextup-label">即将播放</div>
         <div class="nextup-card focusable" id="nextup-go">
