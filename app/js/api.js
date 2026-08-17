@@ -356,7 +356,16 @@ var API = (function () {
                     uname: d.uname || "",
                     mid: d.mid || 0,
                     face: d.face ? thumb(d.face, 160, 160) : "",
-                    level: (d.level_info || {}).current_level
+                    level: (d.level_info || {}).current_level,
+                    /* Which membership this account actually holds, in
+                     * bilibili's own words. `vip.label.text` is the string the
+                     * website prints — 大会员 / 年度大会员 / 超级大会员 — and it
+                     * settles by observation a question that marketing pages
+                     * and memory both answer unreliably. Free: nav is already
+                     * called at every startup. */
+                    vipStatus: d.vipStatus || (d.vip || {}).status || 0,
+                    vipType: d.vipType || (d.vip || {}).type || 0,
+                    vipLabel: (((d.vip || {}).label) || {}).text || ""
                 });
             };
             xhr.ontimeout = function () { onFail("timeout"); };

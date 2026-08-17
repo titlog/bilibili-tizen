@@ -234,7 +234,13 @@
             if (i >= steps.length) { return; }
             API.nav(function (me) {
                 report("whoami", where + " " + steps[i][0] + " → isLogin=" + me.isLogin +
-                       " mid=" + me.mid + " uname=" + (me.uname || "-"));
+                       " mid=" + me.mid + " uname=" + (me.uname || "-") +
+                       /* Only on the arm that carries the session — the other
+                        * two are anonymous by construction and would print an
+                        * absence that means nothing. */
+                       (steps[i][1] ? "" :
+                        " 会员=" + (me.vipLabel || (me.vipStatus ? "有(无名称)" : "无")) +
+                        "(status=" + me.vipStatus + " type=" + me.vipType + ")"));
                 next(i + 1);
             }, function (why) {
                 report("whoami", where + " " + steps[i][0] + " → 失败 " + why);
