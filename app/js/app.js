@@ -2366,16 +2366,59 @@
      * Two fixes, and they are the same two the stall watchdog needed on 08-09:
      * ask an explicit flag rather than the element (`userPaused` is what the
      * viewer pressed; `element.paused` is also true while loading), and when the
-     * answer is "not yet", look again instead of giving up. A viewer who paused
-     * on purpose keeps the banner and `setPaused(false)` re-arms this. */
+     * answer is "not yet", look again instead of giving up.
+     *
+     * ⟶ 2026-08-17: that second fix was applied to exactly one of the four ways
+     * out and the banner went on sticking. Three branches still returned with
+     * the timer already nulled — 拖动中, 面板开着, 观众按了暂停 — each of them
+     * leaning on somebody outside to call showChrome again on the way back.
+     * That works only as long as every exit remembers, and one does not: a
+     * rescue that rebuilds the player resumes playback without going through
+     * `setPaused(false)`, so a viewer who paused before a 403 comes back to a
+     * video that is playing, a `userPaused` still true, and no timer left
+     * anywhere in the app. The banner then sits there for the rest of the
+     * video — which is what was reported this afternoon, and why pressing
+     * 暂停/播放 cured it: that is the one path that re-arms.
+     *
+     * So none of them may return. They are all "not yet", never "never":
+     * re-arm and ask again. Same shape as the watchdog's heartbeat, and for
+     * the same reason — a state machine that can only be restarted from the
+     * outside gets stuck the first time an exit forgets. */
+    var chromeSaid = 0;     /* diagnostic lines spent on this video */
+    var chromeHidTold = false;
+
     function armChromeHide(after) {
         if (chromeTimer) { clearTimeout(chromeTimer); }
         chromeTimer = setTimeout(function () {
             chromeTimer = null;
-            if (!playing || scrub || optionsOpen) { return; }
-            if (Player.userPaused()) { return; }
-            if (Player.isPaused()) { armChromeHide(1000); return; }   /* still loading */
-            el("playerui").className = "hidden";
+            /* The one real stop: no session at all. showPlayerUi arms the next
+             * one on the way in, so there is nothing to keep polling for. */
+            if (!playing) { return; }
+
+            var why = "";
+            if (scrub) { why = "正在拖动"; }
+            else if (optionsOpen) { why = "面板开着"; }
+            else if (Player.userPaused()) { why = "观众按了暂停"; }
+            else if (Player.isPaused()) { why = "元素还报 paused（加载或重建中）"; }
+
+            if (!why) {
+                el("playerui").className = "hidden";
+                /* Once per video, and it earns its place: it is the difference
+                 * between "the code never hid it" and "the code hid it and the
+                 * screen shows it anyway", which look identical from the sofa
+                 * and want completely different fixes. */
+                if (!chromeHidTold) {
+                    chromeHidTold = true;
+                    report("chrome", "横幅已收起");
+                }
+                return;
+            }
+            armChromeHide(1000);
+            if (chromeSaid < 4) {
+                chromeSaid++;
+                report("chrome", "该收横幅了，没收：" + why +
+                       "（playerui class=\"" + el("playerui").className + "\"）");
+            }
         }, after);
     }
 
@@ -2400,6 +2443,11 @@
          * own ending. */
         closeOptions();
         cancelScrub();
+        /* Diagnostics are per-video too: a capped count that is never reset
+         * would go quiet after the first bad video of the evening, which is
+         * the one video whose successor you most want a line about. */
+        chromeSaid = 0;
+        chromeHidTold = false;
         /* The end-of-video screen is one of the things a new playback tears
          * down. Picking a related card from it calls straight in here, and
          * leaving `pendingNext` set would keep every key going to
@@ -3526,7 +3574,15 @@
             case Nav.KEY.ENTER:
             case Nav.KEY.PLAY_PAUSE:
                 if (scrub) { commitScrub(); return true; }
-                setPaused(!Player.isPaused());
+                /* Toggle against what the viewer asked for, not against the
+                 * element. `element.paused` is true for the whole of a load and
+                 * of every rescue rebuild — so 确认 pressed during a slow patch
+                 * used to read "it is paused" and *resume* a video nobody had
+                 * paused, which is the opposite of the press. Third place in
+                 * this file to learn that the element answers a different
+                 * question from the one being asked; the watchdog and the
+                 * banner both got it before this did. */
+                setPaused(!Player.userPaused());
                 return true;
             case Nav.KEY.LEFT:
             case Nav.KEY.REW:
