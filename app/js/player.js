@@ -69,6 +69,28 @@ var Player = (function () {
         return ahead;
     }
 
+    /* Every buffered range, not just the one under the playhead. `ahead` cannot
+     * tell "the buffer is empty" from "the playhead is sitting in a hole":
+     * bufferedAhead() looks for the range containing currentTime and returns 0
+     * when no range does, so both answer 0.0s — and the two want opposite fixes
+     * (fetch more bytes vs. get across the gap). Two wedges on 2026-08-16
+     * (17:17:03 and 17:17:28, same video, both after the very same 22KB audio
+     * segment, `在飞=0` with the channel idle for nineteen seconds) could not be
+     * told apart because this line was missing. Read it as: one range ending at
+     * the playhead → genuinely out of bytes; a range starting just past the
+     * playhead → a hole, and the player is stuck in front of it. */
+    function bufferedRanges(v) {
+        var out = [];
+        try {
+            if (v.buffered) {
+                for (var b = 0; b < v.buffered.length; b++) {
+                    out.push(v.buffered.start(b).toFixed(1) + "–" + v.buffered.end(b).toFixed(1));
+                }
+            }
+        } catch (e) {}
+        return out.length ? out.join(" | ") : "空";
+    }
+
     function stallLine(tag) {
         if (!shakaPlayer) { return; }
         var v = el("html5-video");
@@ -82,7 +104,8 @@ var Player = (function () {
                 " 估算带宽=" + Math.round((st.estimatedBandwidth || 0) / 1000) + "kbps" +
                 " 当前画质=" + (st.width || "?") + "x" + (st.height || "?") +
                 " 已卡=" + (st.bufferingTime || 0).toFixed(1) + "s" +
-                " 丢帧=" + (st.droppedFrames || 0));
+                " 丢帧=" + (st.droppedFrames || 0) +
+                " 缓冲区间=" + bufferedRanges(v));
         } catch (e) {}
     }
 
@@ -149,18 +172,36 @@ var Player = (function () {
      * Two independent ways to lose the only wake-up there was; a heartbeat
      * has none.
      *
-     * Progress is `currentTime + buffered ahead` — bytes arriving count even
-     * while the picture is frozen, which is what keeps a slow cold range from
-     * being mistaken for a dead one. `userPaused` is an explicit flag, not
-     * `element.paused`: the element reports paused during load, and load is
-     * precisely when the worst hangs happen. */
+     * Progress is two watermarks, and it has to be two: the picture moving on,
+     * and bytes still arriving. Either one counts — a frozen picture with the
+     * buffer still filling is a slow cold range, not a dead one.
+     *
+     * It was written as one number, `currentTime + buffered ahead`, and that
+     * expression is a lie by algebra: `bufferedAhead` is measured *from*
+     * currentTime, so the sum is just the buffered edge and the playhead term
+     * cancels out. Nothing goes wrong while the edge keeps advancing — which is
+     * every video, right up until the buffer reaches the end of the file and
+     * pins there. Then a perfectly healthy playback reads as zero progress
+     * every fifteen seconds. 2026-08-17 15:33–15:35, a 100-second video,
+     * buffered 0.0–99.7 complete: four firings at t=42.3, 64.7, 83.0, 98.2 —
+     * the playhead advancing normally through every one of them — burned the
+     * whole ladder (hvc1 reload → avc1 → av01 → qn64) on a video that was
+     * playing fine, and blacklisted a mirror over a 403 collected on the way.
+     * Anything shorter than the buffering goal gets this for its whole length;
+     * every longer video gets it in its last ~72 seconds.
+     *
+     * `userPaused` is an explicit flag, not `element.paused`: the element
+     * reports paused during load, and load is precisely when the worst hangs
+     * happen. */
     var watchdogTimer = null;
-    var watchdogSeen = -1;    /* furthest progress seen */
-    var watchdogAt = 0;       /* when it last moved */
+    var watchdogSeen = -1;    /* furthest buffered edge seen */
+    var watchdogPos = -1;     /* furthest playhead position seen */
+    var watchdogAt = 0;       /* when either of them last moved */
     var userPaused = false;
 
     function startWatchdog() {
         watchdogSeen = -1;
+        watchdogPos = -1;
         watchdogAt = new Date().getTime();
         if (watchdogTimer) { return; }
         watchdogTimer = setInterval(watchdogTick, 5000);
@@ -169,6 +210,7 @@ var Player = (function () {
     function stopWatchdog() {
         if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
         watchdogSeen = -1;
+        watchdogPos = -1;
         watchdogAt = 0;
     }
 
@@ -176,8 +218,12 @@ var Player = (function () {
         var now = new Date().getTime();
         if (mode !== "mse" || userPaused) { watchdogAt = now; return; }
         var v = el("html5-video");
-        var end = (v.currentTime || 0) + bufferedAhead(v);
-        if (end > watchdogSeen + 0.3) { watchdogSeen = end; watchdogAt = now; return; }
+        var at = v.currentTime || 0;
+        var end = at + bufferedAhead(v);   /* the buffered edge ahead of the playhead */
+        var moved = false;
+        if (at > watchdogPos + 0.3) { watchdogPos = at; moved = true; }
+        if (end > watchdogSeen + 0.3) { watchdogSeen = end; moved = true; }
+        if (moved) { watchdogAt = now; return; }
 
         /* Adaptive patience. A screen that has never shown a frame gets 10
          * seconds. Mid-play gets 14–15, and the reason changed on 2026-08-15:
@@ -196,7 +242,10 @@ var Player = (function () {
                  : (incidentAt ? 14000 : 15000);
         if (now - watchdogAt < need) { return; }
         watchdogAt = now;
-        log("卡住 " + Math.round(need / 1000) + " 秒无错误也无进展，当作断连走重载阶梯");
+        log("卡住 " + Math.round(need / 1000) + " 秒无错误也无进展，当作断连走重载阶梯" +
+            "（t=" + (v.currentTime || 0).toFixed(1) + "s" +
+            " readyState=" + v.readyState +
+            " 缓冲区间=" + bufferedRanges(v) + "）");
         if (!recoverFromDecodeFailure("卡死无进展")) {
             emit("error", "卡死无进展，重载阶梯用尽");
         }
@@ -569,6 +618,17 @@ var Player = (function () {
              * Landing within 1.5s of the last target the remote asked for is
              * the stronger signal, honoured for ten seconds. */
             var now = new Date().getTime();
+            /* Both watchdog watermarks mean "further than anything seen so
+             * far", and a seek makes that meaningless. Jumping back leaves the
+             * playhead and the buffered edge below marks taken before the jump,
+             * so neither can advance again until playback has climbed all the
+             * way back — minutes, during which a perfectly healthy picture reads
+             * as no progress at all and the recovery ladder starts pulling it
+             * apart. Restart both from here; the position is discontinuous, so
+             * everything measured against the old one is void. */
+            watchdogSeen = -1;
+            watchdogPos = -1;
+            watchdogAt = now;
             var sinceApp = now - lastAppSeekAt;
             var byApp = sinceApp < 1500 ||
                 (sinceApp < 10000 &&
@@ -2157,6 +2217,7 @@ var Player = (function () {
         resume: function () {
             userPaused = false;
             watchdogSeen = -1;
+            watchdogPos = -1;
             watchdogAt = new Date().getTime();
             if (mode === "avplay") { try { webapis.avplay.play(); } catch (e) {} }
             else if (mode === "mse") { el("html5-video").play(); }
