@@ -407,12 +407,29 @@ body {
 .opt-group { margin-bottom: 32px; }
 .opt-label { font-size: 24px; color: #8b959e; margin-bottom: 16px; letter-spacing: 2px; }
 .opt-row { display: flex; flex-wrap: wrap; gap: 16px; }
+/* Sized to its own text rather than to a column, so the row degrades on its
+   own: bare numbers pack five or six to a line the way they always did, and
+   named parts take the width they need up to a limit and then ellipsis. One
+   rule, no branch on "does this upload name its parts" — and nav.js walks a
+   ragged row by design, so nothing has to be told how many fit. */
 .opt {
     font-size: 28px; padding: 14px 34px;
     background: rgba(255,255,255,0.10); border-radius: 10px;
     border: 3px solid transparent; color: #e8eaed;
+    max-width: 560px; flex-shrink: 0; overflow: hidden;
+    display: flex; align-items: baseline; gap: 16px;
 }
+/* Three parts to a chip, and only the middle one may be cut: the number is the
+   address, the name is the answer, the length is what decides between two
+   episodes that both sound right. Truncation lives on the name because it is
+   the only one that can be long — `min-width: 0` because a flex item refuses
+   to shrink below its content otherwise, which is what silently turns
+   text-overflow into no truncation at all. */
+.opt-p { color: #8b959e; flex-shrink: 0; }
+.opt-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opt-dur { color: #8b959e; font-size: 24px; flex-shrink: 0; margin-left: auto; }
 .opt.current { background: rgba(255,102,153,0.24); color: #fff; }
+.opt.current .opt-p, .opt.current .opt-dur { color: rgba(255,255,255,0.8); }
 .opt.focused { border-color: #ff6699; }
 
 #player-quality {

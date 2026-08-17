@@ -2076,8 +2076,24 @@
              * to `.opt.current`, so a long list lands on the part being watched
              * rather than at P1. */
             for (var p = 0; p < d.pages.length; p++) {
+                /* The name, not just the number. It has been in hand all along —
+                 * `view()` maps `part`, and the resume toast and the player's own
+                 * 「P7 / 24 …」 label both print it — this row was the one place
+                 * that dropped it. On a numbered upload "P7" says enough; on a
+                 * collection ("第一季1–11", "第二季1–10") the number says nothing
+                 * at all, and that is exactly the shape of upload whose list is
+                 * long enough to need the panel. Dropped again when the name is
+                 * only the number restated, which is what bilibili fills in when
+                 * the uploader named nothing: "P1 1" is worse than "P1". */
+                var pname = d.pages[p].part || "";
+                if (pname === String(p + 1) || pname === String(d.pages[p].page)) { pname = ""; }
+                var pdur = d.pages[p].duration || "";
                 ph += '<div class="opt focusable' + (d.pages[p].cid === playing.cid ? " current" : "") +
-                      '" data-cid="' + d.pages[p].cid + '">P' + (p + 1) + "</div>";
+                      '" data-cid="' + d.pages[p].cid + '">' +
+                      '<span class="opt-p">P' + (p + 1) + "</span>" +
+                      (pname ? '<span class="opt-name">' + esc(pname) + "</span>" : "") +
+                      (pdur ? '<span class="opt-dur">' + esc(pdur) + "</span>" : "") +
+                      "</div>";
             }
             el("opt-parts").innerHTML = ph;
         } else {

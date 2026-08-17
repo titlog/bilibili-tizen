@@ -616,7 +616,13 @@ var API = (function () {
                     duration: duration(d.duration),
                     play: count((d.stat || {}).view),
                     pages: (d.pages || []).map(function (p) {
-                        return { cid: p.cid, page: p.page, part: p.part };
+                        /* Per-part length, formatted here like every other
+                         * duration in this file. It is seconds on a page and
+                         * seconds on an archive, and the panel is the only place
+                         * that can use it — a five-hour part and a four-minute
+                         * one look identical in a list of names. */
+                        return { cid: p.cid, page: p.page, part: p.part,
+                                 duration: duration(p.duration) };
                     })
                 });
             }, onFail);
