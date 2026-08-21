@@ -2354,6 +2354,10 @@
     function showChrome() {
         if (!playing) { return; }
         el("playerui").className = "";
+        /* Fresh start for the "how long has it been trying to hide" clock: a
+         * keypress puts the banner up on purpose, so the four seconds that
+         * follow are not a banner refusing to leave. */
+        chromeWantSince = 0;
         armChromeHide(4000);
     }
 
@@ -2390,13 +2394,15 @@
      * re-arm and ask again. Same shape as the watchdog's heartbeat, and for
      * the same reason — a state machine that can only be restarted from the
      * outside gets stuck the first time an exit forgets. */
-    var chromeSaid = 0;     /* diagnostic lines spent on this video */
+    var chromeSaid = 0;       /* diagnostic lines spent on this video */
     var chromeHidTold = false;
+    var chromeWantSince = 0;  /* when the current "wants to hide but cannot" run began */
 
     function armChromeHide(after) {
         if (chromeTimer) { clearTimeout(chromeTimer); }
         chromeTimer = setTimeout(function () {
             chromeTimer = null;
+            var now = new Date().getTime();
             /* The one real stop: no session at all. showPlayerUi arms the next
              * one on the way in, so there is nothing to keep polling for. */
             if (!playing) { return; }
@@ -2409,6 +2415,7 @@
 
             if (!why) {
                 el("playerui").className = "hidden";
+                chromeWantSince = 0;
                 /* Once per video, and it earns its place: it is the difference
                  * between "the code never hid it" and "the code hid it and the
                  * screen shows it anyway", which look identical from the sofa
@@ -2420,9 +2427,27 @@
                 return;
             }
             armChromeHide(1000);
-            if (chromeSaid < 4) {
+
+            /* Two days of field lines taught this one what to say and when.
+             *
+             * Silent while the banner is already off screen: the panel sets
+             * `playerui` hidden on its way up, so 「面板开着」 was reporting a
+             * symptom that did not exist — there is nothing stuck when there is
+             * nothing showing.
+             *
+             * Silent for the first ten seconds: every rescue rebuild holds the
+             * element in `paused` for as long as it takes, and the heartbeat
+             * dutifully filed four lines per rebuild. What this was built to
+             * catch is a banner that never leaves, not one that waits.
+             *
+             * A diagnostic that fires on the healthy path stops being read —
+             * which is the same thing as not having one. */
+            var stuck = el("playerui").className.indexOf("hidden") < 0;
+            if (!chromeWantSince) { chromeWantSince = now; }
+            if (stuck && now - chromeWantSince >= 10000 && chromeSaid < 4) {
                 chromeSaid++;
-                report("chrome", "该收横幅了，没收：" + why +
+                report("chrome", "该收横幅了，没收：" + why + "，已经等了 " +
+                       Math.round((now - chromeWantSince) / 1000) + " 秒" +
                        "（playerui class=\"" + el("playerui").className + "\"）");
             }
         }, after);
@@ -2454,6 +2479,7 @@
          * the one video whose successor you most want a line about. */
         chromeSaid = 0;
         chromeHidTold = false;
+        chromeWantSince = 0;
         /* The end-of-video screen is one of the things a new playback tears
          * down. Picking a related card from it calls straight in here, and
          * leaving `pendingNext` set would keep every key going to
