@@ -68,6 +68,7 @@ var Nav = (function () {
         if (!current) { setFocus(focusables()[0]); return; }
         var from = centre(current);
         var best = null, bestScore = Infinity;
+        var lane = null, laneScore = Infinity;
         var list = focusables();
 
         for (var i = 0; i < list.length; i++) {
@@ -87,9 +88,27 @@ var Nav = (function () {
             var along = Math.abs(dx ? ox : oy);
             var across = Math.abs(dx ? oy : ox);
             var score = along + across * 3;
+
+            /* A candidate whose box overlaps the current one across the axis of
+             * travel shares its row (or column), and the eye expects a sideways
+             * press to stay in the row whenever the row has anywhere to go.
+             * Centre-to-centre scoring alone cannot promise that once boxes get
+             * wide: the panel's part chips size to their text (up to 560px), so
+             * the neighbour's centre can sit five hundred pixels away while the
+             * next row is only ninety below — "right" kept landing a row down.
+             * Uniform grids never hit this (the card straight below is filtered
+             * out by the direction test), which is why it survived everywhere
+             * except the one ragged row. Cross-row hops still work: they fall
+             * back to the plain score when the row has nothing in that
+             * direction. */
+            var sameLane = dx
+                ? (to.r.top < from.r.bottom - 6 && to.r.bottom > from.r.top + 6)
+                : (to.r.left < from.r.right - 6 && to.r.right > from.r.left + 6);
+            if (sameLane && score < laneScore) { laneScore = score; lane = list[i]; }
             if (score < bestScore) { bestScore = score; best = list[i]; }
         }
-        if (best) { setFocus(best); }
+        if (lane) { setFocus(lane); }
+        else if (best) { setFocus(best); }
     }
 
     document.addEventListener("keydown", function (e) {

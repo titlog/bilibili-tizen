@@ -209,6 +209,34 @@ var SelfTest = (function () {
             if (!document.getElementById("panel-title").textContent) { return "面板标题为空"; }
             return null;
         }],
+        /* 右键必须走同一行。分P切片按自己的文字定宽，宽切片的右邻居中心能在
+         * 五百像素外，而下一行只在九十像素下面 —— 纯中心距评分让「右」落进了
+         * 下一行。多P稿件上焦点开在正在播的那一片，正是最宽的那种；单P稿件
+         * 焦点开在相关推荐上，同样的断言照走。行尾没有右邻居就跳过，不算失败。 */
+        ["面板里按右键走的是同一行", 600, function () {
+            if (!visible("options")) { return "面板不见了"; }
+            var cur = document.querySelector("#options .focused");
+            if (!cur) { return "面板里没有焦点"; }
+            var cr = cur.getBoundingClientRect();
+            var all = document.querySelectorAll("#options .focusable");
+            var want = null, wantX = Infinity;
+            for (var i = 0; i < all.length; i++) {
+                if (all[i] === cur || all[i].offsetParent === null) { continue; }
+                var r = all[i].getBoundingClientRect();
+                var cx = r.left + r.width / 2;
+                var sameRow = r.top < cr.bottom - 6 && r.bottom > cr.top + 6;
+                if (!sameRow || cx <= cr.left + cr.width / 2 + 4) { continue; }
+                if (cx < wantX) { wantX = cx; want = all[i]; }
+            }
+            if (!want) { post("跳过：焦点右边同一行没有东西"); return null; }
+            key(KEY.RIGHT);
+            var now = document.querySelector("#options .focused");
+            if (now === want) { return null; }
+            if (now === cur) { return "按右键焦点没动"; }
+            var nr = now ? now.getBoundingClientRect() : { top: -1 };
+            return "按右键没走到同一行右邻居（from top=" + Math.round(cr.top) +
+                   " to top=" + Math.round(nr.top) + "）";
+        }],
         ["面板里能往下走", 600, function () {
             var before = document.getElementById("options").scrollTop;
             key(KEY.DOWN); key(KEY.DOWN); key(KEY.DOWN);
