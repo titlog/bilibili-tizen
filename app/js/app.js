@@ -2155,6 +2155,17 @@
                       "</div>";
             }
             el("opt-parts").innerHTML = ph;
+        } else if (playing.metaState === "failed") {
+            /* Say so. Hiding the group here is what a single-part video does,
+             * and a viewer who knows the upload has twenty parts cannot tell
+             * the two apart — that is exactly how the 412 of 2026-09-07 got
+             * reported: 「按向下没有出来分 P 列表」. */
+            group.className = "opt-group";
+            el("opt-parts").innerHTML = '<div class="empty">分 P 列表加载失败（' +
+                esc(playing.metaWhy || "?") + "）</div>";
+        } else if (playing.metaState !== "done") {
+            group.className = "opt-group";
+            el("opt-parts").innerHTML = '<div class="empty">正在加载分 P 列表…</div>';
         } else {
             group.className = "opt-group hidden";
             el("opt-parts").innerHTML = "";
@@ -2548,6 +2559,12 @@
          * until the picture is up, so nothing competes with AVPlay for a
          * connection while it is opening the stream. */
         playing.needsMeta = true;
+        /* What the panel may say about the part list before view() has spoken.
+         * A card from a feed carries no list, and until the fetch answers the
+         * panel cannot tell "one part" from "not loaded yet" — so it said
+         * nothing, and a multi-part video looked single-part from the sofa. */
+        playing.metaState = (detail.pages && detail.pages.length) ? "done" : "pending";
+        playing.metaWhy = "";
         el("pause-glyph").className = "hidden";
         cancelScrub();
         el("player-pos").textContent = "0:00";
@@ -2911,12 +2928,34 @@
         var session = playing, d = session.detail;
 
         if (!d.pages || !d.pages.length) {
-            API.view(d.bvid, function (full) {
+            session.metaState = "pending";
+            API.view(d.bvid, function (full, via) {
                 if (playing !== session) { return; }
+                if (via) { report("meta", d.bvid + " " + via); }
                 full.related = session.detail.related;
+                /* aid may already have been filled in by withAid() on the 403
+                 * path; a full view() carries it too, so nothing is lost. */
                 session.detail = full;
+                session.metaState = "done";
                 refreshPartLabel();
-            }, function () {});
+                /* The panel paints from the detail each time it opens, so a
+                 * list arriving while it was already up stayed invisible until
+                 * the viewer closed and reopened it — the related grid below
+                 * has redrawn for exactly this case all along. */
+                if (optionsOpen) { closeOptions(); openOptions(); }
+            }, function (why) {
+                if (playing !== session) { return; }
+                /* This used to be `function () {}`. A 412 from view() — which
+                 * is what 2026-09-07 was — then read as "single-part video"
+                 * on the panel and left nothing in the log. */
+                session.metaState = "failed";
+                session.metaWhy = String(why);
+                report("meta", d.bvid + " view 失败（" + why +
+                       "）：分 P 列表、简介都拿不到，403 那条路也换不到 aid");
+                if (optionsOpen) { closeOptions(); openOptions(); }
+            });
+        } else {
+            session.metaState = "done";
         }
         if (!d.related) {
             API.related(d.bvid, function (list) {

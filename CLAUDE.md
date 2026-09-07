@@ -949,7 +949,16 @@ Spike 01 和 02 **已完成，五项测试全过**。CDN、API 和两条播放�
 
 - *不需要 WBI 签名。* `search/all/v2`、`popular`、`ranking`、`view`、`playurl`
   都能无签名应答。只有 `search/type` 要签名，而 `search/all/v2` 覆盖了同样的
-  场景。
+  场景。**⟶ `view` 这一条 2026-09-07 反转了一半**：`/x/web-interface/view` 从这个
+  网络答 **HTTP 412**（风控 HTML 页，不是 JSON）——电视 UA、桌面 UA、带 Referer、带
+  `buvid3`、按 aid 问，全 412；同一台主机上 `archive/related` 和 `player/pagelist`
+  照常 200，而它的 wbi 孪生 `/x/web-interface/wbi/view` **不签名**就答 200、载荷
+  一样。分 P 列表、简介和强令牌要的 `aid` 全出自这一个调用，所以 412 的表现是
+  「按下键面板里没有分 P」加「403 那条路换不到 aid」，而且**两处都静默**——
+  `loadMetaForPlaying` 的失败回调曾是 `function () {}`。现在 `API.view` 失败（非
+  -404）就退到 wbi/view，哪条答上了记在 `meta:` 那行；面板把「还在加载」「加载
+  失败（原因）」和「本来就一 P」分开写。电视自己带 access_key 的请求是否也吃 412，
+  桌面探不出来（请求带的东西不一样），看 `meta:` 那行。
 - *网页轮询的响应不携带凭证。* 它返回一个跨域地址，query 里只有
   `ticket, gourl, first_domain` —— 会话是那一跳的 `Set-Cookie`，XHR 读不到。
   兜底路径因此用 `withCredentials` 取那个地址，让引擎自己的 jar 收下 ——

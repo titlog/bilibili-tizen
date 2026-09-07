@@ -663,9 +663,28 @@ var API = (function () {
             attempt(0);
         },
 
+        /* `/x/web-interface/view` started answering **HTTP 412** — a risk-control
+         * HTML page, not JSON — on 2026-09-07, probed from this network with
+         * the set's UA, a desktop UA, a Referer, a buvid3 cookie and by aid:
+         * 412 every time, while `archive/related` and `player/pagelist` on the
+         * same host answered 200. Its wbi twin (`/x/web-interface/wbi/view`)
+         * answers 200 with the identical payload *unsigned*. Everything the
+         * panel lists (parts, description) and the aid the strong-token rescue
+         * mints from come out of this one call, so a 412 here was a panel with
+         * no part list and a rescue path with no aid — both silent.
+         *
+         * The wbi path is the fallback, not the first choice: it is the one that
+         * may start insisting on its signature some day, and the plain path is
+         * the one the set has been measured on with an access_key. Whichever
+         * answered is passed to the caller as `via` (empty for the plain path)
+         * so the log says which one this set actually needs — that answer
+         * cannot be probed from a desk, the requests differ in what they carry.
+         *
+         * No fallback on -404: that is a JSON answer about the 稿件, and the
+         * dead-video check downstream reads it by that text. */
         view: function (bvid, onOk, onFail) {
-            getJson(BASE + "/x/web-interface/view?bvid=" + bvid, function (d) {
-                onOk({
+            function shape(d) {
+                return {
                     bvid: d.bvid,
                     aid: d.aid,
                     cid: d.cid,
@@ -684,8 +703,18 @@ var API = (function () {
                         return { cid: p.cid, page: p.page, part: p.part,
                                  duration: duration(p.duration) };
                     })
+                };
+            }
+            getJson(BASE + "/x/web-interface/view?bvid=" + bvid, function (d) {
+                onOk(shape(d), "");
+            }, function (why1) {
+                if (String(why1).indexOf("-404") >= 0) { onFail(why1); return; }
+                getJson(BASE + "/x/web-interface/wbi/view?bvid=" + bvid, function (d) {
+                    onOk(shape(d), "view 答 " + why1 + "，wbi/view 不签名答上了");
+                }, function (why2) {
+                    onFail("view " + why1 + "；wbi/view " + why2);
                 });
-            }, onFail);
+            });
         },
 
         related: function (bvid, onOk, onFail) {
