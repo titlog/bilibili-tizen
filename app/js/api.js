@@ -936,22 +936,37 @@ var API = (function () {
                               qn: qn || 80, fnval: 2064, fnver: 0, fourk: 1,
                               platform: "android", mobi_app: "android",
                               build: 7280300 });
+            /* codecs the app endpoint omits: the web endpoint's low tiers
+             * carry them, and a family's box type is constant within a cid,
+             * so the string maps by codecid. Asked in parallel with the app
+             * endpoint — it depends on nothing the app answer carries, and
+             * serialising the two cost a round trip on a black screen. The
+             * three stages are timed and stamped on the response so the log
+             * can say where a 9-second strong-token start actually went. */
+            var t0 = new Date().getTime(), tApp = 0, tCodecs = 0;
+            var wdDone = false, wdData = null, wdWaiter = null;
+            var url2 = BASE + "/x/player/playurl?avid=" + aid + "&cid=" + cid +
+                       "&qn=16&fnval=2064&fnver=0&fourk=1";
+            function url2Settled(wd) {
+                wdData = wd || null; wdDone = true;
+                tCodecs = new Date().getTime() - t0;
+                if (wdWaiter) { wdWaiter(); }
+            }
+            getJson(url2, url2Settled, function () { url2Settled(null); });
             getJson(appUrl, function (ad) {
+                tApp = new Date().getTime() - t0;
                 if (!ad.dash) { onFail("app 端点无 dash"); return; }
-                /* codecs the app endpoint omits: the web endpoint's low tiers
-                 * carry them, and a family's box type is constant within a cid,
-                 * so the string maps by codecid. */
-                var url2 = BASE + "/x/player/playurl?avid=" + aid + "&cid=" + cid +
-                           "&qn=16&fnval=2064&fnver=0&fourk=1";
-                getJson(url2, function (wd) {
+                function go() {
                     var codecsByCid = {}, audioCodecs = "mp4a.40.2";
+                    var wd = wdData || {};
                     var wv = (wd.dash && wd.dash.video) || [];
                     for (var w = 0; w < wv.length; w++) { codecsByCid[wv[w].codecid] = wv[w].codecs; }
                     if (wd.dash && wd.dash.audio && wd.dash.audio[0]) {
                         audioCodecs = wd.dash.audio[0].codecs || audioCodecs;
                     }
                     finish(ad.dash, codecsByCid, audioCodecs);
-                }, function () { finish(ad.dash, {}, "mp4a.40.2"); });
+                }
+                if (wdDone) { go(); } else { wdWaiter = go; }
 
                 function codecsFor(cid2, map) {
                     return map[cid2] ||
@@ -966,6 +981,13 @@ var API = (function () {
                                        rep.backupUrl || rep.backup_url, false);
                     }
                     var video = dash.video || [], audio = dash.audio || [];
+                    /* Tiers above the cap are never in the manifest (Mpd.build
+                     * caps at PREFERRED_QN), so their headers are not worth a
+                     * read: each one is ~1 s of a black screen at concurrency
+                     * two. Free today (this account is offered ≤80) and a
+                     * guard for a 大会员 account or a raised cap. */
+                    var cap = qn || 80;
+                    video = video.filter(function (r) { return !(r.id > cap); });
                     var s, wh;
                     for (var v = 0; v < video.length; v++) {
                         s = video[v];
@@ -988,8 +1010,12 @@ var API = (function () {
                     }
                     /* Read every stream's sidx, then drop the ones that failed —
                      * a rep with no segments cannot go into the manifest. */
+                    var tSidx0 = new Date().getTime();
                     fillSegments(video.concat(audio), function () {
                         var vAll = video.length, aAll = audio.length;
+                        dash.strongTiming = "app端点=" + tApp + "ms codecs=" + tCodecs +
+                            "ms 文件头=" + (vAll + aAll) + "个/并发2=" +
+                            (new Date().getTime() - tSidx0) + "ms";
                         dash.video = video.filter(function (r) { return r.segments; });
                         dash.audio = audio.filter(function (r) { return r.segments; });
                         if (!dash.video.length || !dash.audio.length) {

@@ -2708,12 +2708,15 @@
          * single byte of media was requested — and the answer to one has never
          * had any bearing on how to ask the other. `undefined` means still in
          * flight, `null` means it failed; the decision waits for both. */
-        var got = { dash: undefined, prog: undefined, resume: undefined };
+        /* `strong` stays null unless a lesson says this video needs the app
+         * endpoint's token — then it is a fourth request, awaited like the
+         * others, and decide() prefers it over the web manifest. */
+        var got = { dash: undefined, prog: undefined, resume: undefined, strong: null };
 
         function decide() {
             if (playing !== session) { return; }
             if (got.dash === undefined || got.prog === undefined ||
-                    got.resume === undefined) { return; }
+                    got.resume === undefined || got.strong === undefined) { return; }
 
             /* bilibili's own record for this video, which knows about every
              * device including this one. It only moves the position within the
@@ -2738,7 +2741,8 @@
                       fmt(playing.startMs) + " 继续播放");
             }
 
-            var dash = got.dash, prog = got.prog;
+            var fromLesson = !!got.strong;
+            var dash = got.strong || got.dash, prog = got.prog;
             var dashQn = 0;
             if (dash) {
                 var best = Player.pickDashVideo(dash);
@@ -2752,6 +2756,17 @@
              * on a screen that has been black for twenty seconds, and adds a way
              * to fail that a response already in hand cannot. */
             if (dash) { playing.dashReady = dash; }
+            if (fromLesson) {
+                /* Spent: a 403 on this manifest goes down the ladder, not back
+                 * to the strong token. The web manifest is kept for the
+                 * 「回到 web 端点压中低档」 exit, which otherwise would be
+                 * handed the strong one it just failed on. */
+                playing.triedStrong = true;
+                playing.webDash = got.dash || null;
+                playing.timedLabel = "到画面(强令牌·教训)";
+                report("player", "教训里的强令牌就绪，" +
+                       (dash.tierNote || "") + (dash.strongTiming ? "，" + dash.strongTiming : ""));
+            }
             /* And the mirror image, which did not exist until 2026-08-11: the
              * durl is a *different file* (audio muxed in) on AVPlay's own
              * stack, and the evening DASH died completely — video tiers 403d
@@ -2833,6 +2848,29 @@
                 toast("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
             }
             stopPlayback();
+        }
+
+        /* The lesson's fourth request. Only with an access_key: the app
+         * endpoint signs the token from it, and without one the "strong" token
+         * is the weak one wearing a different platform (the 4-of-12-tiers
+         * lesson of 08-11). Fails soft — got.strong becomes null and decide()
+         * takes the web manifest exactly as before, with the 403 escalation
+         * still available downstream. */
+        var hintAid = Player.strongHint(cid);
+        if (hintAid && Auth.isLoggedIn() && Auth.accessKey()) {
+            got.strong = undefined;
+            report("player", "沿用教训：这个视频 web 令牌必被拒，开播直接铸 app 端点强令牌（aid=" + hintAid + "）");
+            API.playurlDashStrong(hintAid, cid, PREFERRED_QN, function (sd) {
+                if (playing !== session) { report("player", "教训强令牌回来时会话已经没了，丢弃"); return; }
+                got.strong = sd;
+                decide();
+            }, function (why) {
+                if (playing !== session) { return; }
+                report("player", "教训里的强令牌铸不出来（" + why + "），改回 web 清单，教训作废");
+                Player.learnStrong(cid, 0);
+                got.strong = null;
+                decide();
+            });
         }
 
         API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
@@ -3521,9 +3559,14 @@
                         function (strongDash) {
                             if (playing !== sessST) { report("player", "强令牌回来时会话已经没了，丢弃"); return; }
                             playing.dashReady = strongDash;
+                            /* Remembered now, not after a minute of playback:
+                             * the fact being recorded — web refused, app
+                             * endpoint answered — has already happened. */
+                            Player.learnStrong(sessST.cid, aidST);
                             var repST = Player.pickDashVideo(strongDash);
                             report("player", "app 端点强令牌就绪，" +
                                    (strongDash.tierNote || (strongDash.video ? strongDash.video.length + " 档" : "0 档")) +
+                                   (strongDash.strongTiming ? "，" + strongDash.strongTiming : "") +
                                    "，从 " + fmt(atMs) + " 重建");
                             playDash(strongDash, (repST && repST.id) || PREFERRED_QN);
                         }, function (whyST) {
@@ -3749,11 +3792,15 @@
                  * over an expired strong manifest, which sent the log reader
                  * down the wrong road. The player's own stale guard bounces an
                  * expired one back for a refetch either way. */
+                /* The web manifest kept by the lesson path, when there is
+                 * one — this exit exists to reach the web endpoint's low
+                 * tiers, and dashReady is the strong manifest then. */
+                var backDash = playing.webDash || playing.dashReady;
                 report("player", "强令牌与渐进式都不行，回到" +
-                       (playing.dashReady.strong ? "强令牌清单" : " web 端点") +
+                       (backDash.strong ? "强令牌清单" : " web 端点") +
                        "压中低档，从 " + fmt(ffAt) + " 起");
-                var repL = Player.pickDashVideo(playing.dashReady);
-                playDash(playing.dashReady, (repL && repL.id) || PREFERRED_QN);
+                var repL = Player.pickDashVideo(backDash);
+                playDash(backDash, (repL && repL.id) || PREFERRED_QN);
                 return;
             }
             /* Every route has been tried. If the probes came back 403 the

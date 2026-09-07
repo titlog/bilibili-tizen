@@ -1431,6 +1431,8 @@ var Player = (function () {
         }
         if (patch && patch.f) { l.f = patch.f; }
         if (patch && patch.r) { l.r = patch.r; }
+        /* `in`, not truthiness: writing 0 is how a lesson is withdrawn. */
+        if (patch && ("s" in patch)) { l.s = patch.s; }
         l.t = new Date().getTime();
         map[scope] = l;
         writeLessons(map);
@@ -2044,11 +2046,24 @@ var Player = (function () {
                 return;
             }
 
+            /* A load 403 is a web-token refusal. When it comes from a host the
+             * lesson already lists as bad, the cooldown below is a 3 s wait for
+             * news that arrived hours ago: noteBadHost learned nothing (known
+             * host), so the immediate-rebuild path above was skipped, and the
+             * retry re-asks the same known-bad host. 2026-09-07 20:12: exactly
+             * this, 6 s instead of 2 s on a re-entry. */
+            var is403Load = !!(e && e.code === 1001 && e.data &&
+                               (e.data[1] === 403 || e.data[1] === 401));
+            var knownBadHost = is403Load && !!badHosts[hostOf(e.data[0])];
+            if (knownBadHost && !retriedLoad) {
+                log("403 来自教训里已知的坏主机 " + hostOf(e.data[0]) + "，跳过 3 秒冷却");
+            }
+
             /* One more go, after a pause, when the failure was the network.
              * Shaka's own retries all happen inside a few seconds; this CDN's
              * refusals outlast that, and a second attempt half a minute later
              * routinely succeeds where the first was turned away. */
-            if (e && e.category === 1 && !retriedLoad) {
+            if (e && e.category === 1 && !retriedLoad && !knownBadHost) {
                 retriedLoad = true;
                 log("首次加载被拒（" + describeShakaError(e) + "），3 秒后重来一次");
                 emit("status", "网络不顺，正在自动重试…");
@@ -2064,8 +2079,6 @@ var Player = (function () {
              * which is another burst of refused requests into the limiter that
              * then throttles the strong token's own sidx reads. After the one
              * cooldown retry above, this is the earliest honest point. */
-            var is403Load = !!(e && e.code === 1001 && e.data &&
-                               (e.data[1] === 403 || e.data[1] === 401));
             if (offerStrongToken(is403Load)) { return; }
 
             /* Anything that is not the network, on a stream this set said it
@@ -2264,6 +2277,22 @@ var Player = (function () {
         },
         learnRoute: function (cid, route) {
             stashLessonFor(String(cid), { r: route });
+        },
+        /* 「This video needs the app-endpoint token」, with the aid the token
+         * is minted from. Measured 2026-09-07: re-entering such a video 12
+         * minutes later paid the web refusal again — 6 s (two hosts 403,
+         * 3 s cooldown retry, 403) before escalating, and the bad-host lesson
+         * made it *slower* (a known host teaches nothing, so the immediate
+         * rebuild path is skipped). Token strength is a property of the
+         * endpoint, not of the minute, but it shares the 6 h TTL: nothing
+         * here is worth a second constant. Withdrawn (0) when the strong
+         * fetch itself fails, so a bad lesson costs one entry, not a day. */
+        strongHint: function (cid) {
+            var l = readLessons()[String(cid)];
+            return (l && l.s) || 0;
+        },
+        learnStrong: function (cid, aid) {
+            stashLessonFor(String(cid), { s: aid || 0 });
         },
 
         playProgressive: function (url, startMs) { reset(); playAvplay(url, startMs); },
