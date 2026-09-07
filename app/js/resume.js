@@ -133,10 +133,16 @@ var Resume = (function () {
              * this television played. Deleting the entry outright meant a video
              * opened and left after a minute never appeared in 我的 at all, and
              * so did one watched all the way through. */
-            var resumable = pos >= MIN_SECONDS && !(dur && pos > dur - END_MARGIN);
+            var atEnd = !!(dur && pos > dur - END_MARGIN);
+            var resumable = pos >= MIN_SECONDS && !atEnd;
 
             m[key] = {
                 pos: resumable ? Math.floor(pos) : 0,
+                /* "Finished" used to be written as pos 0, the same as "barely
+                 * started", and a just-finished video then sat at the top of
+                 * 继续观看 by recency until the server history caught up —
+                 * never, for a web-fallback account that cannot report -1. */
+                done: atEnd,
                 dur: Math.floor(dur),
                 at: new Date().getTime(),
                 card: card || prev.card    /* enough to redraw it in 我的 */
@@ -184,6 +190,7 @@ var Resume = (function () {
                 if (!m.hasOwnProperty(k)) { continue; }
                 if (k.indexOf(bvid + ":") !== 0) { continue; }
                 var e = m[k];
+                if (e.done) { return 1; }
                 if (e.dur) { best = Math.max(best, Math.min(1, e.pos / e.dur)); }
             }
             return best;
@@ -227,6 +234,7 @@ var Resume = (function () {
             var m = load(), e = m[id(bvid, cid)];
             if (!e) { return; }
             e.pos = 0;
+            e.done = true;
             e.at = new Date().getTime();
             dirty = true;
             flush();

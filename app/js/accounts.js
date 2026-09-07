@@ -312,6 +312,16 @@ var Accounts = (function () {
          * worth saying out loud next to what the server actually answers. */
         jarOwner: function () { return load().jarOwner; },
 
-        clearJar: clearJar
+        /* The exported form forgets the owner as well. The web ticket flow
+         * empties the jar before the hop that refills it; if that hop fails or
+         * is cancelled, the previous owner would otherwise still be "signed
+         * in" over an empty jar — withCredentials on, anonymous feed served
+         * under their name, which is the exact state needsRelogin exists to
+         * flag. Internal callers (switchTo/remove) already null it themselves. */
+        clearJar: function () {
+            var ok = clearJar();
+            if (ok) { var d = load(); d.jarOwner = null; persist(); }
+            return ok;
+        }
     };
 })();

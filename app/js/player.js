@@ -825,16 +825,18 @@ var Player = (function () {
         try { webapis.avplay.setDisplayMethod("PLAYER_DISPLAY_MODE_LETTER_BOX"); } catch (e) {}
         webapis.avplay.setDisplayRect(0, 0, 1920, 1080);
         try { webapis.avplay.setStreamingProperty("USER_AGENT", USER_AGENT); } catch (e) {}
-        /* Only when there is an actual cookie to send. A jar-only session has
-         * no readable SESSDATA, so this was handing AVPlay an empty COOKIE
-         * property — which it turns into a malformed Cookie header and the CDN
-         * refuses the request. It looked exactly like a broken stream, and it
-         * only started once the viewer signed in. */
-        var cookie = (typeof Auth !== "undefined" && Auth.isLoggedIn())
-            ? Auth.cookieHeader() : "";
-        if (cookie) {
-            try { webapis.avplay.setStreamingProperty("COOKIE", cookie); } catch (e) {}
-        }
+        /* No COOKIE property, on purpose (2026-09-07). Stream urls are
+         * pre-signed and AVPlay needs no session to fetch them — CLAUDE.md has
+         * said so since the "AVPlay 看不到 cookie jar" assumption was debunked
+         * — yet this used to hand SESSDATA, bili_jct and DedeUserID to every
+         * host the progressive path opened, including the plain http:// mirror
+         * twins that the rotation reaches after a couple of failures: the
+         * account's credentials, in cleartext, to Akamai and to PCDN nodes.
+         * The official web player never does that either — its cookies are
+         * scoped to .bilibili.com and the CDN hosts are on other domains.
+         * (The earlier lesson here still stands the other way round: an
+         * *empty* COOKIE property breaks every request. Not setting it at all
+         * is the state the spike measured progressive playback in.) */
 
         /* setListener registers on the avplay singleton and close() does not
          * detach it, so a torn-down session's onerror or onstreamcompleted lands
@@ -919,8 +921,8 @@ var Player = (function () {
                  * inside app.js; a strong manifest or a video with no aid falls
                  * through to the per-file drop below. */
                 if (badTok && offerStrongToken()) { return; }
-                if (badTok && dropRep(lastDash.dash, badTok)) {
-                    var fromTok = lastTime || lastDash.startMs || 0;
+                if (badTok && droppable(lastDash.dash, badTok)) {
+                    var fromTok = (haveTime ? lastTime : (lastDash.startMs || 0));
                     log("文件 " + badTok + " 被 403，从清单剔除，从 " +
                         Math.round(fromTok / 1000) + "s 原地重建");
                     emit("status", "网络不顺，正在自动重试…");
@@ -940,7 +942,7 @@ var Player = (function () {
                 if (aTok && !isVideoToken(lastDash.dash, aTok) && !audioRotated[aTok]) {
                     audioRotated[aTok] = true;
                     var aLead = rotateMirrors(lastDash.dash);
-                    var fromA = lastTime || lastDash.startMs || 0;
+                    var fromA = (haveTime ? lastTime : (lastDash.startMs || 0));
                     log("音轨 " + aTok + " 被 403，换镜像" +
                         (aLead ? "（改从 " + aLead + " 出发）" : "") +
                         "，从 " + Math.round(fromA / 1000) + "s 原地重建");
@@ -1351,6 +1353,10 @@ var Player = (function () {
      * requests rather than accumulated debris) but that was luck, not design. */
     function resetSegTraffic() {
         segStarted = 0; segFinished = 0; segLastStart = 0; segLastFinish = 0;
+        /* The evidence line too: at a first-load stall it otherwise describes
+         * the previous video's last range as 「完整」, pointing the reader at
+         * the decoder for a stall that never received a byte. */
+        lastSegReq = null; lastAskedRange = "";
     }
 
     function segTraffic() {
@@ -1398,9 +1404,17 @@ var Player = (function () {
      * enough. */
     function offerStrongToken(known403) {
         if (strongEmitted) { return false; }
-        if (lastDash && lastDash.strong) { return false; }
-        if (!known403 && !objectKeys(badFiles).length) { return false; }
+        /* `lastDash.dash.strong` — the flag lives on the playurl payload; the
+         * old `lastDash.strong` read an undefined property and never fired. */
+        if (lastDash && lastDash.dash && lastDash.dash.strong) { return false; }
+        if (!known403 && !saw403) { return false; }
         strongEmitted = true;
+        /* Once per *manifest object*, and remembered on the object: when the
+         * strong fetch fails and app.js hands this very web manifest back to
+         * walk the tier ladder, the re-arm below must not fire again for it —
+         * it did, and the ladder's exit 「回到 web 端点压中低档」 never dropped
+         * a tier, it re-asked for a strong token that had just failed. */
+        if (lastDash && lastDash.dash) { lastDash.dash.strongTried = true; }
         log("web 令牌高档被 403 拒，压档前先试 app 端点强令牌");
         lastDecodeHandled = false;
         emit("error", "web 令牌 403，交给 app 端点强令牌");
@@ -1445,6 +1459,7 @@ var Player = (function () {
         if (!err || err.code !== 1001 || !err.data) { return false; }
         var status = err.data[1];
         if (status !== 403 && status !== 401) { return false; }
+        saw403 = true;
         var h = hostOf(err.data[0]);
         if (h && !badHosts[h]) {
             badHosts[h] = true;
@@ -1487,9 +1502,10 @@ var Player = (function () {
         if (!err || err.code !== 1001 || !err.data) { return ""; }
         var status = err.data[1];
         if (status !== 403 && status !== 401) { return ""; }
+        saw403 = true;
         var tok = fileTokenOf(err.data[0]);
         if (!tok || badFiles[tok]) { return ""; }
-        /* Only what dropRep can actually act on. Recording an undroppable token
+        /* Only what droppable() says can be left out. Recording an undroppable token
          * is a silent side effect: the entry does nothing except pollute the
          * lesson and make the next 403 on the same file unrecognisable as new —
          * 2026-08-11 20:52, the last remaining audio file was learned this way
@@ -1526,26 +1542,28 @@ var Player = (function () {
      * refused, so restoring 1080p beats degrading to 480p. Reset per video with
      * the rest of the per-video state below. */
     var strongEmitted = false;
+    /* Whether this video has actually met a 403/401. `badFiles` is not that:
+     * the decode ladder fills it for parse failures and the lesson replay
+     * pre-fills it on entry, and the strong-token rung used to fire on either
+     * — logging a 403 nobody received and spending the aid+strong+sidx round
+     * trip ahead of the avc1 fallback. Reset with the per-video scope. */
+    var saw403 = false;
 
     function leadHostOf(dash) {
         var v = dash && dash.video && dash.video[0];
         return hostOf((v && ((v.urls && v.urls[0]) || v.baseUrl)) || "");
     }
 
-    function dropRep(dash, tok) {
+    /* Whether a banned file can be left out at all. Never empty a list — a
+     * manifest with no audio (or video) cannot be built, and the honest exit
+     * path is a better end than 「拼不出播放清单」 on a self-inflicted wound. */
+    function droppable(dash, tok) {
         var kinds = ["video", "audio"];
         for (var k = 0; k < kinds.length; k++) {
             var list = (dash && dash[kinds[k]]) || [];
             for (var i = 0; i < list.length; i++) {
                 var u = (list[i].urls && list[i].urls[0]) || list[i].baseUrl;
-                if (fileTokenOf(u) !== tok) { continue; }
-                /* Never empty a list — a manifest with no audio (or video)
-                 * cannot be built at all, and the honest exit path is a
-                 * better end than 「拼不出播放清单」 on a self-inflicted
-                 * wound. */
-                if (list.length < 2) { return false; }
-                list.splice(i, 1);
-                return true;
+                if (fileTokenOf(u) === tok) { return list.length >= 2; }
             }
         }
         return false;
@@ -1557,7 +1575,15 @@ var Player = (function () {
      * preferGoodHosts does for hosts. */
     var BAD_FILE_TTL = 5 * 60 * 1000;
 
-    function dropKnownBadFiles(dash) {
+    /* A shallow copy of the payload with the banned files left out — the
+     * session's own `dash` is never touched. It used to be spliced in place,
+     * which quietly broke two promises made around it: the 5-minute TTL
+     * (an expired entry could not bring its tier back, the representation was
+     * gone), and the 「坏文件名单把清单掏空了，这次忽略名单重建」 rung, which
+     * cleared the list and rebuilt from the same gutted arrays — logging a
+     * restoration that could not happen. Only a fresh playurl ever restored
+     * anything. */
+    function withoutBadFiles(dash) {
         /* Expiring, because a 403 from this CDN is the weather of the minute:
          * the same file that refuses everything during a cooldown serves at
          * full speed a few minutes later, and a permanent ban costs a tier for
@@ -1566,10 +1592,20 @@ var Player = (function () {
         for (var tok in badFiles) {
             if (badFiles[tok] !== true && now - badFiles[tok] > BAD_FILE_TTL) {
                 delete badFiles[tok];
-                continue;
             }
-            dropRep(dash, tok);
         }
+        var out = {};
+        for (var key in dash) { if (dash.hasOwnProperty(key)) { out[key] = dash[key]; } }
+        var kinds = ["video", "audio"];
+        for (var k = 0; k < kinds.length; k++) {
+            var list = dash[kinds[k]] || [], kept = [];
+            for (var i = 0; i < list.length; i++) {
+                var u = (list[i].urls && list[i].urls[0]) || list[i].baseUrl;
+                if (!badFiles[fileTokenOf(u)]) { kept.push(list[i]); }
+            }
+            out[kinds[k]] = (kept.length || !list.length) ? kept : list;
+        }
+        return out;
     }
 
     /* Every path into playDashWithShaka runs through this, so a manifest can
@@ -1705,7 +1741,7 @@ var Player = (function () {
         /* From where the viewer actually got to, not from the original start —
          * this failure arrives mid-playback, and restarting the episode is a
          * worse answer than the stall was. */
-        var from = lastTime || lastDash.startMs || 0;
+        var from = (haveTime ? lastTime : (lastDash.startMs || 0));
         var at = Math.round(from / 1000);
         var skippedReload = false;
         decodeRecoveries++;
@@ -1770,7 +1806,12 @@ var Player = (function () {
         }
         /* Same codec, twice, still refused — now the probe is the suspect after
          * all, and H.264 is one reload away. */
-        if (decodeRecoveries === 2 && lastDash.family !== "avc1") {
+        /* `>= 2`, not `=== 2`: the per-file drop above was inserted between
+         * the reload and this rung (08-11) and consumes a count of its own, so
+         * the equality made H.264 unreachable whenever a file had been dropped
+         * — the ladder went reload → drop → av01 → tier, skipping the one rung
+         * that answers "the probe lied about H.265". */
+        if (decodeRecoveries >= 2 && lastDash.family !== "avc1") {
             /* Two ways to arrive here and they are not the same event: the
              * reload ran and did not help, or it was skipped as futile. A line
              * claiming a reload that never happened is the kind of small lie
@@ -1859,7 +1900,7 @@ var Player = (function () {
          * at 12:48 the ladder had nowhere to escalate and ground through six
          * rungs to 有声退出. The flag means "tried for this manifest", and a
          * new web manifest is a new incident. */
-        if (!isRetry && dash && !dash.strong) { strongEmitted = false; }
+        if (!isRetry && dash && !dash.strong && !dash.strongTried) { strongEmitted = false; }
         mode = "mse";
         var gen = ++mseGeneration;
         var retriedLoad = !!isRetry;
@@ -1867,6 +1908,7 @@ var Player = (function () {
         var scope = scopeOf(dash);
         if (scope !== badHostsScope) {
             badHostsScope = scope; badHosts = {}; badFiles = {}; audioRotated = {};
+            saw403 = false;
             strongEmitted = false;
             lessonFamily = "";
             var lesson = readLessons()[scope];
@@ -1875,7 +1917,7 @@ var Player = (function () {
                 for (li = 0; li < (lesson.bh || []).length; li++) { badHosts[lesson.bh[li]] = true; }
                 /* Replayed with the lesson's own age, not as `true`.
                  *
-                 * `true` means "never expires" to dropKnownBadFiles, so a
+                 * `true` means "never expires" to withoutBadFiles, so a
                  * bad-file verdict up to six hours old outlived every file
                  * learned in this session — which expires in five minutes,
                  * because a 403 here is the weather of the minute. The two
@@ -1909,11 +1951,11 @@ var Player = (function () {
             }
         }
         preferGoodHosts(dash);
-        dropKnownBadFiles(dash);
-        var manifest = Mpd.build(dash, capId || PREFERRED_QN, prefer, lessonFamily);
+        var usable = withoutBadFiles(dash);
+        var manifest = Mpd.build(usable, capId || PREFERRED_QN, prefer, lessonFamily);
         if (!manifest && !prefer) {
             /* The preferred family had nothing usable. H.264 is always there. */
-            manifest = Mpd.build(dash, capId || PREFERRED_QN, "avc1");
+            manifest = Mpd.build(usable, capId || PREFERRED_QN, "avc1");
         }
         if (!manifest && objectKeys(badFiles).length) {
             /* The blacklist ate the manifest. Seven files banned inside one

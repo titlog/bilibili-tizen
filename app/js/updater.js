@@ -157,6 +157,12 @@ var Updater = (function () {
             setTimeout(function () { once("超时"); }, 12000);
             /* A tiny, stable, real library. Loading it proves the whole path:
              * DNS, TLS, and the widget policy permitting off-origin script. */
+            /* Pinned by hash (2026-09-07): this runs on every retail boot, and
+             * an off-origin script without integrity is remote code execution
+             * in the widget that holds every account's tokens. A CDN that
+             * serves different bytes now fails the probe instead of running. */
+            s.integrity = "sha384-WASZCYHGuIg0bwkJEH65mhmbKS1x4/VKI2bzElPKmL5B3e0UaH45nIdqOm+BUuRA";
+            s.crossOrigin = "anonymous";
             s.src = "https://cdn.jsdelivr.net/npm/mustache@4.2.0/mustache.min.js";
             document.head.appendChild(s);
         } catch (e) {

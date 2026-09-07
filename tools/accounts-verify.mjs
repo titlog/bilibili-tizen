@@ -202,6 +202,11 @@ function firePoll(env) {
   const recent = Resume.recent(10).map((c) => c.bvid);
   ok("a finished video stays in the history", recent.indexOf("BVdone") >= 0, recent.join(","));
   eq("with no resume point", Resume.positionMs("BVdone", 1), 0);
+  eq("and reads as fully watched, so 继续观看 drops it", Resume.fraction("BVdone"), 1);
+  /* Watching it again from the start is a fresh record: not finished any more. */
+  Resume.record("BVdone", 1, 60000, 600000, { bvid: "BVdone", title: "看完了" });
+  Resume.flush();
+  eq("a rewatch clears the finished mark", Resume.fraction("BVdone"), 0.1);
 
   /* A genuine mid-video position still works as before. */
   Resume.record("BVmid", 1, 300000, 600000, { bvid: "BVmid", title: "看到一半" });

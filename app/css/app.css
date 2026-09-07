@@ -448,7 +448,11 @@ body {
 
 /* Once results exist the keyboard steps aside rather than pushing them off
    the bottom of the screen. */
-.keyboard.collapsed { display: none; }
+/* Collapsed after a search: the letter rows fold away so the results are not
+ * buried under four rows of keys, but the action row (中文输入 / 空格 / 删除 /
+ * 搜索) stays — display:none on the whole keyboard made it unreachable, and
+ * once collapsed nothing could ever uncollapse it (2026-09-07). */
+.keyboard.collapsed .krow:not(.acts) { display: none; }
 
 #nextup-thumb {
     display: block; margin: 0 auto;

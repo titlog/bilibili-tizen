@@ -355,6 +355,17 @@
         return parts.join(",");
     }
 
+    /* An empty 稍后再看 is the normal state of a list nobody has added to yet,
+     * and 「没有内容」 reads as a fault. It is also the one screen where saying
+     * how the list gets filled is the whole feature: the adding happens on a
+     * phone, somewhere else entirely. Same text on the cache-restore path —
+     * the second visit used to lose it. */
+    function emptyTextFor(kind) {
+        return kind === "toview"
+            ? "稍后再看是空的 —— 在手机或网页上点「稍后再看」，加进去的视频就会出现在这里"
+            : undefined;
+    }
+
     function renderGrid(items, emptyText) {
         if (!items.length) {
             screenEl.innerHTML = '<div class="empty">' + esc(emptyText || "没有内容") + '</div>';
@@ -612,6 +623,11 @@
      * startup so the home screen has it by the time the feed paints, rather
      * than inserting a row under someone who has already started navigating. */
     var serverHistory = { at: 0, items: null };
+    var historyOwner = null;   /* which account the in-flight chain is for */
+
+    function activeAccountId() {
+        return (typeof Accounts !== "undefined") ? Accounts.activeId() : "";
+    }
 
     /* Callers waiting on the chain that is already running. Without this, three
      * pages become six: `freshHome()` clears the cache and then both it and the
@@ -631,19 +647,34 @@
             onOk(serverHistory.items, serverHistory.items.length, true);
             return;
         }
-        if (historyWaiters) { historyWaiters.push({ ok: onOk, fail: onFail }); return; }
+        /* A chain belongs to the account it was started for. Joining one that
+         * another account started — boot fires renderAccounts and this fetch
+         * together, and a face picked within the ~2 s the three pages take is
+         * exactly that — delivered A's phone history into B's 继续观看 and
+         * cached it as B's for a minute. The old chain's answers are dropped
+         * on arrival; a new chain starts for the new owner. */
+        var owner = activeAccountId();
+        if (historyWaiters && historyOwner === owner) {
+            historyWaiters.push({ ok: onOk, fail: onFail }); return;
+        }
         historyWaiters = [{ ok: onOk, fail: onFail }];
+        historyOwner = owner;
 
         /* Called once per page with everything so far — the cache and every
          * caller take the growing list as it comes. `done` is forwarded: 我的
          * uses it to repaint on the first page and the last one rather than on
          * all three. */
         API.history(function (items, rawCount, done) {
+            if (activeAccountId() !== owner) {
+                report("history", "服务端历史回来时账号已经切换，丢弃这份");
+                return;
+            }
             serverHistory = { at: new Date().getTime(), items: items, complete: !!done };
             var list = historyWaiters || [];
             if (done) { historyWaiters = null; }
             for (var i = 0; i < list.length; i++) { list[i].ok(items, rawCount, !!done); }
         }, function (why) {
+            if (activeAccountId() !== owner) { return; }
             var list = historyWaiters || [];
             historyWaiters = null;
             for (var i = 0; i < list.length; i++) {
@@ -831,7 +862,7 @@
 
         var cached = feedCache[kind];
         if (restore && cached) {
-            renderGrid(cached.items);
+            renderGrid(cached.items, emptyTextFor(kind));
             var cards = screenEl.querySelectorAll("#feed-grid .card");
             var target = cards[Math.min(cached.index || 0, cards.length - 1)];
             Nav.focus(target || cards[0]);
@@ -844,7 +875,7 @@
             screenEl.innerHTML = '<div class="empty">' +
                 (kind === "dynamic" ? "动态" : "稍后再看") +
                 '需要登录，先去「我的」扫码</div>';
-            Nav.reset(".tab");
+            Nav.reset('#tabs .tab[data-screen="' + kind + '"]');
             return;
         }
         fetchPage(kind, 1, function (items) {
@@ -857,14 +888,14 @@
              * to yet, and 「没有内容」 reads as a fault. It is also the one
              * screen where saying how the list gets filled is the whole feature:
              * the adding happens on a phone, somewhere else entirely. */
-            renderGrid(items, kind === "toview"
-                ? "稍后再看是空的 —— 在手机或网页上点「稍后再看」，加进去的视频就会出现在这里"
-                : undefined);
+            renderGrid(items, emptyTextFor(kind));
             /* First card in the document, which on the home tab is the first
              * card of 继续观看 — the strip is painted above the grid. That is
              * the point of it: what you were in the middle of is already under
-             * the cursor when the screen appears. */
-            Nav.reset(".card");
+             * the cursor when the screen appears. An empty list keeps the ring
+             * on the tab just pressed instead of falling to the first tab. */
+            if (items.length) { Nav.reset(".card"); }
+            else { Nav.reset('#tabs .tab[data-screen="' + kind + '"]'); }
         }, function (why) {
             if (req !== feedRequest) { return; }
             /* Waking from suspend, this set's network is regularly a few seconds
@@ -930,6 +961,12 @@
         if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null &&
                 cur.parentNode && cur.parentNode.id === "feed-grid") {
             c.index = Number(cur.getAttribute("data-i"));
+        } else if (cur && cur.parentNode && cur.parentNode.id === "resume-row") {
+            /* The strip sits above card 0. Keeping a deep index from an
+             * earlier visit while writing the strip's scrollTop meant coming
+             * back focused card #37 and then scrolled to the top — ring off
+             * screen, next arrow press jumps ten rows. */
+            c.index = 0;
         }
         c.scrollTop = screenEl.scrollTop;
     }
@@ -1047,6 +1084,16 @@
             report("lifecycle", "停在" + (state.screen === "login" ? "扫码页" : "账号页") + "，不动它");
             return;
         }
+        /* Same rule as payOwedWake: a screen the viewer chose — search results,
+         * 我的 — is not ours to replace with the home feed. The caches go
+         * stale either way; the screen stays. */
+        if (state.screen === "search" || state.screen === "mine") {
+            feedCache = {};
+            serverHistory = { at: 0, items: null };
+            report("lifecycle", "缓存已清 —— 但观众停在" +
+                   (state.screen === "search" ? "搜索" : "我的") + "，屏幕不动它");
+            return;
+        }
 
         freshHome();
     }
@@ -1124,7 +1171,7 @@
             }
             html += "</div>";
         }
-        html += '<div class="krow">' +
+        html += '<div class="krow acts">' +
                 '<div class="key wide focusable" data-act="ime">中文输入</div>' +
                 '<div class="key wide focusable" data-act="space">空格</div>' +
                 '<div class="key wide focusable" data-act="del">删除</div>' +
@@ -1160,8 +1207,15 @@
         /* On 中文输入, not on "A". The letter grid cannot type Chinese at all,
          * so for the person this app is for it is the secondary keyboard —
          * landing on it meant four presses down before the first character of
-         * every search. */
-        Nav.reset('[data-act="ime"]');
+         * every search. With results already painted (coming back from a
+         * video), on the first result: the keyboard is collapsed then, and
+         * Nav.reset does not check visibility — the ring used to land on a
+         * display:none key and vanish. */
+        if (state.results && state.results.length && screenEl.querySelector("#results .card")) {
+            Nav.reset("#results .card");
+        } else {
+            Nav.reset('[data-act="ime"]');
+        }
     }
 
     /* The on-screen letter grid cannot type Chinese. Focusing a real input
@@ -1186,8 +1240,10 @@
         if (box) { box.textContent = state.query || "输入关键词"; }
         /* Focus has to come back explicitly: while the input held it, Nav had no
          * idea where the cursor was, and leaving it that way is what made the
-         * remote stop responding entirely. */
-        Nav.reset(".key");
+         * remote stop responding entirely. On the IME key, which is in the
+         * action row and stays visible when the keyboard is collapsed; ".key"
+         * is the letter A, hidden then. */
+        Nav.reset('[data-act="ime"]');
     }
 
     function openIme() {
@@ -1307,8 +1363,13 @@
         var results = el("results");
         results.innerHTML = '<div class="empty">搜索中…</div>';
         state.searchPage = 1;
-        API.search(state.query.trim(), 1, function (items) {
-            if (!stillViewing(token)) { return; }
+        /* The term too, not just the view: Enter on the IME and a suggestion
+         * picked right after are two searches under one view token, and the
+         * slower one used to paint its results under the other's heading.
+         * maybeLoadMoreSearch has guarded on the term all along. */
+        var term = state.query.trim();
+        API.search(term, 1, function (items) {
+            if (!stillViewing(token) || state.query.trim() !== term) { return; }
             results = el("results");
             if (!results) { return; }
             if (!items.length) { results.innerHTML = '<div class="empty">没有结果</div>'; return; }
@@ -1316,7 +1377,7 @@
             var first = paintResults(items);
             Nav.focus(first);
         }, function (why) {
-            if (!stillViewing(token)) { return; }
+            if (!stillViewing(token) || state.query.trim() !== term) { return; }
             results = el("results");
             if (results) { results.innerHTML = '<div class="empty">搜索失败：' + esc(why) + '</div>'; }
         });
@@ -2214,6 +2275,19 @@
         if (!Nav.current()) { Nav.reset("#options .opt"); }
     }
 
+    /* True when no other focusable in the panel sits above this one — the
+     * top row, wherever the panel happens to be scrolled to. */
+    function nothingAboveInPanel(cur) {
+        if (!cur || !cur.getBoundingClientRect) { return false; }
+        var top = cur.getBoundingClientRect().top;
+        var all = document.querySelectorAll("#options .focusable");
+        for (var i = 0; i < all.length; i++) {
+            if (all[i] === cur || !all[i].offsetParent) { continue; }
+            if (all[i].getBoundingClientRect().bottom <= top + 6) { return false; }
+        }
+        return true;
+    }
+
     function closeOptions() {
         if (!optionsOpen) { return; }
         optionsOpen = false;
@@ -2274,7 +2348,12 @@
             }
             /* Remember what just finished: cancelling the countdown should land
              * on the video the viewer was watching, not the one queued up. */
-            next.from = finished && finished.detail;
+            /* The session, not its detail: the detail's cid is P1's (from
+             * view() or the card), and 返回 from the chooser rebuilt `playing`
+             * from it — so the -1 that stopPlayback then reported went out
+             * under the first part's cid, and bilibili's history said P1 had
+             * just been finished. The session carries the part that ended. */
+            next.from = finished;
             pendingNext = next;
             el("playerui").className = "hidden";
             el("nextup-title").textContent = next.title;
@@ -2359,7 +2438,7 @@
         if (k === Nav.KEY.RETURN) {
             var finished = pendingNext.from;
             cancelNext();
-            playing = finished ? { detail: finished, cid: finished.cid } : null;
+            playing = finished || null;
             stopPlayback();
             return true;
         }
@@ -2739,10 +2818,16 @@
                                "），先不动继续观看");
                         return;
                     }
-                    /* stopPlayback reloads the feed on the way back, so by the
-                     * time the grid is on screen the card is already gone. */
                     Resume.markDead(deadBvid);
                     report("player", "view 也答 -404：这个稿件确实没了，从继续观看里去掉");
+                    /* stopPlayback below has already repainted the grid from
+                     * cache — synchronously, before this answer arrived — so
+                     * the card is still on screen, under the ring, and one
+                     * more press repeats the whole round trip. Repaint now,
+                     * if the viewer is still looking at that grid. */
+                    if (!playing && !pendingNext && !optionsOpen && state.screen === "rcmd") {
+                        loadFeed("rcmd", true);
+                    }
                 });
             } else {
                 toast("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
@@ -2833,7 +2918,9 @@
          * at 00:05, the 12:46 fallback fetched a new web manifest, and the
          * 12:48 403s on it had no escalation left. Mirrors strongEmitted's
          * re-arm inside the player. */
-        if (!dash.strong) { playing.triedStrong = false; }
+        /* Mirrors player.js: a web manifest that already spent its strong-token
+         * try (marked on the object) does not get another on a handback. */
+        if (!dash.strong && !dash.strongTried) { playing.triedStrong = false; }
         playing.quality = qn;
         setQualityBadge(QUALITY_NAMES[qn] || ("QN " + qn));
         Player.playDash(dash, playing.startMs || 0);
@@ -2999,10 +3086,18 @@
         }
         if (!d.related) {
             API.related(d.bvid, function (list) {
-                if (playing !== session) { return; }
+                if (playing !== session) {
+                    report("meta", videoTag(d) + " 相关视频回来时已经换了视频，丢弃");
+                    return;
+                }
                 session.detail.related = list;
-                if (optionsOpen) { closeOptions(); openOptions(); }
-            }, function () {});
+                /* In place, like the part list: reopening the panel reset its
+                 * scroll and yanked the ring back to 「当前」. */
+                if (optionsOpen) { panelGrid.reset(list, PANEL_FIRST); }
+            }, function (why) {
+                if (playing !== session) { return; }
+                report("meta", videoTag(d) + " 相关视频取不到（" + why + "）");
+            });
         }
     }
 
@@ -3341,14 +3436,14 @@
                 var sessExp = playing;
                 Player.stop();
                 var startExp = function (dashExp) {
-                    if (playing !== sessExp) { return; }
+                    if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
                     var repExp = Player.pickDashVideo(dashExp);
                     playDash(dashExp, (repExp && repExp.id) || PREFERRED_QN);
                 };
                 var webExp = function () {
                     API.playurlDash(sessExp.detail.bvid, sessExp.cid, PREFERRED_QN,
                         startExp, function (whyExp) {
-                            if (playing !== sessExp) { return; }
+                            if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
                             report("player", "过期重取 playurl 失败（" + whyExp + "）");
                             finalFallback("清单过期且重取失败 " + whyExp);
                         });
@@ -3356,7 +3451,7 @@
                 if (wantStrong) {
                     API.playurlDashStrong(sessExp.detail.aid, sessExp.cid,
                         PREFERRED_QN, startExp, function (whyStExp) {
-                            if (playing !== sessExp) { return; }
+                            if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
                             report("player", "过期重取强令牌失败（" + whyStExp +
                                    "），改试 web 端点");
                             webExp();
@@ -3416,7 +3511,7 @@
                  * only by videos that had already started. Fetch it here rather
                  * than fall through to 「DASH 全灭」. */
                 withAid(sessST, function (aidST) {
-                    if (playing !== sessST) { return; }
+                    if (playing !== sessST) { report("player", "强令牌回来时会话已经没了，丢弃"); return; }
                     if (!aidST) {
                         report("player", "铸不了强令牌：手里没有 aid，用 bvid 也换不到");
                         finalFallback("强令牌缺 aid");
@@ -3424,7 +3519,7 @@
                     }
                     API.playurlDashStrong(aidST, sessST.cid, PREFERRED_QN,
                         function (strongDash) {
-                            if (playing !== sessST) { return; }
+                            if (playing !== sessST) { report("player", "强令牌回来时会话已经没了，丢弃"); return; }
                             playing.dashReady = strongDash;
                             var repST = Player.pickDashVideo(strongDash);
                             report("player", "app 端点强令牌就绪，" +
@@ -3432,7 +3527,7 @@
                                    "，从 " + fmt(atMs) + " 重建");
                             playDash(strongDash, (repST && repST.id) || PREFERRED_QN);
                         }, function (whyST) {
-                            if (playing !== sessST) { return; }
+                            if (playing !== sessST) { report("player", "强令牌回来时会话已经没了，丢弃"); return; }
                             report("player", "app 端点强令牌也不行（" + whyST + "）");
                             finalFallback("强令牌失败 " + whyST);
                         });
@@ -3552,7 +3647,7 @@
                             var rep3 = Player.pickDashVideo(dash3);
                             playDash(dash3, (rep3 && rep3.id) || playing.quality || 0);
                         }, function (w3) {
-                            if (playing !== session3) { return; }
+                            if (playing !== session3) { report("player", "原地重启的 playurl 回来时会话已经没了，丢弃"); return; }
                             report("player", "原地重启：重取 playurl 失败（" + w3 + "），退出");
                             toast("播放错误：" + data);
                             stopPlayback();
@@ -3688,13 +3783,11 @@
             /* Up from the first row leaves the panel, mirroring the down key
              * that opened it — otherwise return is the only way out and there
              * is nothing on screen that says so. */
-            if (k === Nav.KEY.UP && el("options").scrollTop <= 2) {
-                var cur = Nav.current();
-                var row = cur && cur.parentNode;
-                if (row && (row.id === "opt-parts" || row.id === "opt-related" ||
-                            (row.parentNode && row.parentNode.id === "opt-related"))) {
-                    closeOptions(); return true;
-                }
+            /* Judged by position, not by `scrollTop <= 2`: opening the panel
+             * scrolls the current chip into the centre, so scrollTop is well
+             * above 2 for almost every video and UP was a dead key. */
+            if (k === Nav.KEY.UP && nothingAboveInPanel(Nav.current())) {
+                closeOptions(); return true;
             }
             if (k === Nav.KEY.EXIT) { return false; }
             return false;   /* let Nav move focus between the options */
@@ -3866,7 +3959,10 @@
          * here is that boot-time fetches lose races to the player. It answers a
          * distribution question, not a playback one — nothing on screen waits
          * for it. */
-        if (!selftest) {
+        /* And only when a collector is listening: the probe's whole output is
+         * report lines, and with REPORT_TO empty it was still loading a remote
+         * script and touching three hosts on every boot for nobody. */
+        if (!selftest && REPORT_TO) {
             /* Announced on arrival, before anything can go wrong. A timer that
              * never fires and a timer that fires and throws produce the same
              * silence otherwise, and telling those apart is the whole reason

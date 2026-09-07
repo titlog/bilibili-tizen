@@ -240,6 +240,9 @@ var API = (function () {
         return withPlain;
     }
 
+    /* Dynamic-feed cursor across pages; see `dynamic`. */
+    var dynOffset = "", dynMore = true;
+
     function normalise(v) {
         return {
             bvid: v.bvid,
@@ -375,8 +378,19 @@ var API = (function () {
 
         /* Video posts from followed accounts. Login only — signed out this
          * answers -101 rather than an empty list. */
+        /* The dynamic feed pages by cursor, not by number: `page=2` on its
+         * own answers the first page again, the grid's de-duplication then
+         * finds nothing new and marks the tab exhausted — one screen of 动态,
+         * ever (reported 2026-09-07: 「动态页面的数量也太少了」). The cursor is
+         * the `offset` each answer carries; page 1 starts from none. */
         dynamic: function (page, onOk, onFail) {
-            getJson(BASE + "/x/polymer/web-dynamic/v1/feed/all?type=video&page=" + (page || 1), function (d) {
+            page = page || 1;
+            if (page === 1) { dynOffset = ""; dynMore = true; }
+            else if (!dynOffset || !dynMore) { onOk([]); return; }
+            getJson(BASE + "/x/polymer/web-dynamic/v1/feed/all?type=video&page=" + page +
+                    (dynOffset ? "&offset=" + encodeURIComponent(dynOffset) : ""), function (d) {
+                dynOffset = String(d.offset || "");
+                dynMore = d.has_more !== false;
                 var items = d.items || [];
                 var out = [];
                 for (var i = 0; i < items.length; i++) {
