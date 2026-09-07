@@ -944,18 +944,19 @@ var API = (function () {
              * three stages are timed and stamped on the response so the log
              * can say where a 9-second strong-token start actually went. */
             var t0 = new Date().getTime(), tApp = 0, tCodecs = 0;
-            var wdDone = false, wdData = null, wdWaiter = null;
+            var wdDone = false, wdData = null, adData = null, joined = false;
             var url2 = BASE + "/x/player/playurl?avid=" + aid + "&cid=" + cid +
                        "&qn=16&fnval=2064&fnver=0&fourk=1";
             function url2Settled(wd) {
                 wdData = wd || null; wdDone = true;
                 tCodecs = new Date().getTime() - t0;
-                if (wdWaiter) { wdWaiter(); }
+                joinStrong();
             }
-            getJson(url2, url2Settled, function () { url2Settled(null); });
-            getJson(appUrl, function (ad) {
-                tApp = new Date().getTime() - t0;
-                if (!ad.dash) { onFail("app 端点无 dash"); return; }
+            /* Runs once both answers are in, whichever lands last. */
+            function joinStrong() {
+                if (!adData || !wdDone || joined) { return; }
+                joined = true;
+                var ad = adData;
                 function go() {
                     var codecsByCid = {}, audioCodecs = "mp4a.40.2";
                     var wd = wdData || {};
@@ -966,7 +967,7 @@ var API = (function () {
                     }
                     finish(ad.dash, codecsByCid, audioCodecs);
                 }
-                if (wdDone) { go(); } else { wdWaiter = go; }
+                go();
 
                 function codecsFor(cid2, map) {
                     return map[cid2] ||
@@ -1043,6 +1044,13 @@ var API = (function () {
                         onOk(dash);
                     });
                 }
+            }
+            getJson(url2, url2Settled, function () { url2Settled(null); });
+            getJson(appUrl, function (ad) {
+                tApp = new Date().getTime() - t0;
+                if (!ad.dash) { onFail("app 端点无 dash"); return; }
+                adData = ad;
+                joinStrong();
             }, onFail);
         }
     };
