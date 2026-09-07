@@ -706,9 +706,17 @@ var API = (function () {
                 };
             }
             getJson(BASE + "/x/web-interface/view?bvid=" + bvid, function (d) {
-                onOk(shape(d), "");
+                onOk(shape(d), "view 直接答上了");
             }, function (why1) {
-                if (String(why1).indexOf("-404") >= 0) { onFail(why1); return; }
+                /* Only the gate's own shapes go to the twin: an HTTP status
+                 * (412 today), a non-JSON body, or bilibili's risk-control
+                 * codes. A timeout or a dropped connection is the link, and
+                 * asking a second endpoint on the same dead link only turns
+                 * a 20 s wait into 40 s — for the search-result open, the
+                 * 403 rescue's aid lookup and the dead-video check alike. */
+                if (!/^HTTP |^bad JSON|code -352|code -403/.test(String(why1))) {
+                    onFail(why1); return;
+                }
                 getJson(BASE + "/x/web-interface/wbi/view?bvid=" + bvid, function (d) {
                     onOk(shape(d), "view 答 " + why1 + "，wbi/view 不签名答上了");
                 }, function (why2) {
@@ -716,6 +724,11 @@ var API = (function () {
                 });
             });
         },
+
+        /* bilibili's "this 稿件 is gone" as getJson formats it. Three places
+         * read the failure text for it; one definition, so a change to the
+         * text's shape has one place to break instead of three silent ones. */
+        gone: function (why) { return String(why).indexOf("-404") >= 0; },
 
         related: function (bvid, onOk, onFail) {
             getJson(BASE + "/x/web-interface/archive/related?bvid=" + bvid, function (d) {

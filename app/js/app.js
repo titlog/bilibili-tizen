@@ -2105,21 +2105,13 @@
         80: "1080P", 74: "720P60", 64: "720P", 32: "480P", 16: "360P"
     };
 
-    function openOptions() {
-        if (!playing || optionsOpen) { return; }
-        cancelScrub();
-        optionsOpen = true;
-        el("playerui").className = "hidden";
-        el("options").className = "scroll";
-        el("options").scrollTop = 0;
-
+    /* The part list alone, so a list that arrives while the panel is open can
+     * be painted in place: rebuilding the whole panel for it reset the scroll,
+     * collapsed the related grid back to its first rows and yanked focus to
+     * 「当前」 — possibly tens of seconds after the viewer had walked down into
+     * the related videos. Reads playing.detail and playing.metaState. */
+    function paintParts() {
         var d = playing.detail;
-
-        el("panel-title").textContent = d.title || "";
-        el("panel-meta").textContent = [d.author, d.duration, (d.play || "") + "次观看"]
-            .filter(function (x) { return !!x; }).join("  ·  ");
-        el("panel-desc").textContent = (d.desc || "").slice(0, 400);
-
         var group = el("opt-parts-group");
         if (d.pages && d.pages.length > 1) {
             group.className = "opt-group";
@@ -2164,12 +2156,45 @@
             el("opt-parts").innerHTML = '<div class="empty">分 P 列表加载失败（' +
                 esc(playing.metaWhy || "?") + "）</div>";
         } else if (playing.metaState !== "done") {
+            /* The fetch is deferred until the first frame (it must not race
+             * the stream for the link), so before that there is nothing in
+             * flight and 「正在加载」 would describe a request never sent. */
             group.className = "opt-group";
-            el("opt-parts").innerHTML = '<div class="empty">正在加载分 P 列表…</div>';
+            el("opt-parts").innerHTML = '<div class="empty">' +
+                (playing.needsMeta ? "画面起来后再取分 P 列表…" : "正在加载分 P 列表…") +
+                "</div>";
         } else {
             group.className = "opt-group hidden";
             el("opt-parts").innerHTML = "";
         }
+        var opts = document.querySelectorAll("#options .opt");
+        for (var k = 0; k < opts.length; k++) {
+            (function (node) {
+                node.onselect = function () {
+                    var cid = node.getAttribute("data-cid");
+                    closeOptions();
+                    if (cid) { play(playing.detail, Number(cid)); }
+                };
+            })(opts[k]);
+        }
+    }
+
+    function openOptions() {
+        if (!playing || optionsOpen) { return; }
+        cancelScrub();
+        optionsOpen = true;
+        el("playerui").className = "hidden";
+        el("options").className = "scroll";
+        el("options").scrollTop = 0;
+
+        var d = playing.detail;
+
+        el("panel-title").textContent = d.title || "";
+        el("panel-meta").textContent = [d.author, d.duration, (d.play || "") + "次观看"]
+            .filter(function (x) { return !!x; }).join("  ·  ");
+        el("panel-desc").textContent = (d.desc || "").slice(0, 400);
+
+        paintParts();
 
         /* Related videos live in the panel now, so "what else" never costs the
          * viewer their place in the video. All of them, not the first sixteen:
@@ -2185,16 +2210,6 @@
             el("opt-related").innerHTML = '<div class="empty">正在加载相关视频…</div>';
         }
 
-        var opts = document.querySelectorAll("#options .opt");
-        for (var k = 0; k < opts.length; k++) {
-            (function (node) {
-                node.onselect = function () {
-                    var cid = node.getAttribute("data-cid");
-                    closeOptions();
-                    if (cid) { play(playing.detail, Number(cid)); }
-                };
-            })(opts[k]);
-        }
         Nav.reset("#options .opt.current") ;
         if (!Nav.current()) { Nav.reset("#options .opt"); }
     }
@@ -2702,7 +2717,7 @@
              * that does not exist, and they press play again. 2026-08-12:
              * BV1GAu163EXE answered -404 on both forms, and view() answered
              * -404 for the whole 稿件 — pressed twice, five seconds apart. */
-            if (whyText.indexOf("-404") >= 0) {
+            if (API.gone(whyText)) {
                 toast("这个视频已经被删除或下架了");
                 /* Hiding a card is a persistent decision, so it gets a
                  * discriminating test rather than an inference. playurl is
@@ -2719,7 +2734,7 @@
                     report("player", "playurl 说 -404 但稿件还在 —— 是这一 P 的 cid" +
                            "（" + cid + "）过期了，继续观看不动它");
                 }, function (vWhy) {
-                    if (String(vWhy).indexOf("-404") < 0) {
+                    if (!API.gone(vWhy)) {
                         report("player", "playurl -404，而 view 另有说法（" + vWhy +
                                "），先不动继续观看");
                         return;
@@ -2920,6 +2935,33 @@
         });
     }
 
+    /* bvid plus a slice of title — the shape every playback line carries, so a
+     * sofa report can be matched to a log line without guessing at bvids. */
+    function videoTag(d) {
+        return (d.bvid || "?") + " " + String(d.title || "").slice(0, 24);
+    }
+
+    /* A full view() payload landing on a session, from whichever path fetched
+     * it — the first-frame hook or the 403 rescue's aid lookup. One writer, so
+     * the two cannot disagree about what "loaded" means, and a list the rescue
+     * fetched is not thrown away only to be fetched again a second later. */
+    function absorbMeta(session, full) {
+        full.related = session.detail.related;
+        /* aid may already have been filled in by withAid() on the 403 path; a
+         * full view() carries it too, so nothing is lost. */
+        session.detail = full;
+        session.metaState = "done";
+        session.metaWhy = "";
+        refreshPartLabel();
+        /* The panel paints from the detail each time it opens, so a list
+         * arriving while it was already up stayed invisible until the viewer
+         * closed and reopened it. Painted in place, not by reopening. */
+        if (optionsOpen) {
+            paintParts();
+            el("panel-desc").textContent = (full.desc || "").slice(0, 400);
+        }
+    }
+
     /* Runs once the stream is playing, so the description, parts and related
      * list arrive without contending with the player for the network. */
     function loadMetaForPlaying() {
@@ -2931,29 +2973,28 @@
          * part list, "pending" otherwise. Only the fetch below moves it. */
         if (!d.pages || !d.pages.length) {
             API.view(d.bvid, function (full, via) {
-                if (playing !== session) { return; }
-                if (via) { report("meta", d.bvid + " " + via); }
-                full.related = session.detail.related;
-                /* aid may already have been filled in by withAid() on the 403
-                 * path; a full view() carries it too, so nothing is lost. */
-                session.detail = full;
-                session.metaState = "done";
-                refreshPartLabel();
-                /* The panel paints from the detail each time it opens, so a
-                 * list arriving while it was already up stayed invisible until
-                 * the viewer closed and reopened it — the related grid below
-                 * has redrawn for exactly this case all along. */
-                if (optionsOpen) { closeOptions(); openOptions(); }
+                if (playing !== session) {
+                    report("meta", videoTag(d) + " view 回来时已经换了视频，丢弃（" + via + "）");
+                    return;
+                }
+                /* Every time, not only on the fallback: a night with no
+                 * `meta:` lines must mean no view() was needed, not that the
+                 * plain path quietly worked — or quietly was never asked. */
+                report("meta", videoTag(d) + " " + via);
+                absorbMeta(session, full);
             }, function (why) {
-                if (playing !== session) { return; }
+                if (playing !== session) {
+                    report("meta", videoTag(d) + " view 失败后已经换了视频，丢弃（" + why + "）");
+                    return;
+                }
                 /* This used to be `function () {}`. A 412 from view() — which
                  * is what 2026-09-07 was — then read as "single-part video"
                  * on the panel and left nothing in the log. */
                 session.metaState = "failed";
                 session.metaWhy = String(why);
-                report("meta", d.bvid + " view 失败（" + why +
+                report("meta", videoTag(d) + " view 失败（" + why +
                        "）：分 P 列表、简介都拿不到，403 那条路也换不到 aid");
-                if (optionsOpen) { closeOptions(); openOptions(); }
+                if (optionsOpen) { paintParts(); }
             });
         }
         if (!d.related) {
@@ -2978,12 +3019,25 @@
         if (d && d.aid) { cb(d.aid); return; }
         if (!d || !d.bvid) { cb(0); return; }
         report("player", "手里没有 aid（这个入口的卡片不带），先用 bvid 换一次");
-        API.view(d.bvid, function (full) {
-            if (playing !== session) { return; }
-            if (full && full.aid) { session.detail.aid = full.aid; }
+        API.view(d.bvid, function (full, via) {
+            if (playing !== session) {
+                report("player", "用 bvid 换 aid 回来时已经换了视频，丢弃");
+                return;
+            }
+            report("meta", videoTag(d) + " " + via + "（为换 aid 而问）");
+            /* The same payload the first-frame hook would fetch: keep all of
+             * it, so the panel has its list and that hook has nothing to ask.
+             * Also the only way out of a "failed" state — the first-frame
+             * fetch runs once, and a later success here used to leave the
+             * panel saying 「加载失败」 with 24 parts in hand. */
+            if (full && full.pages && full.pages.length) { absorbMeta(session, full); }
+            else if (full && full.aid) { session.detail.aid = full.aid; }
             cb((full && full.aid) || 0);
         }, function (why) {
-            if (playing !== session) { return; }
+            if (playing !== session) {
+                report("player", "用 bvid 换 aid 失败后已经换了视频，丢弃（" + why + "）");
+                return;
+            }
             report("player", "用 bvid 换 aid 失败（" + why + "）");
             cb(0);
         });
