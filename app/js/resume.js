@@ -185,15 +185,23 @@ var Resume = (function () {
          * bvid:cid meant the sliver silently never appeared on exactly the
          * screens where "where did I get to" matters most. */
         fraction: function (bvid) {
-            var m = load(), best = 0;
+            /* The most recently touched part speaks for the video. "Any part
+             * done → 1" dropped a 24-part series from 继续观看 the moment one
+             * episode ended, with the next one half-watched; "max over parts"
+             * has the mirror problem. Where the viewer got to is the part
+             * they were last on. */
+            var m = load(), latest = null;
             for (var k in m) {
                 if (!m.hasOwnProperty(k)) { continue; }
                 if (k.indexOf(bvid + ":") !== 0) { continue; }
                 var e = m[k];
-                if (e.done) { return 1; }
-                if (e.dur) { best = Math.max(best, Math.min(1, e.pos / e.dur)); }
+                /* `>=`: two parts written in the same millisecond (finish P3,
+                 * start P4) keep insertion order, and the later one wins. */
+                if (!latest || (e.at || 0) >= (latest.at || 0)) { latest = e; }
             }
-            return best;
+            if (!latest) { return 0; }
+            if (latest.done) { return 1; }
+            return latest.dur ? Math.min(1, latest.pos / latest.dur) : 0;
         },
 
         /* Most-recent-first, for the 我的 screen.

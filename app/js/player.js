@@ -804,6 +804,7 @@ var Player = (function () {
         criticalRetries = 0;
         lastCriticalAt = 0;
         triedAv01 = false;
+        triedAvc1Rung = false;
         /* The "from" of the first 跳转 line belongs to this video, not the
          * last one — stale, it reads as a cross-video jump that never happened. */
         lastTickSec = 0;
@@ -1260,6 +1261,7 @@ var Player = (function () {
      * it outranks dropping to 720p; the 丢帧 counter in the stall lines is the
      * judge of whether the decode is actually holding up. */
     var triedAv01 = false;
+    var triedAvc1Rung = false;   /* the H.264 rung, once per video, like triedAv01 */
 
     /* Builds the av01 manifest or says exactly why there is none — the rung
      * skipped silently once (20:34, P20 straight to 720p with av01 sitting
@@ -1524,10 +1526,9 @@ var Player = (function () {
             var alist = (lastDash.dash && lastDash.dash.audio) || [];
             var mine = false;
             for (var ai = 0; ai < alist.length; ai++) {
-                var au = (alist[ai].urls && alist[ai].urls[0]) || alist[ai].baseUrl;
-                if (fileTokenOf(au) === tok) { mine = true; break; }
+                if (repToken(alist[ai]) === tok) { mine = true; break; }
             }
-            if (!mine || alist.length < 2) { return ""; }
+            if (!mine || unbannedSiblings(alist, tok) < 1) { return ""; }
         }
         badFiles[tok] = new Date().getTime();
         stashLesson(null);
@@ -1559,13 +1560,29 @@ var Player = (function () {
     /* Whether a banned file can be left out at all. Never empty a list — a
      * manifest with no audio (or video) cannot be built, and the honest exit
      * path is a better end than 「拼不出播放清单」 on a self-inflicted wound. */
+    function repToken(rep) {
+        return fileTokenOf((rep.urls && rep.urls[0]) || rep.baseUrl);
+    }
+
+    /* Siblings of `tok` in `list` that are not themselves banned — the number
+     * of files that would remain if this one went. Counted against the ban
+     * list, not the raw length: the session's payload is never spliced any
+     * more, so its length says nothing about what the manifest will hold. */
+    function unbannedSiblings(list, tok) {
+        var n = 0;
+        for (var i = 0; i < list.length; i++) {
+            var t = repToken(list[i]);
+            if (t !== tok && !badFiles[t]) { n++; }
+        }
+        return n;
+    }
+
     function droppable(dash, tok) {
         var kinds = ["video", "audio"];
         for (var k = 0; k < kinds.length; k++) {
             var list = (dash && dash[kinds[k]]) || [];
             for (var i = 0; i < list.length; i++) {
-                var u = (list[i].urls && list[i].urls[0]) || list[i].baseUrl;
-                if (fileTokenOf(u) === tok) { return list.length >= 2; }
+                if (repToken(list[i]) === tok) { return unbannedSiblings(list, tok) >= 1; }
             }
         }
         return false;
@@ -1604,6 +1621,10 @@ var Player = (function () {
             for (var i = 0; i < list.length; i++) {
                 var u = (list[i].urls && list[i].urls[0]) || list[i].baseUrl;
                 if (!badFiles[fileTokenOf(u)]) { kept.push(list[i]); }
+            }
+            if (!kept.length && list.length) {
+                log("坏文件名单会把" + (kinds[k] === "video" ? "视频" : "音频") +
+                    "列表清空，这一类忽略名单");
             }
             out[kinds[k]] = (kept.length || !list.length) ? kept : list;
         }
@@ -1813,7 +1834,8 @@ var Player = (function () {
          * the equality made H.264 unreachable whenever a file had been dropped
          * — the ladder went reload → drop → av01 → tier, skipping the one rung
          * that answers "the probe lied about H.265". */
-        if (decodeRecoveries >= 2 && lastDash.family !== "avc1") {
+        if (decodeRecoveries >= 2 && !triedAvc1Rung && lastDash.family !== "avc1") {
+            triedAvc1Rung = true;
             /* Two ways to arrive here and they are not the same event: the
              * reload ran and did not help, or it was skipped as futile. A line
              * claiming a reload that never happened is the kind of small lie
@@ -1828,7 +1850,10 @@ var Player = (function () {
          * been the one we exclude. */
         if (lastDash.family !== "av01" && !triedAv01) {
             triedAv01 = true;
-            if (tryAv01Manifest(lastDash.dash, lastDash.capId)) {
+            /* Inspect what the manifest will actually hold — the payload
+             * itself keeps its banned files now, and judging the rung on it
+             * picked a family whose only file was the one just refused. */
+            if (tryAv01Manifest(withoutBadFiles(lastDash.dash), lastDash.capId)) {
                 log("解码失败（" + why + "），hev1/avc1 都没走通，从 " + at +
                     "s 换 AV1 的同画质（不同的文件，网页端就靠它）");
                 playDashWithShaka(lastDash.dash, from, true, "av01", lastDash.capId);
@@ -1858,8 +1883,9 @@ var Player = (function () {
          * this video, and only once. A strong manifest that still fails has
          * nothing better to escalate to and drops tiers normally. */
         if (offerStrongToken()) { return true; }
-        var capNow = lastDash.capId || tierBelow(lastDash.dash, PREFERRED_QN + 1);
-        var below = tierBelow(lastDash.dash, capNow);
+        var usableNow = withoutBadFiles(lastDash.dash);
+        var capNow = lastDash.capId || tierBelow(usableNow, PREFERRED_QN + 1);
+        var below = tierBelow(usableNow, capNow);
         if (below) {
             log("解码失败（" + why + "），换编码也没走通，从 qn" + capNow +
                 " 再压到 qn" + below + "，从 " + at + "s 再试");
@@ -2102,7 +2128,7 @@ var Player = (function () {
              * starved. Try it before surrendering resolution. */
             if (usedFamily !== "av01" && !triedAv01) {
                 triedAv01 = true;
-                if (tryAv01Manifest(dash, capId)) {
+                if (tryAv01Manifest(withoutBadFiles(dash), capId)) {
                     log("加载连续被拒（" + describeShakaError(e) + "），换 AV1 的同画质再试");
                     playDashWithShaka(dash, startMs, true, "av01", capId);
                     return;
@@ -2113,8 +2139,9 @@ var Player = (function () {
              * next. Keep stepping down for as long as there is a step: this is
              * the exit tonight's 有声退出 came out of, already capped at 720P and
              * refused there, with 480P serving all along. */
-            var capNow2 = capId || tierBelow(dash, PREFERRED_QN + 1);
-            var below2 = tierBelow(dash, capNow2);
+            var usable2 = withoutBadFiles(dash);
+            var capNow2 = capId || tierBelow(usable2, PREFERRED_QN + 1);
+            var below2 = tierBelow(usable2, capNow2);
             if (below2) {
                 log("加载连续被拒（" + describeShakaError(e) + "），从 qn" + capNow2 +
                     " 再压到 qn" + below2 + " 试一次");

@@ -46,6 +46,8 @@
      * second, and whatever was dropped is admitted to on the next line out. */
     var reportTokens = 20, reportRefillAt = 0, reportDropped = 0;
 
+    var reportEverOk = false;   /* a collector has answered at least once this run */
+
     function report(kind, detail) {
         if (!REPORT_TO) { return; }
         var now = new Date().getTime();
@@ -73,7 +75,7 @@
             xhr.open("POST", REPORT_TO, true);
             xhr.setRequestHeader("Content-Type", "text/plain");
             xhr.timeout = 3000;
-            xhr.onload = function () { reportMisses = 0; };
+            xhr.onload = function () { reportMisses = 0; reportEverOk = true; };
             xhr.onerror = xhr.ontimeout = function () { reportMisses++; };
             xhr.send(JSON.stringify({ event: "log", detail: { msg: kind + ": " + detail } }));
         } catch (e) {}
@@ -667,6 +669,10 @@
         API.history(function (items, rawCount, done) {
             if (activeAccountId() !== owner) {
                 report("history", "服务端历史回来时账号已经切换，丢弃这份");
+                /* And let go of the chain, if it is still this one: a later
+                 * switch back would otherwise join a chain that has already
+                 * finished and wait on it forever. */
+                if (historyOwner === owner) { historyWaiters = null; }
                 return;
             }
             serverHistory = { at: new Date().getTime(), items: items, complete: !!done };
@@ -674,7 +680,10 @@
             if (done) { historyWaiters = null; }
             for (var i = 0; i < list.length; i++) { list[i].ok(items, rawCount, !!done); }
         }, function (why) {
-            if (activeAccountId() !== owner) { return; }
+            if (activeAccountId() !== owner) {
+                if (historyOwner === owner) { historyWaiters = null; }
+                return;
+            }
             var list = historyWaiters || [];
             historyWaiters = null;
             for (var i = 0; i < list.length; i++) {
@@ -752,7 +761,10 @@
         if (kind === "ranking") { return page === 1 ? API.ranking(0, onOk, onFail) : onOk([]); }
         if (ZONES[kind]) { return page === 1 ? API.ranking(ZONES[kind], onOk, onFail) : onOk([]); }
         if (kind === "rcmd") { return API.recommended(page, onOk, onFail); }
-        if (kind === "dynamic") { return API.dynamic(page, onOk, onFail); }
+        if (kind === "dynamic") {
+            var dc = feedCache.dynamic;
+            return API.dynamic(page, (page > 1 && dc) ? (dc.cursor || "") : "", onOk, onFail);
+        }
         if (kind === "toview") {
             /* Whole list in one answer, like ranking. */
             if (page !== 1) { return onOk([]); }
@@ -792,10 +804,14 @@
 
         loadingMore = true;
         var kind = state.screen, next = (cache.page || 1) + 1;
-        fetchPage(kind, next, function (more) {
+        fetchPage(kind, next, function (more, extra) {
             loadingMore = false;
             var c = feedCache[kind];
             if (!c || state.screen !== kind) { return; }
+            if (extra) {
+                c.cursor = extra.cursor || "";
+                if (extra.more === false) { c.exhausted = true; }
+            }
 
             /* rcmd can repeat items across batches; dropping duplicates keeps
              * the grid from filling with the same handful of videos. */
@@ -878,11 +894,13 @@
             Nav.reset('#tabs .tab[data-screen="' + kind + '"]');
             return;
         }
-        fetchPage(kind, 1, function (items) {
+        fetchPage(kind, 1, function (items, extra) {
             /* Tab presses outrun the network: without this the slower of two
              * requests wins and paints its content under the other's heading. */
             if (req !== feedRequest) { return; }
-            feedCache[kind] = { items: items, index: 0, scrollTop: 0, page: 1, exhausted: !items.length };
+            feedCache[kind] = { items: items, index: 0, scrollTop: 0, page: 1,
+                                cursor: (extra && extra.cursor) || "",
+                                exhausted: !items.length || !!(extra && extra.more === false) };
             window.__stItems = items;   /* selftest addresses the same video */
             /* An empty 稍后再看 is the normal state of a list nobody has added
              * to yet, and 「没有内容」 reads as a fault. It is also the one
@@ -927,6 +945,28 @@
      * "Has not moved" is the cursor still being on the first card of the page,
      * whichever row that is. Repainting from there costs nothing visible: the
      * focus lands on the first card again, which is where it already was. */
+    /* The strip alone, in place — a whole-grid rebuild here re-applied the
+     * position saved before the failed play and snapped the ring back over
+     * any presses made during the round trip. */
+    function repaintResumeStrip() {
+        if (state.screen !== "rcmd" || playing || pendingNext) { return; }
+        var row = el("resume-row");
+        if (!row) { return; }
+        var had = Nav.current();
+        var items = resumeRowItems();
+        resumeRowSig = rowSignature(items);
+        if (items.length) {
+            paintCards(row, items);
+        } else {
+            var label = row.previousSibling;
+            row.parentNode.removeChild(row);
+            if (label && label.className === "section") { label.parentNode.removeChild(label); }
+        }
+        if (had && !document.body.contains(had)) {
+            Nav.reset(items.length ? "#resume-row .card" : "#feed-grid .card");
+        }
+    }
+
     function maybeRefreshResumeRow() {
         if (state.screen !== "rcmd") { return; }
         var cache = feedCache.rcmd;
@@ -938,6 +978,15 @@
         if (!first || Nav.current() !== first) { return; }
         renderGrid(cache.items);
         Nav.reset(".card");
+    }
+
+    /* paintCards wraps the strip's cards in a .grid of their own, so the row
+     * id is two levels up, not one. */
+    function inResumeStrip(node) {
+        for (var n = node, i = 0; n && i < 4; n = n.parentNode, i++) {
+            if (n.id === "resume-row") { return true; }
+        }
+        return false;
     }
 
     function rememberPosition() {
@@ -961,7 +1010,7 @@
         if (cur && cur.getAttribute && cur.getAttribute("data-i") !== null &&
                 cur.parentNode && cur.parentNode.id === "feed-grid") {
             c.index = Number(cur.getAttribute("data-i"));
-        } else if (cur && cur.parentNode && cur.parentNode.id === "resume-row") {
+        } else if (cur && inResumeStrip(cur)) {
             /* The strip sits above card 0. Keeping a deep index from an
              * earlier visit while writing the strip's scrollTop meant coming
              * back focused card #37 and then scrolled to the top — ring off
@@ -2840,9 +2889,7 @@
                      * the card is still on screen, under the ring, and one
                      * more press repeats the whole round trip. Repaint now,
                      * if the viewer is still looking at that grid. */
-                    if (!playing && !pendingNext && !optionsOpen && state.screen === "rcmd") {
-                        loadFeed("rcmd", true);
-                    }
+                    repaintResumeStrip();
                 });
             } else {
                 toast("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
@@ -3521,6 +3568,10 @@
                 var atMs = Player.hasPosition() ? Player.position()
                          : (lastKnownPosition || playing.startMs || 0);
                 playing.triedStrong = true;
+                /* Stamp the manifest too, as the player-initiated path does:
+                 * handing this web manifest back later must not re-arm the
+                 * strong-token try it just spent. */
+                if (playing.dashReady) { playing.dashReady.strongTried = true; }
                 playing.failed = false;
                 playing.startMs = atMs;
                 el("player-loading").className = "";
@@ -4009,7 +4060,7 @@
         /* And only when a collector is listening: the probe's whole output is
          * report lines, and with REPORT_TO empty it was still loading a remote
          * script and touching three hosts on every boot for nobody. */
-        if (!selftest && REPORT_TO) {
+        if (!selftest) {
             /* Announced on arrival, before anything can go wrong. A timer that
              * never fires and a timer that fires and throws produce the same
              * silence otherwise, and telling those apart is the whole reason
@@ -4017,6 +4068,12 @@
              * fault this codebase keeps paying for. */
             setTimeout(function () {
                 if (playing) { report("update", "定时器到点，但正在播放，跳过"); return; }
+                /* Only when somebody is listening. The constant is no test of
+                 * that — deploy.sh bakes the dev machine's address into every
+                 * package — but a boot line answered is: the engine/account
+                 * lines went out seconds ago, and if none of them landed there
+                 * is no collector, and the probe's only output is report lines. */
+                if (!reportEverOk) { return; }
                 report("update", "定时器到点，开始探测");
                 try { Updater.probe(); }
                 catch (e) { report("update", "探测抛异常：" + (e && e.message)); }

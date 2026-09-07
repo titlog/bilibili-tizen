@@ -240,9 +240,6 @@ var API = (function () {
         return withPlain;
     }
 
-    /* Dynamic-feed cursor across pages; see `dynamic`. */
-    var dynOffset = "", dynMore = true;
-
     function normalise(v) {
         return {
             bvid: v.bvid,
@@ -383,14 +380,16 @@ var API = (function () {
          * finds nothing new and marks the tab exhausted — one screen of 动态,
          * ever (reported 2026-09-07: 「动态页面的数量也太少了」). The cursor is
          * the `offset` each answer carries; page 1 starts from none. */
-        dynamic: function (page, onOk, onFail) {
+        /* The cursor travels with the caller's cache, not in module state:
+         * a page answer that app.js discards (tab changed, cache cleared)
+         * must not advance anything, or the next "page 2" goes out with the
+         * page-3 cursor. onOk(items, { cursor, more }). */
+        dynamic: function (page, cursor, onOk, onFail) {
             page = page || 1;
-            if (page === 1) { dynOffset = ""; dynMore = true; }
-            else if (!dynOffset || !dynMore) { onOk([]); return; }
+            if (page > 1 && !cursor) { onOk([], { cursor: "", more: false }); return; }
             getJson(BASE + "/x/polymer/web-dynamic/v1/feed/all?type=video&page=" + page +
-                    (dynOffset ? "&offset=" + encodeURIComponent(dynOffset) : ""), function (d) {
-                dynOffset = String(d.offset || "");
-                dynMore = d.has_more !== false;
+                    (page > 1 ? "&offset=" + encodeURIComponent(cursor) : ""), function (d) {
+                var next = { cursor: String(d.offset || ""), more: d.has_more !== false };
                 var items = d.items || [];
                 var out = [];
                 for (var i = 0; i < items.length; i++) {
@@ -409,7 +408,7 @@ var API = (function () {
                         play: (arch.stat || {}).play || ""
                     });
                 }
-                onOk(out);
+                onOk(out, next);
             }, onFail);
         },
 

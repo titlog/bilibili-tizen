@@ -220,6 +220,14 @@ function firePoll(env) {
    * most-recent-first falls out of that. */
   const all = Resume.recent(10).map((c) => c.bvid).sort().join(",");
   eq("and they are the three that were watched", all, "BVdone,BVmid,BVshort");
+
+  /* Multi-part: finishing P3 and stopping halfway into P4 is "halfway", not
+   * "done" — the part last touched speaks for the video. */
+  Resume.record("BVseries", 3, 595000, 600000, { bvid: "BVseries", title: "剧" });
+  Resume.finished("BVseries", 3);
+  Resume.record("BVseries", 4, 300000, 600000, { bvid: "BVseries", title: "剧" });
+  Resume.flush();
+  eq("a series with one part done and the next half-watched reads as half", Resume.fraction("BVseries"), 0.5);
 }
 
 /* ---------------- 被删掉的稿件：从继续观看里去掉，但不销毁记录 ---------- */
