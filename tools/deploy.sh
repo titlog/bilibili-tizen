@@ -119,11 +119,18 @@ echo "  built $WGT"
 # commit it. It escaped once: `var SELFTEST = true;` reached master and, worse,
 # the television kept a build that walked the whole flow — playing videos and
 # pressing its own buttons — every single time it was opened.
+#
+# REPORT_TO goes back to empty for the same reason (2026-09-07): it holds this
+# machine's LAN address, the repository is public and the convention is that no
+# address lives in it. Only SELFTEST was reset here, so every deploy left the
+# working tree dirty with the address in it, one `git add -A` away from master.
 python3 - <<PY
 import os, re
 p = os.path.join("$APP", "js", "config.js")
 src = open(p).read()
-open(p, "w").write(re.sub(r'var SELFTEST = [a-z]+;', 'var SELFTEST = false;', src))
+src = re.sub(r'var SELFTEST = [a-z]+;', 'var SELFTEST = false;', src)
+src = re.sub(r'var REPORT_TO = "[^"]*";', 'var REPORT_TO = "";', src, count=1)
+open(p, "w").write(src)
 PY
 
 # The set only accepts sdb from the address registered in Developer Mode. When

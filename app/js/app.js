@@ -2927,8 +2927,9 @@
         playing.needsMeta = false;
         var session = playing, d = session.detail;
 
+        /* metaState was seeded in play(): "done" when the detail came with a
+         * part list, "pending" otherwise. Only the fetch below moves it. */
         if (!d.pages || !d.pages.length) {
-            session.metaState = "pending";
             API.view(d.bvid, function (full, via) {
                 if (playing !== session) { return; }
                 if (via) { report("meta", d.bvid + " " + via); }
@@ -2954,8 +2955,6 @@
                        "）：分 P 列表、简介都拿不到，403 那条路也换不到 aid");
                 if (optionsOpen) { closeOptions(); openOptions(); }
             });
-        } else {
-            session.metaState = "done";
         }
         if (!d.related) {
             API.related(d.bvid, function (list) {
