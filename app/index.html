@@ -108,9 +108,21 @@
 <div id="nextup" class="hidden scroll">
     <div class="nextup-main">
         <div class="nextup-label">即将播放</div>
-        <div class="nextup-card focusable" id="nextup-go">
-            <img id="nextup-thumb" class="hidden" alt="">
-            <div class="nextup-title" id="nextup-title"></div>
+        <!-- The queued card and, to its right, the uploader of the video that
+             just ended. Right rather than under: 下键 from the card has to keep
+             landing in the related grid. Hidden unless the finished video knew
+             its uploader's mid. -->
+        <div class="nextup-row">
+            <div class="nextup-card focusable" id="nextup-go">
+                <img id="nextup-thumb" class="hidden" alt="">
+                <div class="nextup-title" id="nextup-title"></div>
+            </div>
+            <div class="nextup-up hidden" id="nextup-up">
+                <img id="nextup-up-face" class="hidden" alt="">
+                <span id="nextup-up-initial" class="hidden"></span>
+                <div class="nextup-up-name" id="nextup-up-name"></div>
+                <div class="nextup-up-sub">看这位 UP 主的全部投稿</div>
+            </div>
         </div>
         <div class="nextup-hint" id="nextup-hint"><span id="nextup-count">8</span> 秒后开始 &middot; 确认键 立即播放 &middot; 返回键 退出</div>
     </div>

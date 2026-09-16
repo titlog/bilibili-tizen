@@ -366,14 +366,30 @@
      * phone, somewhere else entirely. Same text on the cache-restore path —
      * the second visit used to lose it. */
     function emptyTextFor(kind) {
+        if (isUp(kind)) { return "这位 UP 主还没有投稿"; }
         return kind === "toview"
             ? "稍后再看是空的 —— 在手机或网页上点「稍后再看」，加进去的视频就会出现在这里"
             : undefined;
     }
 
+    /* Who the grid belongs to, above it. Not focusable: there is nothing to do
+     * with it, and a ring that stops on a heading is a press wasted. The face
+     * comes with view(), so a page reached from a card that never played shows
+     * the name and a letter instead. */
+    function upHeadHtml(kind) {
+        var info = upInfo[kind] || {};
+        var name = info.name || "UP 主";
+        return '<div class="up-head" id="up-head">' +
+               (info.face ? '<img class="up-face" src="' + esc(info.face) + '" alt="">'
+                          : '<span class="up-initial">' + esc(name.charAt(0)) + '</span>') +
+               '<div class="up-name">' + esc(name) + '<span class="up-sub">的投稿</span></div>' +
+               '</div>';
+    }
+
     function renderGrid(items, emptyText) {
+        var head = isUp(state.screen) ? upHeadHtml(state.screen) : "";
         if (!items.length) {
-            screenEl.innerHTML = '<div class="empty">' + esc(emptyText || "没有内容") + '</div>';
+            screenEl.innerHTML = head + '<div class="empty">' + esc(emptyText || "没有内容") + '</div>';
             return;
         }
 
@@ -384,7 +400,7 @@
         var resume = (state.screen === "rcmd") ? resumeRowItems() : [];
         resumeRowSig = rowSignature(resume);
 
-        var html = "";
+        var html = head;
         if (resume.length) {
             html += '<div class="section">继续观看</div><div id="resume-row"></div>' +
                     '<div class="section">推荐</div>';
@@ -699,6 +715,38 @@
      * left off instead of refetching and dumping focus on the first card. */
     var feedCache = {};
 
+    /* An uploader's page is one more feed kind, "up:<mid>", so paging, the
+     * position cache and the restore-on-return all come from loadFeed for
+     * free. What it needs on top is one level of "where did I come from":
+     * 返回 on an uploader page goes back to the tab it was opened from, at
+     * the card that was picked — not to 推荐. One level, not a stack: nobody
+     * goes three screens deep from a sofa, and a stack turns 返回 into six
+     * presses to get out. Following an uploader from a video found on
+     * another uploader's page keeps the original origin, so 返回 still lands
+     * on the tab the browsing started from. */
+    var upFrom = "rcmd";
+    var upInfo = {};        /* kind -> {mid, name, face}, for the page header */
+    function isUp(kind) { return String(kind || "").indexOf("up:") === 0; }
+    function upMid(kind) { return Number(String(kind).slice(3)) || 0; }
+    /* The tab that stands for a screen in the bar. An uploader page has no
+     * tab of its own — the ring falls back to the tab it came from. */
+    function tabSelectorFor(kind) {
+        return '#tabs .tab[data-screen="' + (isUp(kind) ? upFrom : kind) + '"]';
+    }
+    function showScreen(kind, restore) {
+        if (kind === "search") { renderSearch(); }
+        else if (kind === "mine") { renderMine(); }
+        else { loadFeed(kind, restore); }
+    }
+    function openUp(mid, name, face) {
+        if (!mid) { toast("拿不到这位 UP 主的资料"); return; }
+        var kind = "up:" + mid;
+        if (!isUp(state.screen)) { upFrom = state.screen; }
+        var held = upInfo[kind] || {};
+        upInfo[kind] = { mid: mid, name: name || held.name || "", face: face || held.face || "" };
+        loadFeed(kind, true);
+    }
+
     var feedRequest = 0;
     var loadingMore = false;
 
@@ -761,6 +809,10 @@
 
     /* ranking answers with its full 100 in one go and has no second page. */
     function fetchPage(kind, page, onOk, onFail) {
+        if (isUp(kind)) {
+            var uc = feedCache[kind];
+            return API.space(upMid(kind), (page > 1 && uc) ? (uc.cursor || "") : "", onOk, onFail);
+        }
         if (kind === "ranking") { return page === 1 ? API.ranking(0, onOk, onFail) : onOk([]); }
         if (ZONES[kind]) { return page === 1 ? API.ranking(ZONES[kind], onOk, onFail) : onOk([]); }
         if (kind === "rcmd") { return API.recommended(page, onOk, onFail); }
@@ -894,7 +946,7 @@
             screenEl.innerHTML = '<div class="empty">' +
                 (kind === "dynamic" ? "动态" : "稍后再看") +
                 '需要登录，先去「我的」扫码</div>';
-            Nav.reset('#tabs .tab[data-screen="' + kind + '"]');
+            Nav.reset(tabSelectorFor(kind));
             return;
         }
         fetchPage(kind, 1, function (items, extra) {
@@ -916,7 +968,7 @@
              * the cursor when the screen appears. An empty list keeps the ring
              * on the tab just pressed instead of falling to the first tab. */
             if (items.length) { Nav.reset(".card"); }
-            else { Nav.reset('#tabs .tab[data-screen="' + kind + '"]'); }
+            else { Nav.reset(tabSelectorFor(kind)); }
         }, function (why) {
             if (req !== feedRequest) { return; }
             /* Waking from suspend, this set's network is regularly a few seconds
@@ -1924,7 +1976,8 @@
         if (v.cid) {
             var provisional = {
                 bvid: v.bvid, aid: v.aid, cid: v.cid, title: v.title, pic: v.pic,
-                author: v.author, duration: v.duration, play: v.play,
+                author: v.author, mid: v.mid || 0, face: v.face || "",
+                duration: v.duration, play: v.play,
                 desc: "", pages: []
             };
             play(provisional, v.cid);
@@ -2304,8 +2357,28 @@
         var d = playing.detail;
 
         el("panel-title").textContent = d.title || "";
-        el("panel-meta").textContent = [d.author, d.duration, (d.play || "") + "次观看"]
+        /* The uploader's name is the way to their page, so it is a chip, not a
+         * word in a line of grey text. It sits above the part row, which is
+         * where 上键 from the parts already goes; one more press up from the
+         * chip closes the panel as before (nothingAboveInPanel). */
+        var rest = [d.duration, d.play ? d.play + "次观看" : ""]
             .filter(function (x) { return !!x; }).join("  ·  ");
+        el("panel-meta").innerHTML =
+            '<span class="opt-up focusable" id="panel-up">' + esc(d.author || "UP 主") + '</span>' +
+            (rest ? '<span class="panel-meta-rest">' + esc(rest) + '</span>' : "");
+        el("panel-up").onselect = function () {
+            var cur = playing && playing.detail;
+            if (!cur) { return; }
+            /* The mid rides on every card now, but a video opened by bvid alone
+             * (a handoff, a deep link) has it only once view() has answered. */
+            if (!cur.mid) { toast("还没拿到这位 UP 主的资料，稍等一下再按"); return; }
+            var kind = "up:" + cur.mid;
+            /* Watching something from this uploader's own page: the page is
+             * what is behind the video, so this press means 返回. */
+            if (state.screen === kind) { stopPlayback(); return; }
+            var mid = cur.mid, name = cur.author, face = cur.face;
+            stopPlayback(function () { openUp(mid, name, face); });
+        };
         el("panel-desc").textContent = (d.desc || "").slice(0, 400);
 
         paintParts();
@@ -2411,6 +2484,11 @@
             pendingNext = next;
             el("playerui").className = "hidden";
             el("nextup-title").textContent = next.title;
+            /* The uploader of the video that just ended — the one the viewer
+             * has an opinion about now — to the right of the queued card. To
+             * the right and not under it, so 下键 from the card still walks
+             * into the related grid the way the selftest and the hint promise. */
+            var hasUp = paintNextupUp(finished && finished.detail);
             var thumb = el("nextup-thumb");
             if (next.detail && next.detail.pic) {
                 thumb.src = next.detail.pic;
@@ -2452,6 +2530,7 @@
             el("nextup-hint").innerHTML = '<span id="nextup-count">' + left +
                 '</span> 秒后开始 &middot; 确认键 立即播放' +
                 (more.length ? ' &middot; 下键 挑别的' : "") +
+                (hasUp ? ' &middot; 右键 看这位 UP 主' : "") +
                 ' &middot; 返回键 退出';
             nextTimer = setInterval(function () {
                 left--;
@@ -2473,6 +2552,31 @@
         el("nextup-hint").textContent = "确认键 播放 · 返回键 退出";
     }
 
+    /* True when there is a chip to show. The finished session's detail has
+     * the mid from its card or from view(); a session that had neither (opened
+     * by bvid, view() still pending when it ended) gets no chip rather than a
+     * chip that opens an empty page. */
+    function paintNextupUp(d) {
+        var box = el("nextup-up");
+        if (!d || !d.mid) { box.className = "nextup-up hidden"; box.onselect = null; return false; }
+        var name = d.author || "UP 主";
+        el("nextup-up-name").textContent = name;
+        var face = el("nextup-up-face"), ini = el("nextup-up-initial");
+        if (d.face) { face.src = d.face; face.className = "up-face"; ini.className = "hidden"; }
+        else { face.className = "hidden"; ini.textContent = name.charAt(0); ini.className = "up-initial"; }
+        box.className = "nextup-up focusable";
+        var mid = d.mid, fc = d.face;
+        box.onselect = function () {
+            /* Same shape as 返回 from this screen: the finished session is put
+             * back so its position is reported under the part that ended. */
+            var fin = pendingNext && pendingNext.from;
+            cancelNext();
+            playing = fin || null;
+            stopPlayback(function () { openUp(mid, name, fc); });
+        };
+        return true;
+    }
+
     function handleNextKeys(k) {
         if (k === Nav.KEY.PLAY_PAUSE) { playNext(); return true; }
         /* Arrows and 确认 belong to Nav here: this screen is a chooser, and its
@@ -2484,8 +2588,9 @@
              * exactly one card on this screen, so an arrow press moves nothing —
              * and stopping the countdown for it would cancel autoplay on a press
              * that visibly did nothing at all. */
-            var more = el("nextup-more");
-            if (more && more.className.indexOf("hidden") < 0) { stopCountdown(); }
+            var more = el("nextup-more"), upc = el("nextup-up");
+            if ((more && more.className.indexOf("hidden") < 0) ||
+                    (upc && upc.className.indexOf("hidden") < 0)) { stopCountdown(); }
             return false;
         }
         if (k === Nav.KEY.ENTER) { return false; }
@@ -3331,7 +3436,11 @@
         });
     }
 
-    function stopPlayback() {
+    /* `then`, when given, is where to go instead of back to the grid — the
+     * uploader page, opened from the panel or the end-of-video chooser. It runs
+     * after the wake refresh has been paid, so a page opened on a set that slept
+     * through the video still sits on top of a fresh home feed. */
+    function stopPlayback(then) {
         el("player-loading").className = "hidden";
         var was = playing;
         /* Before `playing` is cleared: this is the position the viewer actually
@@ -3358,12 +3467,11 @@
         /* Unless the set slept through the middle of this video, in which case
          * what is behind the player is last night's screen and the owed refresh
          * is paid here instead of restoring it. */
-        if (payOwedWake()) { return; }
+        var owed = payOwedWake();
+        if (then) { then(); return; }
+        if (owed) { return; }
         /* Back to the grid the viewer was browsing, at the card they picked. */
-        var home = state.screen;
-        if (home === "search") { renderSearch(); }
-        else if (home === "mine") { renderMine(); }
-        else { loadFeed(home, true); }
+        showScreen(state.screen, true);
     }
 
     Player.on(function (kind, data) {
@@ -3937,6 +4045,7 @@
         /* Backing out of "add an account" belongs on the switcher, not on the
          * home feed — the viewer was one press into a two-press errand. */
         if (state.screen === "login" && Accounts.count()) { renderAccounts(false); return; }
+        if (isUp(state.screen)) { showScreen(upFrom, true); return; }
         if (state.screen !== "rcmd") { loadFeed("rcmd"); return; }
         try { tizen.application.getCurrentApplication().exit(); } catch (e) {}
     });

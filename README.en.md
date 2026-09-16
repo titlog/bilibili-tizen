@@ -94,8 +94,10 @@ self-update routes have been proven on the set, but it is not built), so
 **Does**: recommendations / popular / rankings / food / dance / dynamic feed /
 watch-later / search with the TV's own Chinese IME, multi-part uploads, resume
 (remembers which part, picks up from the phone), autoplay next, scrub previews,
-parts and related videos over a running video. About **2.5–3.5 s** from OK to a
-picture, 1080p H.265.
+parts and related videos over a running video, uploader pages (press the
+uploader's name in the panel, or 右 on the end-of-video screen, for everything
+they have posted; 返回 goes back to the tab you came from). About **2.5–3.5 s**
+from OK to a picture, 1080p H.265.
 
 **Does not**:
 - **4K.** The two missing tiers (1080p high bitrate, 4K) are what the paid
@@ -104,7 +106,7 @@ picture, 1080p H.265.
 - **Casting from the phone.** A cast receiver has to listen on a port; a Tizen
   web widget cannot, regardless of how official it is. The substitute is
   watch-later: tap on the phone, open on the TV.
-- **Subtitles, uploader pages, a settings screen.** The APIs exist; not built.
+- **Subtitles, a settings screen.** The APIs exist; not built.
 
 ## FAQ
 

@@ -678,6 +678,69 @@ var SelfTest = (function () {
             post(row ? "醒来：重取了首页，光标在继续观看第一张"
                      : "醒来：重取了首页，没有续播行，光标在推荐第一张");
             return null;
+        }],
+
+        /* The uploader page, reached the way a viewer reaches it: a video is
+         * playing, 下键 pulls the panel, 上键 lands on the uploader chip, 确认
+         * opens the page, 返回 comes back to the tab it was opened from. Last in
+         * the run because it leaves the player. What this catches: the chip
+         * missing or nameless (the mid never made it onto the card), the page
+         * coming up empty (the app endpoint refused — the web one is gated by
+         * IP and would fail this two times in three), the tab bar still
+         * highlighting a tab on a screen that has none, and 返回 going to 推荐
+         * by way of a reload instead of restoring where it came from. */
+        ["再开一个视频，为了走到 UP 主页", 600, function () {
+            if (!visible("shell")) { return "不在浏览界面"; }
+            if (!document.querySelector("#screen .card.focused")) { return "没有选中的卡片"; }
+            key(KEY.ENTER);
+            return null;
+        }],
+        ["画面起来了", 8000, function () {
+            if (visible("player-loading")) { return "八秒后仍停在加载画面"; }
+            if (visible("shell")) { return "没有进入播放"; }
+            return null;
+        }],
+        ["下键拉出面板", 1200, function () { key(KEY.DOWN); return null; }],
+        ["面板顶上有 UP 主芯片", 900, function () {
+            if (!visible("options")) { return "面板没有出现"; }
+            var chip = document.getElementById("panel-up");
+            if (!chip || chip.offsetParent === null) { return "面板里没有 UP 主芯片"; }
+            if (!chip.textContent) { return "UP 主芯片上没有名字"; }
+            post("UP 主芯片：" + chip.textContent);
+            return null;
+        }],
+        /* At most four presses: the ring opens on the playing part or on the
+         * first related card, and the chip is the only focusable above either.
+         * One press too many closes the panel, which is why each press checks
+         * first. */
+        ["上键走到 UP 主芯片", 600, function () {
+            for (var i = 0; i < 4; i++) {
+                if (document.querySelector("#panel-up.focused")) { break; }
+                key(KEY.UP);
+            }
+            if (!visible("options")) { return "上键把面板关了，没有停在芯片上"; }
+            return document.querySelector("#panel-up.focused") ? null : "焦点没有走到 UP 主芯片";
+        }],
+        ["确认键进 UP 主页", 600, function () { key(KEY.ENTER); return null; }],
+        ["UP 主页：有页眉、有卡片、页签不高亮", 5000, function () {
+            if (!visible("shell")) { return "没有离开播放器回到浏览界面"; }
+            var head = document.getElementById("up-head");
+            if (!head) { return "屏幕上没有 UP 主页眉"; }
+            var n = count("#feed-grid .card");
+            post("UP 主页：" + head.textContent.trim().slice(0, 24) + "，" + n + " 张卡片");
+            if (!n) { return "UP 主页没有卡片"; }
+            if (document.querySelector("#tabs .tab.active")) { return "UP 主页上还有页签在高亮"; }
+            if (!document.querySelector("#feed-grid .card.focused")) { return "光标没有落在 UP 主页的卡片上"; }
+            return null;
+        }],
+        ["返回键回到来的地方", 600, function () { key(KEY.RETURN); return null; }],
+        ["回到首页：页签重新高亮，页眉没了", 2500, function () {
+            if (!visible("shell")) { return "返回之后不在浏览界面"; }
+            if (document.getElementById("up-head")) { return "返回之后 UP 主页眉还在"; }
+            if (!document.querySelector('#tabs .tab.active[data-screen="rcmd"]')) { return "返回之后推荐页签没有高亮"; }
+            if (!count("#screen .card")) { return "返回之后网格是空的"; }
+            if (!document.querySelector("#screen .card.focused")) { return "返回之后没有选中的卡片"; }
+            return null;
         }]
     ];
 

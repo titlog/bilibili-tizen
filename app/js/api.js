@@ -263,6 +263,10 @@ var API = (function () {
             title: stripEm(v.title),
             pic: thumb(v.pic),
             author: (v.owner && v.owner.name) || v.author || "",
+            /* Who made it, as the id the space endpoint takes. The feeds carry
+             * it under owner, search results flat as `mid`; it was dropped for
+             * a month because nothing asked. The uploader page asks. */
+            mid: (v.owner && v.owner.mid) || v.mid || 0,
             duration: duration(v.duration),
             play: count(v.stat ? v.stat.view : v.play)
         };
@@ -404,6 +408,7 @@ var API = (function () {
                         title: stripEm(arch.title),
                         pic: thumb(arch.cover),
                         author: ((m.module_author || {}).name) || "",
+                        mid: ((m.module_author || {}).mid) || 0,
                         duration: arch.duration_text || "",
                         play: (arch.stat || {}).play || ""
                     });
@@ -484,6 +489,7 @@ var API = (function () {
                         title: x.title,
                         pic: thumb(x.cover || x.pic),
                         author: x.author_name || "",
+                        mid: x.author_mid || 0,
                         duration: duration(secs),
                         play: "",
                         seen: seen,
@@ -559,6 +565,59 @@ var API = (function () {
                     out.push(v);
                 }
                 onOk(out, all);
+            }, onFail);
+        },
+
+        /* One uploader's videos, newest first, paged by cursor.
+         *
+         * Not the web endpoint. `x/space/wbi/arc/search` on api.bilibili.com is
+         * the documented route and it answers code=0 from this set — one time in
+         * three. Measured on the device on 2026-09-16, four rounds, ~40 requests:
+         * signed with a real WBI w_rid it went 2/10, then 3/3, then 1/3; the
+         * unsigned `series/recArchivesByKeywords` went 2/3; the failures are
+         * HTTP 412 pages and `-352 风控校验失败`, alternating, and nothing sent
+         * along changes the odds — access_key on or off, the dm_img_* fingerprint
+         * params, withCredentials. That is an IP-level gate on the space paths
+         * of api.bilibili.com, not a signature problem, and there is no header
+         * this widget can add to pass it (the Cookie header never leaves the
+         * engine, see docs/平台坑.md).
+         *
+         * `app.bilibili.com/x/v2/space/archive/cursor` is the phone app's route
+         * to the same list, signed the way playurl already signs — TV appkey,
+         * access_key in the params — and it went 3/3 in the same run, with a
+         * 15-second cadence the web routes were failing at. Same measurement,
+         * same minute, same television. The payload is the app's shape: `param`
+         * is the aid as a string, `duration` is seconds, `play` a number,
+         * `first_cid` lets playback start without a view() round trip, and the
+         * next page is asked for with `aid=<last param>`. */
+        space: function (mid, cursor, onOk, onFail) {
+            var params = { vmid: mid, ps: 20, order: "pubdate",
+                           platform: "android", mobi_app: "android", build: 7280300 };
+            if (typeof Auth !== "undefined" && Auth.isLoggedIn() && Auth.accessKey()) {
+                params.access_key = Auth.accessKey();
+            }
+            if (cursor) { params.aid = cursor; }
+            getJson("https://app.bilibili.com/x/v2/space/archive/cursor?" + Auth.signTv(params),
+                    function (d) {
+                var raw = (d && d.item) || [], out = [];
+                for (var i = 0; i < raw.length; i++) {
+                    var x = raw[i];
+                    if (!x || !x.bvid || x.goto === "live") { continue; }
+                    out.push({
+                        bvid: x.bvid,
+                        aid: Number(x.param) || 0,
+                        cid: x.first_cid || null,
+                        title: stripEm(x.title),
+                        pic: thumb(x.cover),
+                        author: x.author || "",
+                        mid: mid,
+                        duration: duration(x.duration || 0),
+                        play: count(x.play)
+                    });
+                }
+                var last = raw.length ? raw[raw.length - 1] : null;
+                onOk(out, { cursor: last ? String(last.param || "") : "",
+                            more: !!(d && d.has_next) && !!last });
             }, onFail);
         },
 
@@ -705,6 +764,11 @@ var API = (function () {
                     desc: d.desc,
                     pic: thumb(d.pic, 960, 600),
                     author: (d.owner || {}).name,
+                    mid: (d.owner || {}).mid || 0,
+                    /* The uploader page's header. Only view() carries the face;
+                     * a card opened straight from a feed reaches the page
+                     * without one and the header shows the name alone. */
+                    face: thumb((d.owner || {}).face, 120, 120),
                     duration: duration(d.duration),
                     play: count((d.stat || {}).view),
                     pages: (d.pages || []).map(function (p) {
