@@ -261,7 +261,7 @@ var SelfTest = (function () {
             var cards = count("#opt-related .card");
             post("面板：相关推荐一共 " + total + " 个，已经画出 " + cards + " 张");
             if (!total) { return "面板里一个相关推荐都没有"; }
-            if (total <= 8) {
+            if (total <= 6) {
                 window.__stPanelShort = true;   /* legitimately short list */
                 return null;
             }
@@ -273,7 +273,7 @@ var SelfTest = (function () {
             if (!visible("options")) { return "面板不见了"; }
             var cards = count("#opt-related .card");
             post("面板：往下走之后画出 " + cards + " 张");
-            return cards > 8 ? null
+            return cards > 6 ? null
                 : "焦点走进相关推荐深处了，网格却没有接着长（还是 " + cards + " 张）";
         }],
         ["返回键收起面板", 700, function () {
@@ -436,15 +436,15 @@ var SelfTest = (function () {
                         ? window.__stNextupTotal() : 0;
             var cards = count("#nextup-related .card");
             post("即将播放：相关推荐一共 " + total + " 个，已经画出 " + cards + " 张");
-            if (total <= 4) {
+            if (total <= 3) {
                 /* A short related list is a legitimate answer, not a failure —
                  * say which one it is rather than going red on the viewer's
                  * behalf. */
                 window.__stNextupShort = true;
                 return null;
             }
-            if (cards <= 4) {
-                return "走进相关推荐了，却还是只有第一行那四张——网格没有接着长";
+            if (cards <= 3) {
+                return "走进相关推荐了，却还是只有第一行那三张——网格没有接着长";
             }
             window.__stNextupScroll = document.getElementById("nextup").scrollTop;
             key(KEY.DOWN);
@@ -455,7 +455,7 @@ var SelfTest = (function () {
             if (!visible("nextup")) { return "即将播放界面不见了"; }
             var f = document.querySelector("#nextup-related .card.focused");
             if (!f) { return "再按下键没有停在相关推荐里"; }
-            if (Number(f.getAttribute("data-i")) < 4) {
+            if (Number(f.getAttribute("data-i")) < 3) {
                 return "再按下键没有走到第二行";
             }
             var top = document.getElementById("nextup").scrollTop;

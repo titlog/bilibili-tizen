@@ -319,8 +319,11 @@
     /* What is half-watched, newest first, for the strip across the top of the
      * home screen.
      *
-     * Four, because four is one row at this card width — a "continue watching"
+     * Three, because three is one row at this card width — a "continue watching"
      * that takes two rows has stopped being a strip and started being a screen.
+     * It was four while the grid was four wide: this number follows the column
+     * count, and has to move with it.
+     *
      * Finished videos are dropped: the row exists to answer "what was I in the
      * middle of", and something watched to the end is not an answer to that. */
     function resumeRowItems() {
@@ -332,7 +335,7 @@
          * lists it: it was watched, and that stays true after the takedown. */
         var dead = Resume.dead();
         var out = [];
-        for (var i = 0; i < merged.length && out.length < 4; i++) {
+        for (var i = 0; i < merged.length && out.length < 3; i++) {
             if ((merged[i].seen || 0) >= 0.95) { continue; }
             if (dead[merged[i].bvid]) { continue; }
             out.push(merged[i]);
@@ -493,7 +496,7 @@
                 if (!/(^|\s)card(\s|$)/.test(focused.className)) { return; }
                 var box = el(boxId);
                 if (!box || !box.contains(focused)) { return; }
-                if (Number(focused.getAttribute("data-i")) < shown - 4) { return; }
+                if (Number(focused.getAttribute("data-i")) < shown - 3) { return; }
                 grow(shown + page);
             }
         };
@@ -2206,9 +2209,10 @@
     /* Two rows on open, two more per step down. Two rather than the old sixteen
      * because this panel comes up over a video that is still buffering: the
      * cheapest moment to spend on thumbnails is after the ring starts moving,
-     * which is also the only moment they are being looked at. */
-    var PANEL_FIRST = 8;
-    var PANEL_PAGE = 8;
+     * which is also the only moment they are being looked at. Six, not eight,
+     * since the grid went three wide — these are rows counted in cards. */
+    var PANEL_FIRST = 6;
+    var PANEL_PAGE = 6;
 
     var QUALITY_NAMES = {
         127: "8K", 120: "4K", 116: "1080P60", 112: "1080P+",
@@ -2361,12 +2365,13 @@
         nextupGrid.clear();
     }
 
-    /* One row above the fold, two more rows per step down. The first row is
-     * painted while the countdown is still running — that is the one paint that
-     * competes with the next video's start, so it stays the size it has always
-     * been. */
-    var NEXTUP_FIRST = 4;
-    var NEXTUP_PAGE = 8;
+    /* One row above the fold, two more rows per step down — in cards, so both
+     * moved with the grid from four columns to three. The first row is painted
+     * while the countdown is still running, which is the one paint that competes
+     * with the next video's start: a row is the right unit for it either way,
+     * and three is one thumbnail cheaper than four was. */
+    var NEXTUP_FIRST = 3;
+    var NEXTUP_PAGE = 6;
 
     function beginAutoNext() {
         /* The panel belongs to the video that just ended; leaving it up meant
