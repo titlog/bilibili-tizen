@@ -173,7 +173,18 @@ body {
     border-radius: 5px; padding: 1px 8px; margin-right: 10px;
 }
 
-.section { font-size: 28px; color: #8b959e; margin: 32px 0 20px; }
+/* 32/20 was spaced for the four-column cards. At three columns a card is 480px
+   tall instead of 371, and the same margins stopped reading as rhythm and
+   started reading as a gap — two labels' worth of air was pushing the first
+   recommendation most of the way off a 1080 panel. Tighter, and asymmetric on
+   purpose: the label belongs to the row under it, so most of what is left goes
+   above the label rather than below it. */
+.section { font-size: 28px; color: #8b959e; margin: 22px 0 12px; }
+/* 继续观看 opens the home screen directly under the tab bar, which carries its
+   own 20px of padding — the full top margin there is the bar's air counted
+   twice. Only ever the first one: every other 分区 label is separating itself
+   from the block above it and needs the whole margin. */
+#screen > .section:first-child { margin-top: 4px; }
 .parts { display: flex; flex-wrap: wrap; gap: 14px; }
 .part {
     font-size: 22px; padding: 14px 24px;
