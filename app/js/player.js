@@ -1091,18 +1091,22 @@ var Player = (function () {
                  * req1→resp1 is the first trip to the CDN — connection set-up
                  * included when it is cold — and resp1→loaded is everything
                  * after. The card-dwell prewarm in app.js is judged on this gap. */
-                mark("req1");
+                /* Only once this start's manifest exists: a request still in
+                 * flight from the manifest being torn down (a rebuild's clock
+                 * starts before its teardown) was being stamped req1=20ms. */
+                if (marks && marks.manifest !== undefined) { mark("req1"); }
             });
             ne.registerResponseFilter(function (type, response) {
                 if (type !== RT.SEGMENT) { return; }
                 segFinished++;
                 segLastFinish = new Date().getTime();
-                mark("resp1");
+                /* Not for the torn-down manifest's stragglers — see req1. */
+                if (marks && marks.req1 !== undefined) { mark("resp1"); }
                 /* resp1 alone lied on its first evening: 58ms, and loaded
                  * still 1.15s later — the slow one was a later request (the
                  * audio file, or an index). The last response before load()
                  * settles, and how many there were, say where that went. */
-                if (marks && marks.loaded === undefined) {
+                if (marks && marks.req1 !== undefined && marks.loaded === undefined) {
                     marks.respN = segLastFinish - marks.t0;
                     respBeforeLoad++;
                 }
