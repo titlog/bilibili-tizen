@@ -174,6 +174,25 @@ var Mpd = (function () {
          * question often enough. */
         chosen: function () { return chosen; },
 
+        /* The two files a fresh start of this response will open first: the
+         * top video of the family build() would settle on, and the top audio —
+         * what ABR picks under the default estimate. For the card-dwell
+         * prewarm in app.js, which found that warming *a* file on the right
+         * host does nothing for *this* file's first response. Leaves `chosen`
+         * as it was: that belongs to the manifest actually playing. */
+        peek: function (dash, maxId) {
+            if (!dash) { return { video: null, audio: null }; }
+            var keep = chosen;
+            var videos = chooseVideos(dash.video, maxId).sort(function (a, b) {
+                return (b.bandwidth || 0) - (a.bandwidth || 0);
+            });
+            chosen = keep;
+            var audios = (dash.audio || []).filter(function (r) {
+                return r.segments;
+            }).sort(function (a, b) { return (b.bandwidth || 0) - (a.bandwidth || 0); });
+            return { video: videos[0] || null, audio: audios[0] || null };
+        },
+
         /* `maxId` caps the quality ladder — bilibili happily offers 4K and 8K
          * tiers this set has no business fetching over a domestic link. Passing
          * every tier below it in lets the player adapt downwards on its own,

@@ -547,9 +547,12 @@ var Player = (function () {
         lastAppSeekTo = targetMs;
     }
 
+    var respBeforeLoad = 0;
+
     function startTiming() {
         marks = { t0: new Date().getTime() };
         markOrder = [];
+        respBeforeLoad = 0;
         transportTold = false;   /* one transport line per video, not per seek */
         resetSegTraffic();
     }
@@ -564,6 +567,10 @@ var Player = (function () {
         if (!marks) { return ""; }
         var out = [];
         for (var i = 0; i < markOrder.length; i++) {
+            /* respN sits just before loaded, where it happened. */
+            if (markOrder[i] === "loaded" && marks.respN !== undefined) {
+                out.push("respN=" + marks.respN + "ms(" + respBeforeLoad + "个)");
+            }
             out.push(markOrder[i] + "=" + marks[markOrder[i]] + "ms");
         }
         return out.join(" ");
@@ -1070,11 +1077,25 @@ var Player = (function () {
                 lastAskedRange = String(h);
                 segStarted++;
                 segLastStart = new Date().getTime();
+                /* Splits `loaded`, which was two seconds with nothing inside it:
+                 * req1→resp1 is the first trip to the CDN — connection set-up
+                 * included when it is cold — and resp1→loaded is everything
+                 * after. The card-dwell prewarm in app.js is judged on this gap. */
+                mark("req1");
             });
             ne.registerResponseFilter(function (type, response) {
                 if (type !== RT.SEGMENT) { return; }
                 segFinished++;
                 segLastFinish = new Date().getTime();
+                mark("resp1");
+                /* resp1 alone lied on its first evening: 58ms, and loaded
+                 * still 1.15s later — the slow one was a later request (the
+                 * audio file, or an index). The last response before load()
+                 * settles, and how many there were, say where that went. */
+                if (marks && marks.loaded === undefined) {
+                    marks.respN = segLastFinish - marks.t0;
+                    respBeforeLoad++;
+                }
                 var hs = response.headers || {};
                 var cr = hs["content-range"] || hs["Content-Range"] || "";
                 var m = /bytes\s+(\d+)-(\d+)/.exec(String(cr));

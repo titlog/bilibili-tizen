@@ -417,6 +417,7 @@
         var cards = screenEl.querySelectorAll("#feed-grid .card");
         for (var j = 0; j < cards.length; j++) {
             (function (card, v) {
+                card.__video = v;
                 card.onselect = function () { playVideo(v); };
             })(cards[j], items[Number(cards[j].getAttribute("data-i"))]);
         }
@@ -433,6 +434,7 @@
         var cards = container.querySelectorAll(".card");
         for (var j = 0; j < cards.length; j++) {
             (function (card) {
+                card.__video = items[Number(card.getAttribute("data-i"))];
                 card.onselect = function () {
                     playVideo(items[Number(card.getAttribute("data-i"))]);
                 };
@@ -899,7 +901,10 @@
             var node = holder.firstChild;
             holder.removeChild(node);
             grid.appendChild(node);
-            (function (card, v) { card.onselect = function () { playVideo(v); }; })(
+            (function (card, v) {
+                card.__video = v;
+                card.onselect = function () { playVideo(v); };
+            })(
                 node, items[Number(node.getAttribute("data-i")) - offset]);
         }
     }
@@ -1452,7 +1457,10 @@
         if (kb) { kb.className = "keyboard collapsed"; }
         var cards = results.querySelectorAll(".card");
         for (var j = 0; j < cards.length; j++) {
-            (function (card, v) { card.onselect = function () { playVideo(v); }; })(
+            (function (card, v) {
+                card.__video = v;
+                card.onselect = function () { playVideo(v); };
+            })(
                 cards[j], items[Number(cards[j].getAttribute("data-i"))]);
         }
         if (keepFocus && focusedIndex !== null && cards[focusedIndex]) {
@@ -1953,6 +1961,151 @@
             return last.cid;
         }
         return detail.cid;
+    }
+
+    /* ---------------- asked before the button is pressed ----------------
+     *
+     * The web player looks instant partly because it is not doing the same
+     * work: the playurl answer is inlined in the page's HTML, and the page has
+     * long since touched the CDN. Here both were paid after the press — ~270ms
+     * of playurl + player/v2, then a first CDN response (req1→resp1 in the
+     * 到画面 line) of ~900ms whenever the edge does not hold the file, and
+     * ~70ms when it does.
+     *
+     * So a card the ring rests on is asked about before anyone presses it: the
+     * same three requests play() makes, plus one small range into each of
+     * the two files Shaka will open first (see warmCdn for why per file).
+     * play() takes the entry once (a second press asks afresh — the answer
+     * has been used) and a failed prefetch simply asks again, so the worst
+     * case is exactly the old path.
+     *
+     * The limits are the CDN's per-IP burst limit (see CLAUDE.md, 限流): a
+     * dwell before anything is sent, a floor between two prefetches, and each
+     * file warmed at most once in five minutes. Walking across a row sends
+     * nothing. */
+    var PREFETCH_DWELL = 400;   /* 800 missed: pressed 814ms after landing, prefetch sent 14ms before */
+    var PREFETCH_GAP = 1500;
+    var PREFETCH_TTL = 5 * 60 * 1000;
+    var PREFETCH_MAX = 4;
+    var prefetched = {};
+    var prefetchTimer = 0;
+    var lastPrefetchAt = 0;
+    var warmedAt = {};      /* file (url without query) -> when it was warmed */
+
+    function prefetchKey(bvid, cid) {
+        /* Per account: playurl's tiers and player/v2's position both depend on
+         * whose access_key signed the request. */
+        return bvid + ":" + cid + "@" + Accounts.activeId();
+    }
+
+    /* One request whose answer may be wanted before or after it arrives. */
+    function prefetchSlot(fetcher) {
+        var s = { done: false, ok: false, val: undefined, waiters: [] };
+        function settle(ok, val) {
+            if (s.done) { return; }
+            s.done = true; s.ok = ok; s.val = val;
+            var w = s.waiters; s.waiters = [];
+            for (var i = 0; i < w.length; i++) { w[i][ok ? 0 : 1](val); }
+        }
+        fetcher(function (v) { settle(true, v); }, function (why) { settle(false, why); });
+        return s;
+    }
+
+    /* Asynchronous even when the answer is already in: play() was written
+     * against callbacks that arrive after it returns, and decide() running in
+     * the middle of play() would be a new ordering nobody has tested. */
+    function whenSettled(s, onOk, onFail) {
+        if (!s.done) { s.waiters.push([onOk, onFail]); return; }
+        setTimeout(function () { (s.ok ? onOk : onFail)(s.val); }, 0);
+    }
+
+    function prunePrefetch(now) {
+        var keys = [];
+        for (var k in prefetched) {
+            if (!prefetched.hasOwnProperty(k)) { continue; }
+            if (now - prefetched[k].at > PREFETCH_TTL) { delete prefetched[k]; }
+            else { keys.push(k); }
+        }
+        keys.sort(function (a, b) { return prefetched[a].at - prefetched[b].at; });
+        while (keys.length >= PREFETCH_MAX) { delete prefetched[keys.shift()]; }
+    }
+
+    /* One small range into each of the two files Shaka will open first —
+     * init segment and segment index together, since those are its first
+     * two asks of every file. Per *file*, not per host: 2026-09-28 the first
+     * version warmed one file per host and the next card's first response
+     * still took 890ms two seconds later on that same warm host, while a
+     * file the edge happened to hold answered in 74ms. What is cold is the
+     * file at the CDN edge, not the connection. Results ride on the entry
+     * so the 到画面 line can say what this card's own warm-up did. */
+    function warmCdn(e, dash) {
+        if (playing || !dash) { return; }
+        var first = Mpd.peek(dash, PREFERRED_QN);
+        var reps = [["视频", first.video], ["音频", first.audio]];
+        var now = new Date().getTime();
+        e.warm = [];
+        for (var i = 0; i < reps.length; i++) {
+            (function (label, rep) {
+                var url = rep && rep.urls && rep.urls[0];
+                if (!url || !rep.segments) { return; }
+                var file = url.split("?")[0];
+                if (warmedAt[file] && now - warmedAt[file] < PREFETCH_TTL) { return; }
+                warmedAt[file] = now;
+                var end = rep.segments.index.split("-")[1];
+                var w = { label: label, status: 0, ms: -1 };
+                e.warm.push(w);
+                var xhr = new XMLHttpRequest();
+                try {
+                    xhr.open("GET", url, true);
+                    xhr.setRequestHeader("Range", "bytes=0-" + end);
+                    xhr.timeout = 5000;
+                    xhr.onloadend = function () {
+                        w.status = xhr.status;
+                        w.ms = new Date().getTime() - now;
+                    };
+                    xhr.send();
+                } catch (ex) {}
+            })(reps[i][0], reps[i][1]);
+        }
+        for (var f in warmedAt) {
+            if (warmedAt.hasOwnProperty(f) && now - warmedAt[f] > PREFETCH_TTL) { delete warmedAt[f]; }
+        }
+    }
+
+    function prefetchCard(v) {
+        if (!v || !v.bvid || !v.cid || playing) { return; }
+        var now = new Date().getTime();
+        var wait = PREFETCH_GAP - (now - lastPrefetchAt);
+        if (wait > 0) {
+            prefetchTimer = setTimeout(function () { prefetchCard(v); }, wait);
+            return;
+        }
+        var key = prefetchKey(v.bvid, v.cid);
+        if (prefetched[key] && now - prefetched[key].at < PREFETCH_TTL) { return; }
+        prunePrefetch(now);
+        lastPrefetchAt = now;
+        var bvid = v.bvid, cid = v.cid;
+        var e = { at: now };
+        e.dash = prefetchSlot(function (ok, fail) { API.playurlDash(bvid, cid, PREFERRED_QN, ok, fail); });
+        e.prog = prefetchSlot(function (ok, fail) { API.playurlProgressive(bvid, cid, PREFERRED_QN, ok, fail); });
+        e.resume = prefetchSlot(function (ok, fail) { API.playerV2(bvid, cid, ok, fail); });
+        prefetched[key] = e;
+        whenSettled(e.dash, function (dash) { warmCdn(e, dash); }, function () {});
+    }
+
+    /* Called on every focus move: only a card the ring stays on gets asked. */
+    function schedulePrefetch(elm) {
+        clearTimeout(prefetchTimer);
+        var v = elm && elm.__video;
+        if (!v || playing) { return; }
+        prefetchTimer = setTimeout(function () { prefetchCard(v); }, PREFETCH_DWELL);
+    }
+
+    function takePrefetch(bvid, cid) {
+        var key = prefetchKey(bvid, cid), e = prefetched[key];
+        delete prefetched[key];
+        if (!e || new Date().getTime() - e.at > PREFETCH_TTL) { return null; }
+        return e;
     }
 
     function playVideo(v, fromPanel) {
@@ -2872,6 +3025,29 @@
          * others, and decide() prefers it over the web manifest. */
         var got = { dash: undefined, prog: undefined, resume: undefined, strong: null };
 
+        /* Whatever the ring's dwell on this card already asked. A slot that
+         * failed is asked again rather than trusted — the prefetch must never
+         * be a way to fail that pressing the button afresh would not be. */
+        var pre = takePrefetch(detail.bvid, cid);
+        function ask(slot, fetcher, onOk, onFail) {
+            if (!slot) { fetcher(onOk, onFail); return; }
+            whenSettled(slot, onOk, function () { fetcher(onOk, onFail); });
+        }
+        var nowMs = new Date().getTime();
+        playing.prefetchNote = pre
+            ? "预取=" + ((pre.dash.done && pre.prog.done && pre.resume.done) ? "已到" : "在途") +
+              "（" + (nowMs - pre.at) + "ms 前发出）"
+            : "预取=无";
+        if (pre) {
+            var warmBits = [];
+            for (var wi = 0; wi < (pre.warm || []).length; wi++) {
+                var w = pre.warm[wi];
+                warmBits.push(w.label + (w.ms < 0 ? " 在途" : " " + w.status + " " + w.ms + "ms"));
+            }
+            playing.prefetchNote += " 预热=" + (warmBits.join("，") ||
+                (pre.warm ? "这两份文件五分钟内已热过" : "没发（清单没到）"));
+        }
+
         function decide() {
             if (playing !== session) { return; }
             if (got.dash === undefined || got.prog === undefined ||
@@ -3030,7 +3206,9 @@
             });
         }
 
-        API.playurlDash(detail.bvid, cid, PREFERRED_QN, function (dash) {
+        ask(pre && pre.dash, function (ok, fail) {
+            API.playurlDash(detail.bvid, cid, PREFERRED_QN, ok, fail);
+        }, function (dash) {
             if (playing !== session) { return; }
             var best = Player.pickDashVideo(dash);
             report("player", "dash offers qn=" + ((best && best.id) || 0) +
@@ -3045,7 +3223,9 @@
             decide();
         });
 
-        API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, function (r) {
+        ask(pre && pre.prog, function (ok, fail) {
+            API.playurlProgressive(detail.bvid, cid, PREFERRED_QN, ok, fail);
+        }, function (r) {
             if (playing !== session) { return; }
             report("player", "progressive gave qn=" + r.quality +
                    " accept=" + (r.accept || []).join(","));
@@ -3069,7 +3249,9 @@
             decide();
         }, 1200);
 
-        API.playerV2(detail.bvid, cid, function (r) {
+        ask(pre && pre.resume, function (ok, fail) {
+            API.playerV2(detail.bvid, cid, ok, fail);
+        }, function (r) {
             clearTimeout(resumeTimer);
             if (playing !== session || got.resume !== undefined) { return; }
             got.resume = r;
@@ -3556,7 +3738,11 @@
                  * been printed by then, off AVPlay's fake `playing` event, and
                  * CLAUDE.md had to warn readers not to trust it. Now each leg
                  * reports its own truth instead. */
-                report("player", (playing.timedLabel || "到画面") + " " + Player.timings());
+                /* The note belongs to the first line only — the fallback and the
+                 * restart lines are later legs on the same session. */
+                report("player", (playing.timedLabel || "到画面") + " " + Player.timings() +
+                       (playing.prefetchNote ? " | " + playing.prefetchNote : ""));
+                playing.prefetchNote = "";
             }
             loadMetaForPlaying();
             /* The duration is only real once there is a picture, and the marks
@@ -4060,6 +4246,7 @@
         Nav.registerKeys();
         Nav.onFocus(function (elm) {
             maybeLoadMore(elm); maybeLoadMoreSearch(elm);
+            schedulePrefetch(elm);
             /* The two paged grids of related videos. The feeds' own version is
              * switched off while either is up (`playing` / `pendingNext` in
              * maybeLoadMore), because these cards carry a `data-i` of their own
