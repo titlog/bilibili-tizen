@@ -2292,14 +2292,16 @@
         return { anchor: start + size + first, refs: refs };
     }
 
-    /* The experiment (2026-09-28) for the two starts the warm-up of init and
-     * index cannot help: a start from a resume point, whose segment sits deep
-     * in a file the edge has never read (4.1s of stall at 1:40 that evening),
-     * and an autoplay start, whose countdown leaves the link idle for eight
-     * seconds. The resume point gets the first 64 KB of its segment (does a
-     * partial range make the edge hold the segment?); the chooser's queued
-     * video gets its whole first segment (does this engine's HTTP cache hand
-     * it to Shaka's identical range request?). Judged on 媒体1 in 到画面. */
+    /* The experiment (2026-09-28) for a start from a resume point, whose
+     * segment sits deep in a file the edge has never read (4.1s of stall at
+     * 1:40 that evening): the first 64 KB of that segment — does a partial
+     * range make the edge hold the segment? Judged on 媒体1 in 到画面.
+     *
+     * Its twin was dropped the same night: the chooser's queued video had
+     * its whole first segment (0.5–1 MB) fetched during the countdown, and
+     * two autoplay starts with it (1452 / 1353ms, loaded→playing 907 / 782)
+     * matched the ones without (1278 / 1431ms, ~800) — the ~0.8s after
+     * load() is the decoder's first frame, not the download. */
     function warmDeeper(e, rep, buf) {
         var idx = rep.segments && rep.segments.index;
         if (!idx || !buf) { return; }
@@ -2315,8 +2317,6 @@
                 t += sx.refs[i].dur; at += sx.refs[i].size; i++;
             }
             label = "续播点段"; from = at; to = at + Math.min(65535, sx.refs[i].size - 1);
-        } else if (e.eager) {
-            label = "首段"; from = at; to = at + sx.refs[0].size - 1;
         } else { return; }
         var w = { label: label, status: 0, ms: -1 }, t0 = new Date().getTime();
         e.warm.push(w);
