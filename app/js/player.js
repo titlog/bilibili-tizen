@@ -548,11 +548,13 @@ var Player = (function () {
     }
 
     var respBeforeLoad = 0;
+    var segSentAt = {};
 
     function startTiming() {
         marks = { t0: new Date().getTime() };
         markOrder = [];
         respBeforeLoad = 0;
+        segSentAt = {};
         transportTold = false;   /* one transport line per video, not per seek */
         resetSegTraffic();
     }
@@ -570,6 +572,10 @@ var Player = (function () {
             /* respN sits just before loaded, where it happened. */
             if (markOrder[i] === "loaded" && marks.respN !== undefined) {
                 out.push("respN=" + marks.respN + "ms(" + respBeforeLoad + "个)");
+            }
+            if (markOrder[i] === "playing" && marks.media1in !== undefined) {
+                out.push("媒体1=" + marks.media1out + "→" + marks.media1in + "ms(" +
+                         (marks.media1in - marks.media1out) + "ms," + marks.media1kb + "KB)");
             }
             out.push(markOrder[i] + "=" + marks[markOrder[i]] + "ms");
         }
@@ -663,6 +669,22 @@ var Player = (function () {
                 try {
                     var r = shakaPlayer.seekRange();
                     extra = " 可跳转区间=" + r.start.toFixed(1) + "…" + r.end.toFixed(1) + "s";
+                } catch (e) {}
+            }
+            /* A player-initiated jump is Shaka stepping over what it sees as a
+             * gap. 2026-09-28 every old upload started 「0.0s → 2.1s」 —
+             * two seconds of the opening skipped — and the combined
+             * v.buffered cannot say which track the gap is in. Shaka's own
+             * per-track ranges can. */
+            if (!byApp && shakaPlayer) {
+                try {
+                    var bi = shakaPlayer.getBufferedInfo();
+                    var fmtR = function (rs) {
+                        return (rs || []).map(function (x) {
+                            return x.start.toFixed(2) + "–" + x.end.toFixed(1);
+                        }).join(",") || "空";
+                    };
+                    extra += " 视频缓冲=" + fmtR(bi.video) + " 音频缓冲=" + fmtR(bi.audio);
                 } catch (e) {}
             }
             log("跳转 " + lastTickSec.toFixed(1) + "s → " + v.currentTime.toFixed(1) + "s" +
@@ -879,6 +901,33 @@ var Player = (function () {
      * measured at about seven hundred milliseconds, and paying that on every
      * video is seven hundred milliseconds of black screen for nothing — Shaka is
      * designed to be loaded and unloaded, not rebuilt. */
+    /* Shaka arrives after the first screen, not before it (2026-09-28): its
+     * 677 KB took 322ms of the 756ms to onload, parsed ahead of a picker or a
+     * home feed that has no use for it. It is injected on first need — the
+     * prewarm 1.2s after boot, normally while the viewer is still choosing
+     * whose feed to see, or the first DASH start if that comes sooner. */
+    var shakaScript = { state: "none", waiters: [] };   /* none | loading | ok | failed */
+    function withShakaScript(cb) {
+        if (typeof shaka !== "undefined" && shaka.Player) { shakaScript.state = "ok"; cb(true); return; }
+        if (shakaScript.state === "failed") { cb(false); return; }
+        shakaScript.waiters.push(cb);
+        if (shakaScript.state === "loading") { return; }
+        shakaScript.state = "loading";
+        window.__beforeShaka = new Date().getTime();
+        var tag = document.createElement("script");
+        tag.src = "vendor/shaka-player.compiled.js";
+        function settle(ok) {
+            window.__afterShaka = new Date().getTime();
+            shakaScript.state = ok ? "ok" : "failed";
+            if (!ok) { log("Shaka 脚本加载失败"); }
+            var w = shakaScript.waiters; shakaScript.waiters = [];
+            for (var i = 0; i < w.length; i++) { w[i](ok); }
+        }
+        tag.onload = function () { settle(typeof shaka !== "undefined" && !!shaka.Player); };
+        tag.onerror = function () { settle(false); };
+        document.body.appendChild(tag);
+    }
+
     function ensureShaka() {
         if (shakaPlayer) { return shakaPlayer; }
         if (typeof shaka === "undefined" || !shaka.Player) { return null; }
@@ -1083,6 +1132,13 @@ var Player = (function () {
             var ne = player.getNetworkingEngine();
             ne.registerRequestFilter(function (type, request) {
                 if (type !== RT.SEGMENT) { return; }
+                /* Send time per (file, range start), so the first media
+                 * segment can be paired with its own request — see media1. */
+                if (marks && marks.manifest !== undefined && marks.media1in === undefined) {
+                    var hq = (request.headers && (request.headers.Range || request.headers.range)) || "";
+                    var mq = /bytes=(\d+)-/.exec(String(hq));
+                    if (mq) { segSentAt[String(request.uris && request.uris[0]).split("?")[0] + "@" + mq[1]] = new Date().getTime(); }
+                }
                 var h = (request.headers && (request.headers.Range || request.headers.range)) || "";
                 lastAskedRange = String(h);
                 segStarted++;
@@ -1098,6 +1154,26 @@ var Player = (function () {
             });
             ne.registerResponseFilter(function (type, response) {
                 if (type !== RT.SEGMENT) { return; }
+                /* The first segment answered after load() settled is media:
+                 * init and index are what load() waits for. Typing it by
+                 * AdvancedRequestType lied on its first sample — Shaka files
+                 * the SegmentBase index under MEDIA_SEGMENT, and an 8-hour
+                 * upload's 68 KB index was reported as the first segment. */
+                /* And big enough to be one: the second sample's "first media
+                 * segment" was a 1 KB init of the other track arriving after
+                 * load() settled. A 5s segment is tens of KB even for audio. */
+                var bytes1 = (response.data && response.data.byteLength) || 0;
+                if (marks && marks.loaded !== undefined && marks.media1in === undefined &&
+                        bytes1 >= 32768) {
+                    var cr1 = (response.headers || {})["content-range"] || "";
+                    var m1 = /bytes\s+(\d+)-/.exec(String(cr1));
+                    var sent = m1 ? segSentAt[String(response.uri || "").split("?")[0] + "@" + m1[1]] : 0;
+                    var nowR = new Date().getTime();
+                    marks.media1in = nowR - marks.t0;
+                    marks.media1out = sent ? sent - marks.t0 : marks.media1in;
+                    marks.media1kb = Math.round(bytes1 / 1024);
+                    segSentAt = {};
+                }
                 segFinished++;
                 segLastFinish = new Date().getTime();
                 /* Not for the torn-down manifest's stragglers — see req1. */
@@ -1940,7 +2016,31 @@ var Player = (function () {
                   nowMs / 1000 > dash.deadline - 300);
     }
 
+    function steadyWhy() {
+        if (mode !== "mse") { return "走的是 " + (mode || "无") + " 不是 MSE"; }
+        if (incidentAt) {
+            return "自救后还没稳够一分钟（" + Math.round((new Date().getTime() - incidentAt) / 1000) + "s）";
+        }
+        var ahead = 0;
+        try { ahead = bufferedAhead(el("html5-video")); } catch (e) {}
+        return ahead >= 20 ? "" : "前方缓冲只有 " + ahead.toFixed(1) + "s";
+    }
+
     function playDashWithShaka(dash, startMs, isRetry, prefer, capId) {
+        /* Not loaded yet: wait for it, then start — unless this start was
+         * superseded while waiting. Every stop and every new start passes
+         * reset(), which moves mseGeneration; a start queued behind the
+         * script must not fire under whatever the viewer has moved on to. */
+        if (typeof shaka === "undefined" || !shaka.Player) {
+            var waitGen = mseGeneration, args = arguments;
+            log("Shaka 还没加载完，等它（" + shakaScript.state + "）");
+            withShakaScript(function (ok) {
+                if (mseGeneration !== waitGen) { log("Shaka 加载完时这次起播已经被换掉，丢弃"); return; }
+                if (!ok) { emit("error", "播放器脚本加载失败"); return; }
+                playDashWithShaka.apply(null, args);
+            });
+            return;
+        }
         /* Every rung of the recovery ladder funnels back through here with the
          * response it already holds — and a kept response outlives its
          * signatures (`deadline`, about two hours). 2026-08-12 the TV woke
@@ -2339,7 +2439,7 @@ var Player = (function () {
          * or while they are staring at a black screen waiting for the first
          * video. Called on a timer rather than at init so it lands after the
          * feed has painted. */
-        prewarm: function () { ensureShaka(); },
+        prewarm: function () { withShakaScript(function (ok) { if (ok) { ensureShaka(); } }); },
 
         /* Route lessons live in the same per-video store as codec lessons but
          * are written by app.js, which owns routing: 「渐进式打平胜出」 sent
@@ -2402,10 +2502,9 @@ var Player = (function () {
          * the one state in which app.js may spend the link on a prefetch
          * while a video plays. AVPlay says nothing about its buffer, so it
          * is never "steady" here: no evidence, no extra requests. */
-        steady: function () {
-            if (mode !== "mse" || incidentAt) { return false; }
-            try { return bufferedAhead(el("html5-video")) >= 20; } catch (e) { return false; }
-        },
+        steady: function () { return steadyWhy() === ""; },
+        /* "" when steady, otherwise what failed — for the 预取=无 note. */
+        steadyWhy: steadyWhy,
         isPaused: function () {
             if (mode === "avplay") {
                 try { return webapis.avplay.getState() === "PAUSED"; } catch (e) { return false; }

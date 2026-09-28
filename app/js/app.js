@@ -933,6 +933,51 @@
         fetchServerHistory(function () { maybeRefreshResumeRow(); });
     }
 
+    /* How long switching the set on takes to put a home screen up — asked
+     * every evening, and until 2026-09-28 never measured. One line per JS
+     * context (a resume from suspend does not rerun onload, so it has none),
+     * every mark from navigationStart. */
+    var boot = { told: false, onload: 0, asked: 0, prefetched: false };
+    function bootMs(t) {
+        var t0 = (window.performance && performance.timing && performance.timing.navigationStart) || 0;
+        return t0 ? (t - t0) + "ms" : "?";
+    }
+    function tellBoot(items) {
+        if (boot.told) { return; }
+        boot.told = true;
+        var answered = new Date().getTime();
+        var dcl = 0;
+        try { dcl = performance.timing.domContentLoadedEventEnd; } catch (e) {}
+        function send(painted, pic) {
+            var shakaMs = (window.__afterShaka && window.__beforeShaka)
+                ? (window.__afterShaka - window.__beforeShaka) + "ms" : "?";
+            /* Shaka now loads after the first screen (player.js,
+             * withShakaScript), so it is no longer inside 页面解析完; when
+             * the feed wins the race it has not finished yet and reads 还没到. */
+            report("boot", "启动 页面解析完=" + (dcl ? bootMs(dcl) : "?") +
+                   " Shaka 后台加载=" + (window.__afterShaka ? shakaMs : "还没到") +
+                   (window.__beforeShaka ? "（开始于 " + bootMs(window.__beforeShaka) + "）" : "") +
+                   " onload=" + bootMs(boot.onload) +
+                   " 首页请求发出=" + bootMs(boot.asked) +
+                   (boot.prefetched ? "（选账号时已预取）" : "") +
+                   " 首页回来=" + bootMs(answered) +
+                   " 首屏画好=" + bootMs(painted) +
+                   " 首张封面=" + pic + "（" + items.length + " 张卡片，从进程启动算起）");
+        }
+        var raf = window.requestAnimationFrame || function (f) { setTimeout(f, 16); };
+        raf(function () {
+            var painted = new Date().getTime();
+            var img = screenEl.querySelector(".card img");
+            if (!img) { send(painted, "没有"); return; }
+            if (img.complete && img.naturalWidth) { send(painted, "已在缓存"); return; }
+            var done = false;
+            function fin(what) { if (done) { return; } done = true; send(painted, what); }
+            img.addEventListener("load", function () { fin(bootMs(new Date().getTime())); });
+            img.addEventListener("error", function () { fin("加载失败"); });
+            setTimeout(function () { fin("10 秒还没到"); }, 10000);
+        });
+    }
+
     function loadFeed(kind, restore, retries) {
         state.screen = kind;
         markTab();
@@ -958,7 +1003,9 @@
             Nav.reset(tabSelectorFor(kind));
             return;
         }
-        fetchPage(kind, 1, function (items, extra) {
+        if (!boot.asked) { boot.asked = new Date().getTime(); }
+        var bootSlot = takeBootFeed(kind);
+        var gotPage = function (items, extra) {
             /* Tab presses outrun the network: without this the slower of two
              * requests wins and paints its content under the other's heading. */
             if (req !== feedRequest) { return; }
@@ -978,7 +1025,9 @@
              * on the tab just pressed instead of falling to the first tab. */
             if (items.length) { Nav.reset(".card"); }
             else { Nav.reset(tabSelectorFor(kind)); }
-        }, function (why) {
+            tellBoot(items);
+        };
+        var failedPage = function (why) {
             if (req !== feedRequest) { return; }
             /* Waking from suspend, this set's network is regularly a few seconds
              * behind its screen — the same gap that killed the report channel on
@@ -996,7 +1045,54 @@
                 return;
             }
             showError("加载失败：" + why, function () { loadFeed(kind); });
-        });
+        };
+        if (bootSlot) {
+            /* Asked while the picker was up; a failure there is asked again
+             * here, as if the prefetch had never happened. */
+            whenSettled(bootSlot, function (r) { gotPage(r.items, r.extra); }, function () {
+                if (req !== feedRequest) { return; }
+                fetchPage(kind, 1, gotPage, failedPage);
+            });
+        } else {
+            fetchPage(kind, 1, gotPage, failedPage);
+        }
+    }
+
+    /* The home feed, asked for while 「谁在看？」 is still on screen — for the
+     * account that was active last time, which is who picks themselves most
+     * evenings. The picker sat for 1.7–4.9s on 2026-09-28 before anyone
+     * pressed, and the feed then took another ~600ms; asked here, it is in
+     * hand when the press comes. Keyed by the account the request went out
+     * under: picking someone else switches the account first, the key no
+     * longer matches, and the feed is asked for them as before. */
+    var bootFeed = null;
+    function startBootFeed() {
+        var acct = Accounts.activeId();
+        var acc = Accounts.active();
+        if (!acc || Accounts.needsRelogin(acc)) { return; }
+        bootFeed = {
+            acct: acct, at: new Date().getTime(),
+            slot: prefetchSlot(function (ok, fail) {
+                fetchPage("rcmd", 1, function (items, extra) {
+                    /* And the first two rows' covers: with the feed already in
+                     * hand the first cover still landed 600ms after the grid
+                     * painted. Same URLs cardHtml will ask for, so the image
+                     * cache answers them. */
+                    for (var i = 0; i < Math.min(6, items.length); i++) {
+                        if (items[i] && items[i].pic) { new Image().src = items[i].pic; }
+                    }
+                    ok({ items: items, extra: extra });
+                }, fail);
+            })
+        };
+    }
+    function takeBootFeed(kind) {
+        var b = bootFeed;
+        if (kind !== "rcmd" || !b) { return null; }
+        bootFeed = null;
+        if (b.acct !== Accounts.activeId() || new Date().getTime() - b.at > 60000) { return null; }
+        boot.prefetched = true;
+        return b.slot;
     }
 
     /* The history usually lands with the feed and the strip is simply part of
@@ -1960,9 +2056,12 @@
             if (!pages0.length) { return handoff.cid; }
             for (var k = 0; k < pages0.length; k++) {
                 if (pages0[k].cid === handoff.cid) {
+                    /* No toast (2026-09-28): the part label on the player says
+                     * which part this is, and 「手机上看到 P7」 is an
+                     * explanation nobody asked for. The log keeps it. */
                     if (pages0[k].page > 1) {
-                        toast((elsewhere ? "手机上看到 P" : "从 P") + pages0[k].page +
-                              "：" + (pages0[k].part || ""));
+                        report("player", "续播选 P" + pages0[k].page + "（" +
+                               (elsewhere ? "手机上的进度" : "本机记录") + "）");
                     }
                     return handoff.cid;
                 }
@@ -1974,7 +2073,7 @@
         var pages = detail.pages || [];
         for (var i = 0; i < pages.length; i++) {
             if (pages[i].cid === last.cid) {
-                toast("从 P" + pages[i].page + " 继续：" + (pages[i].part || ""));
+                report("player", "续播选 P" + pages[i].page + "（本机记录）");
                 return last.cid;
             }
         }
@@ -1982,7 +2081,7 @@
          * cid and no part list. The stored cid can only have come from playing
          * this very video, so it is trustworthy even without the list. */
         if (!pages.length) {
-            if (last.page) { toast("从 P" + last.page + " 继续"); }
+            if (last.page) { report("player", "续播选 P" + last.page + "（本机记录，卡片没带分 P 列表）"); }
             return last.cid;
         }
         return detail.cid;
@@ -2087,6 +2186,72 @@
         return !playing || (optionsOpen && Player.steady());
     }
 
+    /* The references of a sidx box starting at `start` in `buf`: byte size and
+     * duration of every segment, and where the first one begins in the file. */
+    function sidxRefs(buf, start) {
+        var dv = new DataView(buf);
+        if (start + 32 > buf.byteLength) { return null; }
+        var size = dv.getUint32(start);
+        if (String.fromCharCode(dv.getUint8(start + 4), dv.getUint8(start + 5),
+                                dv.getUint8(start + 6), dv.getUint8(start + 7)) !== "sidx") { return null; }
+        /* size(4) type(4) version(1) flags(3) reference_ID(4) timescale(4),
+         * then earliest_presentation_time and first_offset — 4 bytes each in
+         * version 0, 8 in version 1 — then reserved(2) reference_count(2). */
+        var ver = dv.getUint8(start + 8);
+        var ts = dv.getUint32(start + 16), first, p;
+        if (ver === 0) { first = dv.getUint32(start + 24); p = start + 28; }
+        else { first = dv.getUint32(start + 32); p = start + 36; }   /* low 32 bits: files here are < 4 GB */
+        var count = dv.getUint16(p + 2);
+        p += 4;
+        var refs = [];
+        for (var i = 0; i < count && p + 12 <= buf.byteLength; i++, p += 12) {
+            refs.push({ size: dv.getUint32(p) & 0x7fffffff, dur: dv.getUint32(p + 4) / ts });
+        }
+        return { anchor: start + size + first, refs: refs };
+    }
+
+    /* The experiment (2026-09-28) for the two starts the warm-up of init and
+     * index cannot help: a start from a resume point, whose segment sits deep
+     * in a file the edge has never read (4.1s of stall at 1:40 that evening),
+     * and an autoplay start, whose countdown leaves the link idle for eight
+     * seconds. The resume point gets the first 64 KB of its segment (does a
+     * partial range make the edge hold the segment?); the chooser's queued
+     * video gets its whole first segment (does this engine's HTTP cache hand
+     * it to Shaka's identical range request?). Judged on 媒体1 in 到画面. */
+    function warmDeeper(e, rep, buf) {
+        var idx = rep.segments && rep.segments.index;
+        if (!idx || !buf) { return; }
+        var sx = sidxRefs(buf, Number(idx.split("-")[0]));
+        if (!sx || !sx.refs.length) { return; }
+        var posMs = 0;
+        var r = e.resume && e.resume.done && e.resume.ok ? e.resume.val : null;
+        if (r && r.cid === e.cid) { posMs = r.positionMs || 0; }
+        posMs = Math.max(posMs, Resume.positionMs(e.bvid, e.cid) || 0);
+        var at = sx.anchor, t = 0, i = 0, label, from, to;
+        if (posMs >= 30000) {
+            while (i < sx.refs.length - 1 && t + sx.refs[i].dur <= posMs / 1000) {
+                t += sx.refs[i].dur; at += sx.refs[i].size; i++;
+            }
+            label = "续播点段"; from = at; to = at + Math.min(65535, sx.refs[i].size - 1);
+        } else if (e.eager) {
+            label = "首段"; from = at; to = at + sx.refs[0].size - 1;
+        } else { return; }
+        var w = { label: label, status: 0, ms: -1 }, t0 = new Date().getTime();
+        e.warm.push(w);
+        var xhr = new XMLHttpRequest();
+        try {
+            xhr.open("GET", rep.urls[0], true);
+            xhr.setRequestHeader("Range", "bytes=" + from + "-" + to);
+            xhr.timeout = 10000;
+            xhr.onloadend = function () {
+                w.status = xhr.status;
+                w.ms = new Date().getTime() - t0;
+                w.label = label + "(" + Math.round((to - from + 1) / 1024) + "KB)";
+            };
+            xhr.send();
+        } catch (ex) {}
+    }
+
     function warmCdn(e, dash) {
         if (!prefetchAllowed() || !dash) { return; }
         var first = Mpd.peek(dash, PREFERRED_QN);
@@ -2107,11 +2272,15 @@
                 try {
                     xhr.open("GET", url, true);
                     xhr.setRequestHeader("Range", "bytes=0-" + end);
+                    if (label === "视频") { xhr.responseType = "arraybuffer"; }
                     xhr.timeout = 5000;
                     xhr.onloadend = function () {
                         w.status = xhr.status;
                         w.ms = new Date().getTime() - now;
                         if (xhr.status === 403) { warmRefused(e, label); }
+                        if (xhr.status === 206 && label === "视频" && !playing) {
+                            try { warmDeeper(e, rep, xhr.response); } catch (ex) {}
+                        }
                     };
                     xhr.send();
                 } catch (ex) {}
@@ -2171,7 +2340,7 @@
         /* `eager`: the chooser screen's queued video, which is about to play
          * unless the viewer stops it — a web-token 403 in its warm-up starts
          * the strong-token mint right there, inside the countdown. */
-        var e = { at: now, aid: v.aid || 0, cid: v.cid, eager: !!eager };
+        var e = { at: now, aid: v.aid || 0, bvid: v.bvid, cid: v.cid, eager: !!eager };
         e.dash = prefetchSlot(function (ok, fail) { API.playurlDash(bvid, cid, PREFERRED_QN, ok, fail); });
         e.prog = prefetchSlot(function (ok, fail) { API.playurlProgressive(bvid, cid, PREFERRED_QN, ok, fail); });
         e.resume = prefetchSlot(function (ok, fail) { API.playerV2(bvid, cid, ok, fail); });
@@ -2194,7 +2363,12 @@
     function schedulePrefetch(elm) {
         clearTimeout(prefetchTimer);
         var v = elm && elm.__video;
-        if (!v || !prefetchAllowed()) { return; }
+        if (!v) { return; }
+        if (!prefetchAllowed()) {
+            lastSkip = { bvid: v.bvid, why: optionsOpen
+                ? "播放中且不稳：" + Player.steadyWhy() : "播放中（面板没开）" };
+            return;
+        }
         prefetchTimer = setTimeout(function () { prefetchCard(v); }, PREFETCH_DWELL);
     }
 
@@ -3091,10 +3265,8 @@
         lastKnownDuration = 0;      /* the previous video's length is not this one's */
         playing.startMs = startMs;
         playing.fromPhone = fromPhone;
-        /* The toast waits for `decide()`. bilibili's own record for this video
-         * is still in flight at this point and may put the start somewhere
-         * else, and announcing a position that is about to change is worse than
-         * announcing it a third of a second later. */
+        /* Where playback starts is settled in `decide()`: bilibili's own record
+         * for this video is still in flight at this point and may move it. */
         el("player-title").textContent = detail.title;
         var partLabel = "";
         if (detail.pages && detail.pages.length > 1) {
@@ -3234,10 +3406,13 @@
                 playing.fromPhone = false;
                 playing.fromAccount = true;
             }
+            /* Said to the log, not the screen (2026-09-28): the picture
+             * starting at 8:46 is the announcement, and naming which device
+             * the position came from was a load on the viewer, not help. */
             if (playing.startMs) {
-                toast((playing.fromPhone ? "接着手机上的进度，从 "
-                        : (playing.fromAccount ? "接着上次的进度，从 " : "从 ")) +
-                      fmt(playing.startMs) + " 继续播放");
+                report("player", "从 " + fmt(playing.startMs) + " 起播（" +
+                       (playing.fromPhone ? "手机上的进度"
+                        : (playing.fromAccount ? "账号里的进度" : "本机记录")) + "）");
             }
 
             var fromLesson = !!got.strong;
@@ -3328,13 +3503,22 @@
                     report("player", "playurl 说 -404 但稿件还在 —— 是这一 P 的 cid" +
                            "（" + cid + "）过期了，继续观看不动它");
                 }, function (vWhy) {
-                    if (!API.gone(vWhy)) {
+                    /* 62002 「稿件不可见」 is the other shape of gone: 2026-09-28
+                     * BV1pPY66BEJX played at 21:24 and answered playurl -404 +
+                     * wbi/view 62002 from 21:30 — pressed five times in thirty
+                     * seconds from 继续观看, because only -404 took the card
+                     * away. The mark is the same reversible one: seven days,
+                     * cleared by the first successful play. */
+                    var hidden = /code 62002/.test(String(vWhy));
+                    if (!API.gone(vWhy) && !hidden) {
                         report("player", "playurl -404，而 view 另有说法（" + vWhy +
                                "），先不动继续观看");
                         return;
                     }
                     Resume.markDead(deadBvid);
-                    report("player", "view 也答 -404：这个稿件确实没了，从继续观看里去掉");
+                    report("player", hidden
+                        ? "view 答 62002 稿件不可见：下架或隐藏了，从继续观看里去掉"
+                        : "view 也答 -404：这个稿件确实没了，从继续观看里去掉");
                     /* stopPlayback below has already repainted the grid from
                      * cache — synchronously, before this answer arrived — so
                      * the card is still on screen, under the ring, and one
@@ -4452,6 +4636,7 @@
     /* ---------------- boot ---------------- */
 
     window.onload = function () {
+        boot.onload = new Date().getTime();
         screenEl = el("screen");
         statusEl = el("status");
         toastEl = el("toast");
@@ -4541,7 +4726,7 @@
         var shared = Accounts.count() > 1;
         var selftest = (typeof SELFTEST !== "undefined" && SELFTEST &&
                         typeof SelfTest !== "undefined");
-        if (shared && !selftest) { renderAccounts(true); }
+        if (shared && !selftest) { renderAccounts(true); startBootFeed(); }
         else { loadFeed("rcmd"); }
 
         /* Alongside the feed, not after it. Both take about the same time, and

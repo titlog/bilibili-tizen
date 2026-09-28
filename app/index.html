@@ -143,7 +143,9 @@
      parse the segment index, size its own requests, evict its own buffer and
      abort its own fetches on a seek — every one of which was a bug at some
      point. The pre-compiled build is ES5 and needs no bundler. -->
-<script src="vendor/shaka-player.compiled.js"></script>
+<!-- vendor/shaka-player.compiled.js is not loaded here: player.js injects it
+     after the first screen (withShakaScript). It was 322ms of the 756ms to
+     onload, parsed ahead of a screen that never uses it. -->
 
 <script src="js/config.js"></script>
 <script src="js/md5.js"></script>
