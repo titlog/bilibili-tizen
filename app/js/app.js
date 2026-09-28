@@ -487,9 +487,9 @@
             for (var c = 0; c < cards.length; c++) {
                 if (cards[c].onselect) { continue; }
                 (function (node, v) {
-                    /* Dwell-prefetched like any grid — schedulePrefetch skips
-                     * it while a video plays, so only the chooser screen's
-                     * copy of this pager ever sends anything. */
+                    /* Dwell-prefetched like any grid: the chooser screen's
+                     * copy always, the panel's only while the video under it
+                     * is steady (prefetchAllowed). */
                     node.__video = v;
                     node.onselect = function () { if (v) { pick(v); } };
                 })(cards[c], items[Number(cards[c].getAttribute("data-i"))]);
@@ -2077,8 +2077,18 @@
      * file the edge happened to hold answered in 74ms. What is cold is the
      * file at the CDN edge, not the connection. Results ride on the entry
      * so the 到画面 line can say what this card's own warm-up did. */
+    /* Whether a prefetch may go out now. Browsing, the chooser screen — and,
+     * since 2026-09-28, the player's own panel while the video underneath is
+     * steady: picking the next video from 相关推荐 mid-playback was that
+     * evening's most-used route and the only one still at 2.5–3s. A few KB
+     * against a player pulling 0.5–2 MB segments; what must not happen is a
+     * prefetch during a rescue, feeding a limiter that is already refusing. */
+    function prefetchAllowed() {
+        return !playing || (optionsOpen && Player.steady());
+    }
+
     function warmCdn(e, dash) {
-        if (playing || !dash) { return; }
+        if (!prefetchAllowed() || !dash) { return; }
         var first = Mpd.peek(dash, PREFERRED_QN);
         var reps = [["视频", first.video], ["音频", first.audio]];
         var now = new Date().getTime();
@@ -2129,7 +2139,7 @@
     }
 
     function prefetchCard(v, eager) {
-        if (!v || !v.bvid || !v.cid || playing) { return; }
+        if (!v || !v.bvid || !v.cid || !prefetchAllowed()) { return; }
         var now = new Date().getTime();
         var wait = PREFETCH_GAP - (now - lastPrefetchAt);
         var key = prefetchKey(v.bvid, v.cid);
@@ -2184,7 +2194,7 @@
     function schedulePrefetch(elm) {
         clearTimeout(prefetchTimer);
         var v = elm && elm.__video;
-        if (!v || playing) { return; }
+        if (!v || !prefetchAllowed()) { return; }
         prefetchTimer = setTimeout(function () { prefetchCard(v); }, PREFETCH_DWELL);
     }
 

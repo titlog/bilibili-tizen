@@ -2398,6 +2398,14 @@ var Player = (function () {
          * element is paused for the whole of a load, and code that hides chrome
          * or watches for stalls has to tell those two apart. */
         userPaused: function () { return userPaused; },
+        /* Playing on MSE with no rescue under way and a comfortable buffer —
+         * the one state in which app.js may spend the link on a prefetch
+         * while a video plays. AVPlay says nothing about its buffer, so it
+         * is never "steady" here: no evidence, no extra requests. */
+        steady: function () {
+            if (mode !== "mse" || incidentAt) { return false; }
+            try { return bufferedAhead(el("html5-video")) >= 20; } catch (e) { return false; }
+        },
         isPaused: function () {
             if (mode === "avplay") {
                 try { return webapis.avplay.getState() === "PAUSED"; } catch (e) { return false; }
