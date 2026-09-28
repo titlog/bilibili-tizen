@@ -12,7 +12,12 @@ var API = (function () {
     var strongState = null;
     /* Until when API.view asks its wbi twin first — see view(). */
     var viewGatedUntil = 0;
-    var VIEW_GATE_MEMORY = 30 * 60 * 1000;   /* progress of the latest strong-token mint — see strongProgress */
+    var VIEW_GATE_MEMORY = 30 * 60 * 1000;
+    /* How long the strong path's second-stage header reads wait after the
+     * manifest has been handed over — the start's own segment requests go to
+     * the same host, and queue behind anything else in flight (CLAUDE.md,
+     * 传输形状). */
+    var STRONG_LATER_DELAY = 10000;   /* progress of the latest strong-token mint — see strongProgress */
 
     /* Attaching the session — the part multiple accounts broke.
      *
@@ -1133,28 +1138,45 @@ var API = (function () {
                      * a rep with no segments cannot go into the manifest. */
                     var tSidx0 = new Date().getTime();
                     st.total = video.length + audio.length;
-                    fillSegments(video.concat(audio), function () {
-                        var vAll = video.length, aAll = audio.length;
+
+                    /* Two stages. Every one of these header reads is a first
+                     * request for a file the CDN edge has usually never held —
+                     * 1–2.5s each, measured 2026-09-28 — and reading all fifteen
+                     * two at a time cost 15.7s of black screen, 17.4s to a
+                     * picture. The manifest only ever uses one family, so read
+                     * that family's tiers and the top audio first, start, and
+                     * read the other families and audios once playback has had
+                     * the link to itself for a while: they matter only to the
+                     * ladder's 换族 rung, which appends to these same arrays. */
+                    var fam = (typeof Mpd !== "undefined" && Mpd.familyFor) ?
+                              Mpd.familyFor(video, cap) : "";
+                    var topAudio = audio.slice().sort(function (x, y) {
+                        return (y.bandwidth || 0) - (x.bandwidth || 0);
+                    })[0];
+                    var first = [], later = [];
+                    for (var fv = 0; fv < video.length; fv++) {
+                        (fam && Mpd.family(video[fv].codecs) === fam ? first : later).push(video[fv]);
+                    }
+                    for (var fa = 0; fa < audio.length; fa++) {
+                        (audio[fa] === topAudio ? first : later).push(audio[fa]);
+                    }
+                    if (!fam || !topAudio) { first = video.concat(audio); later = []; }
+
+                    var vAll = video.length, aAll = audio.length;
+                    function deliver(staged) {
                         dash.strongTiming = "app端点=" + tApp + "ms codecs=" + tCodecs +
-                            "ms 文件头=" + (vAll + aAll) + "个/并发2=" +
-                            (new Date().getTime() - tSidx0) + "ms";
+                            "ms 文件头=" + (staged ? first.length + "/" + (vAll + aAll) + "个（" + fam + " 先读）"
+                                                   : (vAll + aAll) + "个") +
+                            "/并发2=" + (new Date().getTime() - tSidx0) + "ms";
                         dash.video = video.filter(function (r) { return r.segments; });
                         dash.audio = audio.filter(function (r) { return r.segments; });
                         if (!dash.video.length || !dash.audio.length) {
                             onFail("app 端点自读 sidx 后无可用流"); return;
                         }
-                        /* How many tiers survived the header reads, carried out
-                         * so app.js can say it — a tier lost to a failed sidx read
-                         * or a moov+sidx past 12KB otherwise reads as "the CDN
-                         * only offered 4" months later. api.js has no logger. */
                         dash.tierNote = dash.video.length + "/" + vAll + " 视频档" +
-                                        (dash.video.length < vAll ? "（其余 sidx 读失败，已剔）" : "");
+                            (staged ? "（其余 " + later.length + " 份文件头稍后后台补读）"
+                                    : (dash.video.length < vAll ? "（其余 sidx 读失败，已剔）" : ""));
                         dash.acceptQuality = ad.accept_quality || [];
-                        /* Without this the manifest's mediaPresentationDuration
-                         * is garbage (2^32 was observed), and Shaka lands the
-                         * playhead at the file's end and stalls. The app
-                         * endpoint states length in milliseconds at the top
-                         * level, not inside dash. */
                         dash.duration = Math.round((ad.timelength || 0) / 1000) ||
                                         dash.duration || 0;
                         var rep0 = dash.video[0] || {};
@@ -1163,6 +1185,30 @@ var API = (function () {
                         dash.fetchedAt = new Date().getTime();
                         dash.strong = true;
                         onOk(dash);
+                    }
+                    fillSegments(first, function () {
+                        var haveV = false, haveA = false;
+                        for (var q = 0; q < first.length; q++) {
+                            if (!first[q].segments) { continue; }
+                            if (first[q].mimeType === "audio/mp4") { haveA = true; } else { haveV = true; }
+                        }
+                        if (!later.length) { deliver(false); return; }
+                        if (!haveV || !haveA) {
+                            /* The chosen family's headers all failed: nothing to
+                             * start on, so read the rest now as before. */
+                            fillSegments(later, function () { deliver(false); });
+                            return;
+                        }
+                        deliver(true);
+                        setTimeout(function () {
+                            fillSegments(later, function () {
+                                for (var z = 0; z < later.length; z++) {
+                                    var r = later[z];
+                                    if (!r.segments) { continue; }
+                                    (r.mimeType === "audio/mp4" ? dash.audio : dash.video).push(r);
+                                }
+                            });
+                        }, STRONG_LATER_DELAY);
                     });
                 }
             }

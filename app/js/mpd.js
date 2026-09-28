@@ -117,11 +117,15 @@ var Mpd = (function () {
 
     var chosen = "";
 
-    function chooseVideos(all, maxId, prefer, firstChoice) {
+    /* `anySegments`: judge the reps as if their segment ranges were known —
+     * the strong-token path has to decide which files' headers to read first,
+     * before any of them has been read. */
+    function chooseVideos(all, maxId, prefer, firstChoice, anySegments) {
         var usable = [];
         for (var i = 0; i < (all || []).length; i++) {
             var r = all[i];
-            if (r && r.codecs && r.segments && (!maxId || r.id <= maxId)) { usable.push(r); }
+            if (r && r.codecs && (r.segments || anySegments) &&
+                    (!maxId || r.id <= maxId)) { usable.push(r); }
         }
 
         /* H.264 is the baseline this has to beat. A family that cannot reach
@@ -180,6 +184,18 @@ var Mpd = (function () {
          * prewarm in app.js, which found that warming *a* file on the right
          * host does nothing for *this* file's first response. Leaves `chosen`
          * as it was: that belongs to the manifest actually playing. */
+        /* The family build() would settle on for these video reps once their
+         * headers are read, or "" — so the strong-token path reads that
+         * family's four files first instead of all twelve. Leaves `chosen`. */
+        familyFor: function (videos, maxId) {
+            var keep = chosen;
+            chooseVideos(videos, maxId, null, null, true);
+            var fam = chosen;
+            chosen = keep;
+            return fam;
+        },
+        family: family,
+
         peek: function (dash, maxId) {
             if (!dash) { return { video: null, audio: null }; }
             var keep = chosen;

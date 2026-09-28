@@ -2026,6 +2026,9 @@
      * card, and the dwell would ask about it all over again — for a video
      * the viewer has just finished with. */
     var justPlayed = "";
+    /* The last card a dwell asked about and was turned down for, and why — so
+     * 预取=无 can tell "pressed too fast" from "the ceiling said no". */
+    var lastSkip = null;
     var warmedAt = {};      /* file (url without query) -> when it was warmed */
 
     function prefetchKey(bvid, cid) {
@@ -2098,6 +2101,7 @@
                     xhr.onloadend = function () {
                         w.status = xhr.status;
                         w.ms = new Date().getTime() - now;
+                        if (xhr.status === 403) { warmRefused(e, label); }
                     };
                     xhr.send();
                 } catch (ex) {}
@@ -2108,33 +2112,71 @@
         }
     }
 
-    function prefetchCard(v) {
+    /* A warm-up answered 403: the web token is refused for this video. */
+    function warmRefused(e, label) {
+        if (e.warmRefused) { return; }
+        e.warmRefused = label + " 403";
+        startEagerStrong(e);
+    }
+
+    function startEagerStrong(e) {
+        if (!e.eager || !e.warmRefused || e.strong || playing || !e.aid ||
+                !Auth.isLoggedIn() || !Auth.accessKey()) { return; }
+        var aid = e.aid, cid = e.cid;
+        e.strong = prefetchSlot(function (ok, fail) {
+            API.playurlDashStrong(aid, cid, PREFERRED_QN, ok, fail);
+        });
+    }
+
+    function prefetchCard(v, eager) {
         if (!v || !v.bvid || !v.cid || playing) { return; }
         var now = new Date().getTime();
         var wait = PREFETCH_GAP - (now - lastPrefetchAt);
-        if (wait > 0) {
-            prefetchTimer = setTimeout(function () { prefetchCard(v); }, wait);
+        var key = prefetchKey(v.bvid, v.cid);
+        var had = prefetched[key];
+        if (had && now - had.at < PREFETCH_TTL) {
+            /* The chooser's queued card may already have been dwell-prefetched
+             * (or reach here second through its own focus): upgrade it. */
+            if (eager && !had.eager) { had.eager = true; startEagerStrong(had); }
             return;
         }
-        var key = prefetchKey(v.bvid, v.cid);
-        if (prefetched[key] && now - prefetched[key].at < PREFETCH_TTL) { return; }
-        if (v.bvid === justPlayed) { return; }
+        if (wait > 0) {
+            /* One pending prefetch at a time: without the clear, the dwell
+             * timer set by the same focus move could no longer be cancelled. */
+            clearTimeout(prefetchTimer);
+            prefetchTimer = setTimeout(function () { prefetchCard(v, eager); }, wait);
+            return;
+        }
+        if (v.bvid === justPlayed) { lastSkip = { bvid: v.bvid, why: "刚播过" }; return; }
         while (prefetchTimes.length && now - prefetchTimes[0] > 60000) { prefetchTimes.shift(); }
-        if (prefetchTimes.length >= PREFETCH_PER_MIN) { return; }
+        if (prefetchTimes.length >= PREFETCH_PER_MIN) {
+            lastSkip = { bvid: v.bvid, why: "撞了每分钟 " + PREFETCH_PER_MIN + " 次的上限" };
+            return;
+        }
         prefetchTimes.push(now);
         prunePrefetch(now);
         lastPrefetchAt = now;
         lastPrefetchBvid = v.bvid;
         var bvid = v.bvid, cid = v.cid;
-        var e = { at: now };
+        /* `eager`: the chooser screen's queued video, which is about to play
+         * unless the viewer stops it — a web-token 403 in its warm-up starts
+         * the strong-token mint right there, inside the countdown. */
+        var e = { at: now, aid: v.aid || 0, cid: v.cid, eager: !!eager };
         e.dash = prefetchSlot(function (ok, fail) { API.playurlDash(bvid, cid, PREFERRED_QN, ok, fail); });
         e.prog = prefetchSlot(function (ok, fail) { API.playurlProgressive(bvid, cid, PREFERRED_QN, ok, fail); });
         e.resume = prefetchSlot(function (ok, fail) { API.playerV2(bvid, cid, ok, fail); });
         prefetched[key] = e;
         /* A video whose lesson says the web token is refused would only 403
          * the warm-up — exactly the refused traffic the limiter punishes. */
-        if (!Player.strongHint(cid)) {
+        var hint = Player.strongHint(cid);
+        if (!hint) {
             whenSettled(e.dash, function (dash) { warmCdn(e, dash); }, function () {});
+        } else if (eager) {
+            /* Already known without a warm-up: the lesson is the 403. Mint
+             * inside the countdown; play() picks it up on its lesson path. */
+            e.aid = e.aid || hint;
+            e.warmRefused = "教训";
+            startEagerStrong(e);
         }
     }
 
@@ -2761,10 +2803,11 @@
              * down a series otherwise paid the cold start on every episode.
              * On the button too, so coming back to it after browsing the
              * related row finds it still covered. */
-            var queued = { bvid: next.detail && next.detail.bvid, cid: next.cid };
+            var queued = { bvid: next.detail && next.detail.bvid, cid: next.cid,
+                           aid: (next.detail && next.detail.aid) || 0 };
             el("nextup-go").__video = queued;
             Nav.focus(el("nextup-go"));
-            prefetchCard(queued);
+            prefetchCard(queued, true);
 
             if (autoplaysSinceKey >= AUTOPLAY_UNATTENDED) {
                 report("player", "连着自动播了 " + autoplaysSinceKey +
@@ -3143,9 +3186,12 @@
         playing.prefetchNote = pre
             ? "预取=" + ((pre.dash.done && pre.prog.done && pre.resume.done) ? "已到" : "在途") +
               "（" + (nowMs - pre.at) + "ms 前发出）"
-            : "预取=无（" + (lastPrefetchBvid
-                  ? "上一次预取的是 " + lastPrefetchBvid + "，" + (nowMs - lastPrefetchAt) + "ms 前"
-                  : "这次启动还没预取过") + "）";
+            : "预取=无（" + (lastSkip && lastSkip.bvid === detail.bvid
+                  ? "这张卡片被跳过：" + lastSkip.why
+                  : (lastPrefetchBvid
+                     ? "上一次预取的是 " + lastPrefetchBvid + "，" + (nowMs - lastPrefetchAt) + "ms 前"
+                     : "这次启动还没预取过")) + "，最近一分钟预取了 " +
+              prefetchTimes.filter(function (t) { return nowMs - t < 60000; }).length + " 次）";
         if (pre) {
             var warmBits = [];
             for (var wi = 0; wi < (pre.warm || []).length; wi++) {
@@ -3206,8 +3252,8 @@
                  * handed the strong one it just failed on. */
                 playing.triedStrong = true;
                 playing.webDash = got.dash || null;
-                playing.timedLabel = "到画面(强令牌·教训)";
-                report("player", "教训里的强令牌就绪，" +
+                playing.timedLabel = "到画面(强令牌·" + (got.strongWhy || "教训") + ")";
+                report("player", (got.strongWhy || "教训") + "里的强令牌就绪，" +
                        (dash.tierNote || "") + (dash.strongTiming ? "，" + dash.strongTiming : ""));
             }
             /* And the mirror image, which did not exist until 2026-08-11: the
@@ -3301,8 +3347,12 @@
         var hintAid = Player.strongHint(cid);
         if (hintAid && Auth.isLoggedIn() && Auth.accessKey()) {
             got.strong = undefined;
-            report("player", "沿用教训：这个视频 web 令牌必被拒，开播直接铸 app 端点强令牌（aid=" + hintAid + "）");
-            mintStrong(hintAid, cid, PREFERRED_QN, function (sd) {
+            var early = pre && pre.strong;
+            report("player", "沿用教训：这个视频 web 令牌必被拒，" +
+                   (early ? "用倒计时里就开始铸的强令牌" : "开播直接铸 app 端点强令牌") +
+                   "（aid=" + hintAid + "）");
+            (early ? function (ok, fail) { whenSettled(early, ok, fail); }
+                   : function (ok, fail) { mintStrong(hintAid, cid, PREFERRED_QN, ok, fail); })(function (sd) {
                 if (playing !== session) { report("player", "教训强令牌回来时会话已经没了，丢弃"); return; }
                 got.strong = sd;
                 decide();
@@ -3311,6 +3361,34 @@
                 report("player", "教训里的强令牌铸不出来（" + why + "），改回 web 清单，教训作废");
                 Player.learnStrong(cid, 0);
                 got.strong = null;
+                decide();
+            });
+        } else if (pre && (pre.strong || pre.warmRefused) &&
+                   Auth.isLoggedIn() && Auth.accessKey() && (pre.aid || detail.aid)) {
+            /* The warm-up already asked the CDN, and it said 403 to the web
+             * token — the evidence the lesson path waits a failed playback
+             * for, gathered before the press. Go to the strong token without
+             * first spending the web manifest's 403s (and the limiter's
+             * patience) on proving it again. On the chooser screen the mint
+             * was started during the countdown; elsewhere it starts now.
+             * No lesson is written: that stays reserved for evidence from an
+             * actual playback. */
+            got.strong = undefined;
+            got.strongWhy = "预热";
+            var slotSt = pre.strong || prefetchSlot(function (ok, fail) {
+                mintStrong(pre.aid || detail.aid, cid, PREFERRED_QN, ok, fail);
+            });
+            report("player", "预热时 web 令牌已被拒（" + (pre.warmRefused || "403") + "），" +
+                   (pre.strong ? "用按下前就开始铸的强令牌" : "开播直接铸 app 端点强令牌"));
+            whenSettled(slotSt, function (sd) {
+                if (playing !== session) { report("player", "预热强令牌回来时会话已经没了，丢弃"); return; }
+                got.strong = sd;
+                decide();
+            }, function (why) {
+                if (playing !== session) { return; }
+                report("player", "预热路上的强令牌铸不出来（" + why + "），改回 web 清单");
+                got.strong = null;
+                got.strongWhy = "";
                 decide();
             });
         }
