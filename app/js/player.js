@@ -401,7 +401,7 @@ var Player = (function () {
     /* One line per playback, well after the start burst so there is something to
      * count, and again inside the stall diagnostic — the interesting comparison
      * is healthy traffic against traffic that has just stopped arriving. */
-    var transportTold = false, transportToldAt = 0, shapeProbed = false, shapeProbedStall = false;
+    var transportTold = false, transportToldAt = 0, shapeProbedStall = false;
     function tellTransport(when) {
         log("传输 " + when + " " + transportSummary());
     }
@@ -684,15 +684,12 @@ var Player = (function () {
                 setTimeout(function () {
                     if (mode !== "mse") { return; }
                     tellTransport("播放中");
-                    /* Only from a healthy stretch, and only once for the whole
-                     * app run: during an incident the eight would be eight more
-                     * requests into a limiter that is already refusing, and the
-                     * answer would be about the incident rather than about the
-                     * transport. */
-                    if (!shapeProbed && !incidentAt) {
-                        shapeProbed = true;
-                        probeTransportShape("健康时");
-                    }
+                    /* The healthy-time shape probe used to fire here, once per
+                     * app run. Its question was settled 08-16 (the queueing is
+                     * contention with the player, not a property of the link —
+                     * CLAUDE.md 传输形状), so it was eight CDN requests per
+                     * launch buying an answer already written down. The stalled
+                     * one stays: that is the half still worth sampling. */
                 }, 15000);
             }
         });
@@ -868,7 +865,7 @@ var Player = (function () {
             if (!live()) { return; }
             try { duration = webapis.avplay.getDuration(); } catch (e) { duration = 0; }
             if (startMs) { try { webapis.avplay.seekTo(startMs); } catch (e) {} }
-            webapis.avplay.play();
+            if (!userPaused) { webapis.avplay.play(); }
             mark("playing");
             emit("playing", { duration: duration });
         }, function (err) {
@@ -906,6 +903,19 @@ var Player = (function () {
          * there is only ever one session. */
         player.addEventListener("error", function (e) {
             var err = e && e.detail;
+            /* A network error on a manifest past its deadline is expiry, not
+             * refusal — a film longer than two hours, or a long pause. Read as
+             * refusal it blacklisted both hosts and wrote a six-hour "web
+             * token refused" lesson, so every entry to that video for the
+             * rest of the evening paid the strong-token start (~7s, not ~2.5).
+             * Hand it to the same refetch the rebuild path already uses. */
+            if (err && err.category === 1 && lastDash &&
+                    manifestStale(lastDash.dash, new Date().getTime())) {
+                log("网络错误发生在清单签名到期之后（code=" + err.code +
+                    "），按过期处理，不记坏主机/坏文件/强令牌教训");
+                emit("error", "清单已过期");
+                return;
+            }
             noteBadHost(err);
             /* A critical 403 usually names one *file*, not one host — the
              * 15:54 incident: hev1-720p answered 403 on every host while its
@@ -1918,6 +1928,14 @@ var Player = (function () {
         return false;
     }
 
+    /* Past its signatures: every segment of this response now 403s. One
+     * definition for both places that must tell expiry from refusal. */
+    function manifestStale(dash, nowMs) {
+        return !!(dash && dash.deadline &&
+                  (!dash.fetchedAt || nowMs - dash.fetchedAt > 60000) &&
+                  nowMs / 1000 > dash.deadline - 300);
+    }
+
     function playDashWithShaka(dash, startMs, isRetry, prefer, capId) {
         /* Every rung of the recovery ladder funnels back through here with the
          * response it already holds — and a kept response outlives its
@@ -1933,9 +1951,7 @@ var Player = (function () {
          * exemption is also what makes a refetch loop impossible even if this
          * TV's clock drifts. */
         var nowMs = new Date().getTime();
-        if (dash && dash.deadline &&
-                (!dash.fetchedAt || nowMs - dash.fetchedAt > 60000) &&
-                nowMs / 1000 > dash.deadline - 300) {
+        if (manifestStale(dash, nowMs)) {
             log("清单已过期（deadline 已过 " +
                 Math.max(0, Math.round(nowMs / 1000 - dash.deadline)) +
                 "s），拒绝用它重建");
@@ -2041,7 +2057,12 @@ var Player = (function () {
         duration = (dash.duration || 0) * 1000;
         /* Start the moment there is something to show, rather than waiting for
          * load() to resolve and only then asking. */
-        v.autoplay = true;
+        /* ...unless the viewer has paused. A rescue rebuild keeps userPaused
+         * (no reset()), and so does a pause pressed on the spinner — starting
+         * anyway left the flag saying paused under a playing video: the
+         * watchdog off for the rest of it, the banner never hiding, and the
+         * first 确认 "resuming" something already playing. */
+        v.autoplay = !userPaused;
 
         mark("manifest");
         var url = URL.createObjectURL(new Blob([manifest], { type: "application/dash+xml" }));
@@ -2067,6 +2088,7 @@ var Player = (function () {
             }
             var t = currentVideoTrack(player);
             if (t) { emit("quality", { id: t.originalVideoId || t.id, width: t.width, height: t.height }); }
+            if (userPaused) { return; }
             v.play().catch(function (e) {
                 if (gen !== mseGeneration) { return; }
                 if (/interrupted|aborted/i.test(e.message || "")) { return; }

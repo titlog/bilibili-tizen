@@ -9,6 +9,10 @@ var API = (function () {
     "use strict";
 
     var BASE = "https://api.bilibili.com";
+    var strongState = null;
+    /* Until when API.view asks its wbi twin first — see view(). */
+    var viewGatedUntil = 0;
+    var VIEW_GATE_MEMORY = 30 * 60 * 1000;   /* progress of the latest strong-token mint — see strongProgress */
 
     /* Attaching the session — the part multiple accounts broke.
      *
@@ -165,7 +169,9 @@ var API = (function () {
         if (!url) { return ""; }
         var u = url.replace(/^http:/, "https:");
         if (u.indexOf("//") === 0) { u = "https:" + u; }
-        return u + "@" + (w || 480) + "w_" + (h || 300) + "h_1c.webp";
+        /* The card's own size since the grid went to three columns (576×324);
+         * the old 480×300 was the four-column card, upscaled and soft. */
+        return u + "@" + (w || 576) + "w_" + (h || 324) + "h_1c.webp";
     }
 
     function stripEm(s) {
@@ -782,20 +788,41 @@ var API = (function () {
                     })
                 };
             }
-            getJson(BASE + "/x/web-interface/view?bvid=" + bvid, function (d) {
+            /* Only the gate's own shapes count: an HTTP status (412 today), a
+             * non-JSON body, or bilibili's risk-control codes. A timeout or a
+             * dropped connection is the link, and asking a second endpoint on
+             * the same dead link only turns a 20 s wait into 40 s — for the
+             * search-result open, the 403 rescue's aid lookup and the
+             * dead-video check alike. */
+            function gated(why) { return /^HTTP |^bad JSON|code -352|code -403/.test(String(why)); }
+            var plain = BASE + "/x/web-interface/view?bvid=" + bvid;
+            var twin = BASE + "/x/web-interface/wbi/view?bvid=" + bvid;
+            /* The gate is not per request: 2026-09-28 it answered 412 to 14 of
+             * 14 videos, each one a wasted request into the very IP gate that
+             * was refusing it. Once it has refused, the twin goes first for a
+             * while, with the plain endpoint kept as the fallback in case the
+             * gate has moved to the twin instead. */
+            if (new Date().getTime() < viewGatedUntil) {
+                getJson(twin, function (d) {
+                    onOk(shape(d), "wbi/view 答上了（view 近来被闸，先问它）");
+                }, function (why2) {
+                    if (!gated(why2)) { onFail("wbi/view " + why2); return; }
+                    getJson(plain, function (d) {
+                        viewGatedUntil = 0;
+                        onOk(shape(d), "wbi/view 答 " + why2 + "，view 又答上了");
+                    }, function (why1) {
+                        onFail("wbi/view " + why2 + "；view " + why1);
+                    });
+                });
+                return;
+            }
+            getJson(plain, function (d) {
                 onOk(shape(d), "view 直接答上了");
             }, function (why1) {
-                /* Only the gate's own shapes go to the twin: an HTTP status
-                 * (412 today), a non-JSON body, or bilibili's risk-control
-                 * codes. A timeout or a dropped connection is the link, and
-                 * asking a second endpoint on the same dead link only turns
-                 * a 20 s wait into 40 s — for the search-result open, the
-                 * 403 rescue's aid lookup and the dead-video check alike. */
-                if (!/^HTTP |^bad JSON|code -352|code -403/.test(String(why1))) {
-                    onFail(why1); return;
-                }
-                getJson(BASE + "/x/web-interface/wbi/view?bvid=" + bvid, function (d) {
-                    onOk(shape(d), "view 答 " + why1 + "，wbi/view 不签名答上了");
+                if (!gated(why1)) { onFail(why1); return; }
+                viewGatedUntil = new Date().getTime() + VIEW_GATE_MEMORY;
+                getJson(twin, function (d) {
+                    onOk(shape(d), "view 答 " + why1 + "，wbi/view 不签名答上了（之后 30 分钟先问它）");
                 }, function (why2) {
                     onFail("view " + why1 + "；wbi/view " + why2);
                 });
@@ -886,6 +913,23 @@ var API = (function () {
             }, onFail);
         },
 
+        /* Where the strong-token path is, for a watchdog in app.js. It can sit
+         * silent for minutes by construction — 15 header reads, two at a time,
+         * 15s timeout and one retry each — and 2026-09-28 it sat 16s with not
+         * one line before the app was restarted over it, so nobody could say
+         * whether it was the app endpoint or the CDN that was not answering. */
+        strongProgress: function () {
+            var p = strongState;
+            if (!p) { return "没有在铸"; }
+            var now = new Date().getTime();
+            return "已 " + (now - p.t0) + "ms：app端点=" + (p.app || "未答") +
+                   " codecs=" + (p.codecs || "未答") +
+                   (p.total ? " 文件头 " + p.ok + " 成 " + p.bad + " 败 " +
+                              p.retried + " 重试 / 共 " + p.total + "，在飞 " + p.active +
+                              "（最早那个已 " + (p.oldest ? now - p.oldest : 0) + "ms）"
+                            : " 文件头还没开始读");
+        },
+
         /* The strong-token path, for videos the web endpoint cannot play.
          *
          * ── Why this exists (2026-08-11, measured to the byte) ──
@@ -963,7 +1007,9 @@ var API = (function () {
              * 4 tiers surviving and 12 — 2026-08-11 measured exactly that gap. */
             function readSidxRetry(url, done) {
                 readSidx(url, function (seg) {
-                    if (seg) { done(seg); } else { readSidx(url, done); }
+                    if (seg) { done(seg); return; }
+                    if (st) { st.retried++; }
+                    readSidx(url, done);
                 });
             }
 
@@ -977,8 +1023,16 @@ var API = (function () {
                     while (active < 2 && i < streams.length) {
                         (function (s) {
                             active++;
+                            var began = new Date().getTime();
+                            if (st) { st.active = active; st.starts.push(began); st.oldest = st.starts[0]; }
                             readSidxRetry(s.baseUrl, function (seg) {
                                 s.segments = seg; active--; remaining--;
+                                if (st) {
+                                    if (seg) { st.ok++; } else { st.bad++; }
+                                    st.active = active;
+                                    st.starts.splice(st.starts.indexOf(began), 1);
+                                    st.oldest = st.starts[0] || 0;
+                                }
                                 if (remaining === 0) { whenDone(); } else { pump(); }
                             });
                         })(streams[i++]);
@@ -1007,12 +1061,15 @@ var API = (function () {
              * three stages are timed and stamped on the response so the log
              * can say where a 9-second strong-token start actually went. */
             var t0 = new Date().getTime(), tApp = 0, tCodecs = 0;
+            var st = strongState = { t0: t0, app: "", codecs: "", total: 0, ok: 0, bad: 0,
+                                     retried: 0, active: 0, starts: [], oldest: 0 };
             var wdDone = false, wdData = null, adData = null, joined = false;
             var url2 = BASE + "/x/player/playurl?avid=" + aid + "&cid=" + cid +
                        "&qn=16&fnval=2064&fnver=0&fourk=1";
             function url2Settled(wd) {
                 wdData = wd || null; wdDone = true;
                 tCodecs = new Date().getTime() - t0;
+                st.codecs = (wd ? "" : "失败 ") + tCodecs + "ms";
                 joinStrong();
             }
             /* Runs once both answers are in, whichever lands last. */
@@ -1075,6 +1132,7 @@ var API = (function () {
                     /* Read every stream's sidx, then drop the ones that failed —
                      * a rep with no segments cannot go into the manifest. */
                     var tSidx0 = new Date().getTime();
+                    st.total = video.length + audio.length;
                     fillSegments(video.concat(audio), function () {
                         var vAll = video.length, aAll = audio.length;
                         dash.strongTiming = "app端点=" + tApp + "ms codecs=" + tCodecs +
@@ -1111,6 +1169,7 @@ var API = (function () {
             getJson(url2, url2Settled, function () { url2Settled(null); });
             getJson(appUrl, function (ad) {
                 tApp = new Date().getTime() - t0;
+                st.app = tApp + "ms";
                 if (!ad.dash) { onFail("app 端点无 dash"); return; }
                 adData = ad;
                 joinStrong();

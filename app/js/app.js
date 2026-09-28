@@ -487,6 +487,10 @@
             for (var c = 0; c < cards.length; c++) {
                 if (cards[c].onselect) { continue; }
                 (function (node, v) {
+                    /* Dwell-prefetched like any grid — schedulePrefetch skips
+                     * it while a video plays, so only the chooser screen's
+                     * copy of this pager ever sends anything. */
+                    node.__video = v;
                     node.onselect = function () { if (v) { pick(v); } };
                 })(cards[c], items[Number(cards[c].getAttribute("data-i"))]);
             }
@@ -1036,6 +1040,15 @@
         if (el("resume-row") && rowSignature(items) === resumeRowSig) { return; }
         var first = screenEl.querySelector(".card");
         if (!first || Nav.current() !== first) { return; }
+        /* A strip already on screen only needs its three cards redrawn — the
+         * whole-grid rebuild re-requested every thumbnail of every loaded page
+         * to change three. Only a strip that does not exist yet needs the
+         * grid rebuilt, to make room above it. */
+        if (el("resume-row")) {
+            repaintResumeStrip();
+            Nav.reset(".card");
+            return;
+        }
         renderGrid(cache.items);
         Nav.reset(".card");
     }
@@ -1421,6 +1434,11 @@
         if (!state.results || !focused || !focused.getAttribute) { return; }
         if (focused.getAttribute("data-i") === null) { return; }
         if (Number(focused.getAttribute("data-i")) < state.results.length - 6) { return; }
+        /* Each arrow press among the last six cards lands here. Without these
+         * two, an empty page (the end of the results) or a failed one was
+         * asked for again on every press. */
+        if (state.searchDone) { return; }
+        if (state.searchRetryAt && new Date().getTime() < state.searchRetryAt) { return; }
 
         loadingMore = true;
         var next = (state.searchPage || 1) + 1;
@@ -1434,11 +1452,16 @@
             for (var j = 0; j < more.length; j++) {
                 if (more[j].bvid && !seen[more[j].bvid]) { fresh.push(more[j]); }
             }
-            if (!fresh.length) { return; }
+            if (!fresh.length) { state.searchDone = true; return; }
             state.searchPage = next;
             state.results = state.results.concat(fresh);
             paintResults(state.results, true);
-        }, function () { loadingMore = false; });
+        }, function () {
+            loadingMore = false;
+            /* A failure is the link, not the end: ask again, but not before
+             * five seconds have passed. */
+            state.searchRetryAt = new Date().getTime() + 5000;
+        });
     }
 
     function paintResults(items, keepFocus) {
@@ -1475,6 +1498,8 @@
         var results = el("results");
         results.innerHTML = '<div class="empty">搜索中…</div>';
         state.searchPage = 1;
+        state.searchDone = false;
+        state.searchRetryAt = 0;
         /* The term too, not just the view: Enter on the IME and a suggestion
          * picked right after are two searches under one view token, and the
          * slower one used to paint its results under the other's heading.
@@ -1984,12 +2009,23 @@
      * file warmed at most once in five minutes. Walking across a row sends
      * nothing. */
     var PREFETCH_DWELL = 400;   /* 800 missed: pressed 814ms after landing, prefetch sent 14ms before */
-    var PREFETCH_GAP = 1500;
+    var PREFETCH_GAP = 800;    /* 1500 missed a press 1.17s after the neighbour was prefetched; the per-minute cap below bounds bursts now */
     var PREFETCH_TTL = 5 * 60 * 1000;
     var PREFETCH_MAX = 4;
     var prefetched = {};
     var prefetchTimer = 0;
     var lastPrefetchAt = 0;
+    var lastPrefetchBvid = "";   /* so 预取=无 can say "never sent" from "sent for another card" */
+    /* A per-minute ceiling on top of the gap: slow browsing at the gap alone
+     * is 3 api + 2 CDN requests every 1.5s, and both hosts have limiters
+     * (api answers 412 on view from this network already; the CDN's cooldown
+     * tripped at ~20 requests on 08-02). Ten a minute covers any real choice. */
+    var PREFETCH_PER_MIN = 10;
+    var prefetchTimes = [];
+    /* The video just watched. Leaving playback lands the ring back on its
+     * card, and the dwell would ask about it all over again — for a video
+     * the viewer has just finished with. */
+    var justPlayed = "";
     var warmedAt = {};      /* file (url without query) -> when it was warmed */
 
     function prefetchKey(bvid, cid) {
@@ -2082,15 +2118,24 @@
         }
         var key = prefetchKey(v.bvid, v.cid);
         if (prefetched[key] && now - prefetched[key].at < PREFETCH_TTL) { return; }
+        if (v.bvid === justPlayed) { return; }
+        while (prefetchTimes.length && now - prefetchTimes[0] > 60000) { prefetchTimes.shift(); }
+        if (prefetchTimes.length >= PREFETCH_PER_MIN) { return; }
+        prefetchTimes.push(now);
         prunePrefetch(now);
         lastPrefetchAt = now;
+        lastPrefetchBvid = v.bvid;
         var bvid = v.bvid, cid = v.cid;
         var e = { at: now };
         e.dash = prefetchSlot(function (ok, fail) { API.playurlDash(bvid, cid, PREFERRED_QN, ok, fail); });
         e.prog = prefetchSlot(function (ok, fail) { API.playurlProgressive(bvid, cid, PREFERRED_QN, ok, fail); });
         e.resume = prefetchSlot(function (ok, fail) { API.playerV2(bvid, cid, ok, fail); });
         prefetched[key] = e;
-        whenSettled(e.dash, function (dash) { warmCdn(e, dash); }, function () {});
+        /* A video whose lesson says the web token is refused would only 403
+         * the warm-up — exactly the refused traffic the limiter punishes. */
+        if (!Player.strongHint(cid)) {
+            whenSettled(e.dash, function (dash) { warmCdn(e, dash); }, function () {});
+        }
     }
 
     /* Called on every focus move: only a card the ring stays on gets asked. */
@@ -2106,6 +2151,33 @@
         delete prefetched[key];
         if (!e || new Date().getTime() - e.at > PREFETCH_TTL) { return null; }
         return e;
+    }
+
+    /* API.playurlDashStrong with a voice. The mint can take minutes without a
+     * word (15 header reads, two at a time, 15s timeout and a retry each), and
+     * the one time it did, the only witness was a banner complaining it could
+     * not hide. So at 8s and 20s it says where it is — app endpoint, codecs
+     * query, or which header reads — and says how long it took when it ends.
+     * Behaviour is untouched: this only reports. */
+    function mintStrong(aid, cid, qn, onOk, onFail) {
+        var t0 = new Date().getTime(), finished = false;
+        var bvid = (playing && playing.detail && playing.detail.bvid) || "";
+        var slow = [8000, 20000], timers = [];
+        for (var i = 0; i < slow.length; i++) {
+            timers.push(setTimeout(function () {
+                if (finished) { return; }
+                report("player", "强令牌还没铸好 " + bvid + " —— " + API.strongProgress());
+            }, slow[i]));
+        }
+        function end() {
+            finished = true;
+            for (var j = 0; j < timers.length; j++) { clearTimeout(timers[j]); }
+            var took = new Date().getTime() - t0;
+            if (took >= 8000) { report("player", "强令牌花了 " + took + "ms 才有结果 " + bvid); }
+        }
+        API.playurlDashStrong(aid, cid, qn,
+            function (d) { end(); onOk(d); },
+            function (why) { end(); onFail(why); });
     }
 
     function playVideo(v, fromPanel) {
@@ -2133,7 +2205,11 @@
                 duration: v.duration, play: v.play,
                 desc: "", pages: []
             };
-            play(provisional, v.cid);
+            /* Through resumeCid like every other entry — its "feed card, no
+             * part list" branch was written for exactly this card and was
+             * unreachable from here, so a 24-part upload last watched at P7
+             * reopened from 推荐 at P1 0:00. */
+            play(provisional, resumeCid(provisional));
             return;
         }
 
@@ -2599,6 +2675,13 @@
     var NEXTUP_FIRST = 3;
     var NEXTUP_PAGE = 6;
 
+    /* Autoplays in a row with no key pressed in between. After three the
+     * countdown is not started: a viewer who fell asleep otherwise chained
+     * through related videos all night, each one filed into their bilibili
+     * history as watched. Any key resets it (Nav.onKey sees every press). */
+    var AUTOPLAY_UNATTENDED = 3;
+    var autoplaysSinceKey = 0;
+
     function beginAutoNext() {
         /* The panel belongs to the video that just ended; leaving it up meant
          * the countdown ran underneath it and the next video started with a
@@ -2673,8 +2756,23 @@
             /* Focus is on the queued video, so 确认 still means "play it now"
              * without anyone having to aim. */
             el("nextup-go").onselect = playNext;
+            /* The queued video is asked about now rather than on a dwell: the
+             * countdown is eight seconds of nothing on the link, and autoplay
+             * down a series otherwise paid the cold start on every episode.
+             * On the button too, so coming back to it after browsing the
+             * related row finds it still covered. */
+            var queued = { bvid: next.detail && next.detail.bvid, cid: next.cid };
+            el("nextup-go").__video = queued;
             Nav.focus(el("nextup-go"));
+            prefetchCard(queued);
 
+            if (autoplaysSinceKey >= AUTOPLAY_UNATTENDED) {
+                report("player", "连着自动播了 " + autoplaysSinceKey +
+                       " 个都没人按键，这次不倒计时，等观众确认");
+                el("nextup-hint").textContent = "已经连着自动播了 " + autoplaysSinceKey +
+                    " 个 · 还在看吗？确认键 继续 · 返回键 退出";
+                return;
+            }
             var left = 8;
             /* 「下键 挑别的」 only when there is something down there. Promising a
              * key that does nothing is worse than not mentioning it: the press
@@ -2689,7 +2787,7 @@
                 left--;
                 var c = el("nextup-count");
                 if (c) { c.textContent = left; }
-                if (left <= 0) { playNext(); }
+                if (left <= 0) { autoplaysSinceKey++; playNext(); }
             }, 1000);
         });
     }
@@ -2731,7 +2829,7 @@
     }
 
     function handleNextKeys(k) {
-        if (k === Nav.KEY.PLAY_PAUSE) { playNext(); return true; }
+        if (k === Nav.KEY.PLAY_PAUSE || k === Nav.KEY.PLAY) { playNext(); return true; }
         /* Arrows and 确认 belong to Nav here: this screen is a chooser, and its
          * cards carry their own onselect. Handling 确认 ourselves would play the
          * queued video no matter which card the ring was on. */
@@ -3029,15 +3127,25 @@
          * failed is asked again rather than trusted — the prefetch must never
          * be a way to fail that pressing the button afresh would not be. */
         var pre = takePrefetch(detail.bvid, cid);
+        justPlayed = detail.bvid;
         function ask(slot, fetcher, onOk, onFail) {
             if (!slot) { fetcher(onOk, onFail); return; }
-            whenSettled(slot, onOk, function () { fetcher(onOk, onFail); });
+            whenSettled(slot, onOk, function () {
+                if (playing === session) { fetcher(onOk, onFail); }
+            });
         }
         var nowMs = new Date().getTime();
+        /* The stream urls keep for hours; where the viewer is does not. This
+         * is the one fresh cross-device answer (the phone's position), so a
+         * prefetched one older than half a minute is asked again — keep
+         * watching on the phone, sit down, press OK: the phone must win. */
+        var preResume = (pre && nowMs - pre.at < 30000) ? pre.resume : null;
         playing.prefetchNote = pre
             ? "预取=" + ((pre.dash.done && pre.prog.done && pre.resume.done) ? "已到" : "在途") +
               "（" + (nowMs - pre.at) + "ms 前发出）"
-            : "预取=无";
+            : "预取=无（" + (lastPrefetchBvid
+                  ? "上一次预取的是 " + lastPrefetchBvid + "，" + (nowMs - lastPrefetchAt) + "ms 前"
+                  : "这次启动还没预取过") + "）";
         if (pre) {
             var warmBits = [];
             for (var wi = 0; wi < (pre.warm || []).length; wi++) {
@@ -3114,16 +3222,17 @@
              * belongs in 继续观看 again, and nothing else has to know. */
             if (dash || prog) { Resume.markAlive(detail.bvid); }
 
-            /* Ties go progressive (AVPlay is native) — unless this video
-             * already taught us otherwise within the lesson TTL: 平凡之路
-             * spent seven doomed AVPlay seconds on every entry before the
-             * tie-break got a memory. Quality still outranks the lesson. */
-            var routeHint = Player.routeHint(cid);
-            if (dash && (!prog || dashQn > prog.quality ||
-                    (routeHint === "dash" && dashQn >= prog.quality))) {
-                if (routeHint === "dash" && prog && dashQn <= prog.quality) {
-                    report("player", "上次渐进式在这个视频上败过，打平直接走 DASH");
-                }
+            /* Ties go DASH (2026-09-28; they went progressive before). The
+             * rule dates from the hand-rolled MSE pump, when AVPlay being
+             * native was worth a lot. Behind Shaka, DASH starts in 1.6–3s and
+             * carries the whole rescue ladder, while an AVPlay refusal costs
+             * 6–8s before it even reports: BV1t441167uj that evening, a 1080p
+             * durl tying the DASH top tier, took 11s to a picture — eight of
+             * them AVPlay failing on a url the probe then read as 403. The
+             * per-video 「渐进式败绩」 lesson only spared the *second* entry;
+             * every other tie paid in full. Progressive still wins when it is
+             * strictly better, and stays the last resort after DASH. */
+            if (dash && (!prog || dashQn >= prog.quality)) {
                 playDash(dash, dashQn); return;
             }
             if (prog) { startProgressive(prog); return; }
@@ -3193,7 +3302,7 @@
         if (hintAid && Auth.isLoggedIn() && Auth.accessKey()) {
             got.strong = undefined;
             report("player", "沿用教训：这个视频 web 令牌必被拒，开播直接铸 app 端点强令牌（aid=" + hintAid + "）");
-            API.playurlDashStrong(hintAid, cid, PREFERRED_QN, function (sd) {
+            mintStrong(hintAid, cid, PREFERRED_QN, function (sd) {
                 if (playing !== session) { report("player", "教训强令牌回来时会话已经没了，丢弃"); return; }
                 got.strong = sd;
                 decide();
@@ -3249,7 +3358,7 @@
             decide();
         }, 1200);
 
-        ask(pre && pre.resume, function (ok, fail) {
+        ask(preResume, function (ok, fail) {
             API.playerV2(detail.bvid, cid, ok, fail);
         }, function (r) {
             clearTimeout(resumeTimer);
@@ -3833,7 +3942,7 @@
                         });
                 };
                 if (wantStrong) {
-                    API.playurlDashStrong(sessExp.detail.aid, sessExp.cid,
+                    mintStrong(sessExp.detail.aid, sessExp.cid,
                         PREFERRED_QN, startExp, function (whyStExp) {
                             if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
                             report("player", "过期重取强令牌失败（" + whyStExp +
@@ -3905,7 +4014,7 @@
                         finalFallback("强令牌缺 aid");
                         return;
                     }
-                    API.playurlDashStrong(aidST, sessST.cid, PREFERRED_QN,
+                    mintStrong(aidST, sessST.cid, PREFERRED_QN,
                         function (strongDash) {
                             if (playing !== sessST) { report("player", "强令牌回来时会话已经没了，丢弃"); return; }
                             playing.dashReady = strongDash;
@@ -4108,6 +4217,12 @@
                     playing.progReady.urls && playing.progReady.urls.length) {
                 playing.progTried = true;
                 playing.failed = false;
+                /* DASH is what just died. Without this, the durl failing six
+                 * seconds later reads as "progressive refused, try DASH" —
+                 * downgrade() reuses the dead manifest and the whole ladder
+                 * runs again, another burst of 403s into the limiter before
+                 * the exit this was meant to be. */
+                playing.downgraded = true;
                 playing.startMs = ffAt;   /* progress restarts here */
                 playing.route = "progressive";
                 playing.quality = playing.progReady.quality;
@@ -4174,6 +4289,7 @@
     /* ---------------- keys ---------------- */
 
     Nav.onKey(function (k) {
+        autoplaysSinceKey = 0;
         if (pendingNext) { return handleNextKeys(k); }
         if (optionsOpen) {
             if (k === Nav.KEY.RETURN) { closeOptions(); return true; }
@@ -4205,6 +4321,15 @@
                  * question from the one being asked; the watchdog and the
                  * banner both got it before this did. */
                 setPaused(!Player.userPaused());
+                return true;
+            /* Remotes with separate keys: nav.js registers them, and they fell
+             * into `default` and did nothing. */
+            case Nav.KEY.PLAY:
+                if (scrub) { commitScrub(); return true; }
+                if (Player.userPaused()) { setPaused(false); }
+                return true;
+            case Nav.KEY.PAUSE:
+                if (!Player.userPaused()) { setPaused(true); }
                 return true;
             case Nav.KEY.LEFT:
             case Nav.KEY.REW:
