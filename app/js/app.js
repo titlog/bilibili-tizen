@@ -2385,7 +2385,7 @@
                 !Auth.isLoggedIn() || !Auth.accessKey()) { return; }
         var aid = e.aid, cid = e.cid;
         e.strong = prefetchSlot(function (ok, fail) {
-            API.playurlDashStrong(aid, cid, PREFERRED_QN, ok, fail);
+            API.playurlDashStrong(aid, cid, PREFERRED_QN, ok, fail, Player.badFilesFor(cid));
         });
     }
 
@@ -2485,7 +2485,8 @@
         }
         API.playurlDashStrong(aid, cid, qn,
             function (d) { end(); onOk(d); },
-            function (why) { end(); onFail(why); });
+            function (why) { end(); onFail(why); },
+            Player.badFilesFor(cid));
     }
 
     function playVideo(v, fromPanel) {

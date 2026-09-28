@@ -548,6 +548,7 @@ var Player = (function () {
     }
 
     var respBeforeLoad = 0;
+    var listIgnored = 0;   /* per video: times the bad-file list was ignored to build at all */
     /* Playback speed, kept across videos for this app run: a lecture series at
      * 1.5x should not need setting on every episode. Not across restarts —
      * a speed nobody remembers choosing is a fault from the sofa. */
@@ -800,6 +801,7 @@ var Player = (function () {
     function reset() {
         mseGeneration++;
         avGeneration++;
+        listIgnored = 0;
 
         /* Only when AVPlay was actually used. `obj` is created by
          * `ensureObject()` on that path and nowhere else, so a null one means
@@ -2150,7 +2152,34 @@ var Player = (function () {
             /* The preferred family had nothing usable. H.264 is always there. */
             manifest = Mpd.build(usable, capId || PREFERRED_QN, "avc1");
         }
+        if (!manifest && prefer && objectKeys(badFiles).length) {
+            /* A pinned family emptied by the ban. The per-file rung pins the
+             * family it just excised a file from; when that file was the
+             * family's top tier, what is left cannot reach the H.264 baseline
+             * and the pinned build is empty. Unpin before ignoring the list —
+             * another family is another file, which is the whole point of
+             * excising this one. 2026-09-28 22:07: without this, a 1080p hvc1
+             * file the decoder froze on at 3s was excised, the pin emptied the
+             * manifest, the list was ignored, the same file came back, and the
+             * loop ran every twenty seconds with the viewer on a black screen. */
+            manifest = Mpd.build(usable, capId || PREFERRED_QN, null, lessonFamily) ||
+                       Mpd.build(usable, capId || PREFERRED_QN, "avc1");
+            if (manifest) {
+                log("指定的 " + prefer + " 剔掉坏文件后够不到基线，放开族的限制，改用 " + Mpd.chosen());
+                prefer = null;
+            }
+        }
         if (!manifest && objectKeys(badFiles).length) {
+            /* Twice per video, then out: ignoring the list brings back the
+             * very file that was banned, and a file the decoder freezes on
+             * will freeze it again — each round a fresh ban of the same file,
+             * since the list was just cleared. Past two, the honest exit
+             * belongs to app.js's fallbacks, not to another silent lap. */
+            if (++listIgnored > 2) {
+                log("坏文件名单已经忽略过两次还是掏空清单，不再原地重建，交给上层");
+                emit("error", "坏文件名单掏空了清单（已忽略两次）");
+                return;
+            }
             /* The blacklist ate the manifest. Seven files banned inside one
              * video on 2026-08-09 left nothing to build and the video exited
              * with 「拼不出播放清单」 — the per-file ban repeating, at file
@@ -2486,6 +2515,26 @@ var Player = (function () {
          * endpoint, not of the minute, but it shares the 6 h TTL: nothing
          * here is worth a second constant. Withdrawn (0) when the strong
          * fetch itself fails, so a bad lesson costs one entry, not a day. */
+        /* File tokens known bad for this cid right now — this session's list
+         * if it is this cid's, plus a lesson's still inside BAD_FILE_TTL. For
+         * the strong-token path's choice of which family's headers to read
+         * first: reading a family whose top file is banned lands on its
+         * lower tiers with nothing yet read to compare against (22:11 that
+         * evening: 720p hvc1 while the 1080p avc1 sat unread). */
+        badFilesFor: function (cid) {
+            var out = {}, now = new Date().getTime(), tok;
+            if (String(cid) === badHostsScope) {
+                for (tok in badFiles) {
+                    if (badFiles.hasOwnProperty(tok) &&
+                            (badFiles[tok] === true || now - badFiles[tok] <= BAD_FILE_TTL)) { out[tok] = 1; }
+                }
+            }
+            var l = readLessons()[String(cid)];
+            if (l && l.bf && now - (l.t || 0) <= BAD_FILE_TTL) {
+                for (var i = 0; i < l.bf.length; i++) { out[l.bf[i]] = 1; }
+            }
+            return objectKeys(out);
+        },
         strongHint: function (cid) {
             var l = readLessons()[String(cid)];
             return (l && l.s) || 0;

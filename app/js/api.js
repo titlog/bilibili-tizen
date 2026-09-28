@@ -973,7 +973,7 @@ var API = (function () {
          * Only reached when the web endpoint's token is refused — normal videos
          * never pay for the header reads. Requires aid: the app endpoint rejects
          * bvid with -400. */
-        playurlDashStrong: function (aid, cid, qn, onOk, onFail) {
+        playurlDashStrong: function (aid, cid, qn, onOk, onFail, avoid) {
             if (typeof Auth === "undefined" || !Auth.accessKey()) {
                 onFail("无 access_key，app 端点不可用"); return;
             }
@@ -1159,14 +1159,25 @@ var API = (function () {
                      * read the other families and audios once playback has had
                      * the link to itself for a while: they matter only to the
                      * ladder's 换族 rung, which appends to these same arrays. */
+                    /* Known-bad files (Player.badFilesFor) are left out of the
+                     * choice and of the first read: a family whose top file is
+                     * banned would otherwise win with its lower tiers, against
+                     * families whose headers have not been read yet. */
+                    var avoidSet = {};
+                    for (var av = 0; av < (avoid || []).length; av++) { avoidSet[avoid[av]] = 1; }
+                    var fileOf = function (r) {
+                        return String((r.urls && r.urls[0]) || r.baseUrl || "").split(/[?#]/)[0].split("/").pop();
+                    };
+                    var candidates1 = video.filter(function (r) { return !avoidSet[fileOf(r)]; });
                     var fam = (typeof Mpd !== "undefined" && Mpd.familyFor) ?
-                              Mpd.familyFor(video, cap) : "";
+                              Mpd.familyFor(candidates1, cap) : "";
                     var topAudio = audio.slice().sort(function (x, y) {
                         return (y.bandwidth || 0) - (x.bandwidth || 0);
                     })[0];
                     var first = [], later = [];
                     for (var fv = 0; fv < video.length; fv++) {
-                        (fam && Mpd.family(video[fv].codecs) === fam ? first : later).push(video[fv]);
+                        (fam && Mpd.family(video[fv].codecs) === fam && !avoidSet[fileOf(video[fv])]
+                            ? first : later).push(video[fv]);
                     }
                     for (var fa = 0; fa < audio.length; fa++) {
                         (audio[fa] === topAudio ? first : later).push(audio[fa]);
