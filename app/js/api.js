@@ -430,6 +430,17 @@ var API = (function () {
 
         /* Search-as-you-type suggestions. Handy on a TV, where every extra
          * character costs several button presses. */
+        /* bilibili's 热搜 — what the search page offers before anything is
+         * typed, since typing on a remote is the expensive part. No WBI
+         * signature needed (2026-09-28, answered code 0 unsigned). */
+        hotSearch: function (onOk, onFail) {
+            getJson(BASE + "/x/web-interface/search/square?limit=10", function (d) {
+                var list = ((d && d.trending && d.trending.list) || []);
+                onOk(list.map(function (x) { return stripEm(x.show_name || x.keyword || ""); })
+                         .filter(function (x) { return !!x; }));
+            }, onFail);
+        },
+
         suggest: function (term, onOk, onFail) {
             var url = "https://s.search.bilibili.com/main/suggest?term=" +
                       encodeURIComponent(term) + "&main_ver=v1";

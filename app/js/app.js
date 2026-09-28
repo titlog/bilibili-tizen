@@ -1402,6 +1402,8 @@
          * results thrown away, so finding one thing meant searching twice. */
         if (state.results && state.results.length) {
             paintResults(state.results);
+        } else {
+            paintSearchStarters();
         }
 
         var keys = screenEl.querySelectorAll(".key");
@@ -1489,6 +1491,85 @@
 
     var suggestTimer = null;
 
+    /* What the search page offers before anything is typed (2026-09-28).
+     * Typing on a remote is several presses per character and the IME is a
+     * detour, so the cheapest search is one already typed: this account's own
+     * recent terms, then bilibili's 热搜. Per account — someone else's
+     * searches are not a suggestion, they are a disclosure. */
+    var SEARCH_HISTORY_KEY = "bili.searchHistory.v1";
+    var SEARCH_HISTORY_MAX = 12;
+    var hotCache = { at: 0, list: null };
+
+    function searchHistory() {
+        try {
+            var v = JSON.parse(localStorage.getItem(Accounts.scope(SEARCH_HISTORY_KEY)) || "[]");
+            return Array.isArray(v) ? v : [];
+        } catch (e) { return []; }
+    }
+    function rememberSearch(term) {
+        var list = searchHistory().filter(function (t) { return t !== term; });
+        list.unshift(term);
+        try {
+            localStorage.setItem(Accounts.scope(SEARCH_HISTORY_KEY),
+                                 JSON.stringify(list.slice(0, SEARCH_HISTORY_MAX)));
+        } catch (e) {}
+    }
+    function clearSearchHistory() {
+        try { localStorage.removeItem(Accounts.scope(SEARCH_HISTORY_KEY)); } catch (e) {}
+    }
+
+    /* Chips into the suggestion box, each searching its own text. */
+    function paintChips(box, groups) {
+        var html = "";
+        for (var g = 0; g < groups.length; g++) {
+            var grp = groups[g];
+            if (!grp.items.length) { continue; }
+            html += '<div class="suggest-label">' + esc(grp.label) + '</div>';
+            for (var i = 0; i < grp.items.length; i++) {
+                html += '<div class="suggest focusable" data-s="' + esc(grp.items[i]) + '">' +
+                        esc(grp.items[i]) + "</div>";
+            }
+            if (grp.clear) { html += '<div class="suggest clear focusable" data-clear="1">清空</div>'; }
+        }
+        box.innerHTML = html;
+        var nodes = box.querySelectorAll(".suggest");
+        for (var j = 0; j < nodes.length; j++) {
+            (function (node) {
+                node.onselect = function () {
+                    if (node.getAttribute("data-clear")) {
+                        clearSearchHistory();
+                        paintSearchStarters();
+                        Nav.reset('[data-act="ime"]');
+                        return;
+                    }
+                    state.query = node.getAttribute("data-s");
+                    el("qbox").textContent = state.query;
+                    runSearch();
+                };
+            })(nodes[j]);
+        }
+    }
+
+    function paintSearchStarters() {
+        var box = el("suggests");
+        if (!box || state.query.trim()) { return; }
+        var mine = searchHistory();
+        function paint(hot) {
+            var b = el("suggests");
+            if (!b || state.query.trim()) { return; }
+            paintChips(b, [{ label: "最近搜过", items: mine, clear: true },
+                           { label: "热搜", items: hot || [] }]);
+        }
+        var fresh = hotCache.list && new Date().getTime() - hotCache.at < 10 * 60 * 1000;
+        paint(fresh ? hotCache.list : null);
+        if (fresh) { return; }
+        var token = viewToken;
+        API.hotSearch(function (list) {
+            hotCache = { at: new Date().getTime(), list: list };
+            if (stillViewing(token)) { paint(list); }
+        }, function (why) { report("search", "热搜拿不到（" + why + "）"); });
+    }
+
     /* Suggestions are worth a lot on a remote, where every character is several
      * button presses — one press on a suggestion beats ten on the grid. */
     function loadSuggestions() {
@@ -1496,7 +1577,7 @@
         var term = state.query.trim();
         var box = el("suggests");
         if (!box) { return; }
-        if (term.length < 1) { box.innerHTML = ""; return; }
+        if (term.length < 1) { paintSearchStarters(); return; }
 
         suggestTimer = setTimeout(function () {
             API.suggest(term, function (list) {
@@ -1606,6 +1687,7 @@
             results = el("results");
             if (!results) { return; }
             if (!items.length) { results.innerHTML = '<div class="empty">没有结果</div>'; return; }
+            rememberSearch(term);
             state.results = items;
             var first = paintResults(items);
             Nav.focus(first);
@@ -2119,7 +2201,7 @@
      * is 3 api + 2 CDN requests every 1.5s, and both hosts have limiters
      * (api answers 412 on view from this network already; the CDN's cooldown
      * tripped at ~20 requests on 08-02). Ten a minute covers any real choice. */
-    var PREFETCH_PER_MIN = 10;
+    var PREFETCH_PER_MIN = 20;   /* 10 was hit while browsing (2026-09-28: 「撞了每分钟 10 次的上限」 on the card then pressed) */
     var prefetchTimes = [];
     /* The video just watched. Leaving playback lands the ring back on its
      * card, and the dwell would ask about it all over again — for a video
@@ -2485,10 +2567,16 @@
         return Math.floor(m / 60) + ":" + ("0" + (m % 60)).slice(-2) + ":" + ("0" + s).slice(-2);
     }
 
+    var qualityText = "";
+    /* Quality, and the speed when it is not 1x — a video playing fast with
+     * nothing on screen saying so reads as a fault. */
     function setQualityBadge(text) {
+        qualityText = text || "";
+        var r = Player.rate();
+        var full = qualityText + (r !== 1 ? (qualityText ? " · " : "") + r + "x" : "");
         var b = el("player-quality");
-        b.textContent = text || "";
-        b.className = text ? "" : "hidden";
+        b.textContent = full;
+        b.className = full ? "" : "hidden";
     }
 
     var HINT = "确认键 播放/暂停 · 左右 快退/快进 · 下键 简介/相关 · 返回键 退出";
@@ -2789,7 +2877,8 @@
             group.className = "opt-group hidden";
             el("opt-parts").innerHTML = "";
         }
-        var opts = document.querySelectorAll("#options .opt");
+        /* The part chips only — the speed row is .opt too. */
+        var opts = document.querySelectorAll("#opt-parts .opt");
         for (var k = 0; k < opts.length; k++) {
             (function (node) {
                 node.onselect = function () {
@@ -2798,6 +2887,30 @@
                     if (cid) { play(playing.detail, Number(cid)); }
                 };
             })(opts[k]);
+        }
+    }
+
+    /* 播放速度 (2026-09-28). A row of chips like the parts, the current one
+     * marked; choosing one keeps the panel open, since the viewer may want to
+     * try the next one up. Sticky for the app run (Player.setRate). */
+    function paintSpeed() {
+        var rates = Player.rates(), cur = Player.rate(), html = "";
+        for (var i = 0; i < rates.length; i++) {
+            html += '<div class="opt focusable' + (rates[i] === cur ? " current" : "") +
+                    '" data-rate="' + rates[i] + '">' + rates[i] + "x</div>";
+        }
+        el("opt-speed").innerHTML = html;
+        var chips = document.querySelectorAll("#opt-speed .opt");
+        for (var j = 0; j < chips.length; j++) {
+            (function (node) {
+                node.onselect = function () {
+                    var r = Number(node.getAttribute("data-rate"));
+                    if (!Player.setRate(r)) { toast("当前播放方式不支持这个速度"); return; }
+                    paintSpeed();
+                    setQualityBadge(qualityText);
+                    Nav.focus(document.querySelector('#opt-speed .opt[data-rate="' + r + '"]'));
+                };
+            })(chips[j]);
         }
     }
 
@@ -2837,6 +2950,7 @@
         el("panel-desc").textContent = (d.desc || "").slice(0, 400);
 
         paintParts();
+        paintSpeed();
 
         /* Related videos live in the panel now, so "what else" never costs the
          * viewer their place in the video. All of them, not the first sixteen:

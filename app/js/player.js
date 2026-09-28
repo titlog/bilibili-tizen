@@ -548,6 +548,29 @@ var Player = (function () {
     }
 
     var respBeforeLoad = 0;
+    /* Playback speed, kept across videos for this app run: a lecture series at
+     * 1.5x should not need setting on every episode. Not across restarts —
+     * a speed nobody remembers choosing is a fault from the sofa. */
+    var playRate = 1;
+    /* Through Shaka, not the element: its PlayRateController drops the rate to
+     * 0 while buffering and restores its own idea of it afterwards, so a
+     * playbackRate written behind its back reverts at the first stall. */
+    function applyRate() {
+        if (mode === "mse" && shakaPlayer) {
+            try {
+                if (playRate === 1) { shakaPlayer.cancelTrickPlay(); }
+                else { shakaPlayer.trickPlay(playRate, false); }
+                return true;
+            } catch (e) { log("倍速设不上（" + e.message + "）"); return false; }
+        }
+        if (mode === "avplay") {
+            /* AVPlay takes whole numbers only. */
+            if (playRate !== Math.round(playRate)) { return false; }
+            try { webapis.avplay.setSpeed(playRate); return true; }
+            catch (e2) { log("AVPlay 倍速设不上（" + e2.message + "）"); return false; }
+        }
+        return false;
+    }
     var segSentAt = {};
 
     function startTiming() {
@@ -888,6 +911,7 @@ var Player = (function () {
             try { duration = webapis.avplay.getDuration(); } catch (e) { duration = 0; }
             if (startMs) { try { webapis.avplay.seekTo(startMs); } catch (e) {} }
             if (!userPaused) { webapis.avplay.play(); }
+            if (playRate !== 1) { applyRate(); }
             mark("playing");
             emit("playing", { duration: duration });
         }, function (err) {
@@ -2192,6 +2216,7 @@ var Player = (function () {
             }
             var t = currentVideoTrack(player);
             if (t) { emit("quality", { id: t.originalVideoId || t.id, width: t.width, height: t.height }); }
+            if (playRate !== 1) { applyRate(); }   /* each load starts Shaka's rate at 1 */
             if (userPaused) { return; }
             v.play().catch(function (e) {
                 if (gen !== mseGeneration) { return; }
@@ -2498,6 +2523,19 @@ var Player = (function () {
          * element is paused for the whole of a load, and code that hides chrome
          * or watches for stalls has to tell those two apart. */
         userPaused: function () { return userPaused; },
+        /* The speeds this route can do: AVPlay only whole numbers. */
+        rates: function () { return mode === "avplay" ? [1, 2] : [0.75, 1, 1.25, 1.5, 2]; },
+        /* What is actually playing: a 1.5x chosen on DASH is 1x on AVPlay. */
+        rate: function () {
+            return (mode === "avplay" && playRate !== Math.round(playRate)) ? 1 : playRate;
+        },
+        setRate: function (r) {
+            var before = playRate;
+            playRate = r;
+            if (!applyRate()) { playRate = before; return false; }
+            log("倍速 " + before + "x → " + r + "x");
+            return true;
+        },
         /* Playing on MSE with no rescue under way and a comfortable buffer —
          * the one state in which app.js may spend the link on a prefetch
          * while a video plays. AVPlay says nothing about its buffer, so it

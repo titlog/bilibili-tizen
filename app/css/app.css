@@ -313,6 +313,9 @@ body {
     border: 3px solid transparent;
 }
 .suggest.focused { border-color: #ff6699; background: rgba(255,102,153,0.18); }
+/* 最近搜过 / 热搜: a label on its own line above each group of chips. */
+.suggest-label { width: 100%; font-size: 24px; color: #8b959e; margin-top: 6px; }
+.suggest.clear { color: #8b959e; }
 
 /* end-of-video continuation card */
 /* The whole screen, not a strip along the bottom: the video is over, so there

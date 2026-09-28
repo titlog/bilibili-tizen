@@ -209,6 +209,28 @@ var SelfTest = (function () {
             if (!document.getElementById("panel-title").textContent) { return "面板标题为空"; }
             return null;
         }],
+        /* 播放速度 goes through Shaka's trickPlay, not the element — written to
+         * the element it reverts at the first stall. What is checked is the
+         * player's own answer and the badge that tells the viewer. Put back to
+         * 1x afterwards: it is sticky for the app run. */
+        ["面板里选 1.5 倍速", 600, function () {
+            var chip = document.querySelector('#opt-speed .opt[data-rate="1.5"]');
+            if (!chip) { post("跳过：这条路没有 1.5 倍（AVPlay 只有整数倍）"); window.__stNoRate = true; return null; }
+            Nav.focus(chip);
+            key(KEY.ENTER);
+            return null;
+        }],
+        ["倍速生效，角标写着 1.5x", 700, function () {
+            if (window.__stNoRate) { return null; }
+            var r = Player.rate();
+            var badge = document.getElementById("player-quality").textContent;
+            /* Back to 1x the way the viewer would, so the badge follows. */
+            var one = document.querySelector('#opt-speed .opt[data-rate="1"]');
+            if (one && one.onselect) { one.onselect(); } else { Player.setRate(1); }
+            if (r !== 1.5) { return "选了 1.5 倍，播放器说是 " + r + " 倍"; }
+            if (badge.indexOf("1.5x") < 0) { return "倍速变了但角标没写（" + badge + "）"; }
+            return null;
+        }],
         /* 右键必须走同一行。分P切片按自己的文字定宽，宽切片的右邻居中心能在
          * 五百像素外，而下一行只在九十像素下面 —— 纯中心距评分让「右」落进了
          * 下一行。多P稿件上焦点开在正在播的那一片，正是最宽的那种；单P稿件
