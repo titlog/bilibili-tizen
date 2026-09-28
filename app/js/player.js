@@ -221,7 +221,10 @@ var Player = (function () {
         watchdogPos = -1;
         watchdogAt = new Date().getTime();
         if (watchdogTimer) { return; }
-        watchdogTimer = setInterval(watchdogTick, 5000);
+        /* Every second: the thresholds below are 4–15s, and a five-second
+         * tick added up to five more on top of each (2026-09-28 22:15: a 10s
+         * threshold fired 17s after the last progress). */
+        watchdogTimer = setInterval(watchdogTick, 1000);
     }
 
     function stopWatchdog() {
@@ -255,11 +258,21 @@ var Player = (function () {
          * seconds feeding a connection pool that was already full).
          *
          * These three numbers are keyed to each other — see retryParameters. */
-        var need = (!marks || marks.playing === undefined) ? 10000
-                 : (incidentAt ? 14000 : 15000);
+        var firstFrame = !!(marks && marks.playing !== undefined);
+        var need = !firstFrame ? 10000 : (incidentAt ? 14000 : 15000);
+        /* No frame yet, yet seconds of media sit in the buffer and the
+         * element still cannot render (readyState < HAVE_FUTURE_DATA): the
+         * bytes are here and the decoder is not taking them. Waiting helps a
+         * slow network, not this. 2026-09-28 22:15 BV1jEhU6VEym: 1080p hvc1,
+         * buffer 0.0–10.0 two seconds in, readyState 1 for the next eighteen,
+         * then the file was excised and av01 was on screen in two. A healthy
+         * start paints within a second of its data arriving. */
+        var decoderStuck = !firstFrame && v.readyState < 3 && bufferedAhead(v) >= 3;
+        if (decoderStuck) { need = 4000; }
         if (now - watchdogAt < need) { return; }
         watchdogAt = now;
-        log("卡住 " + Math.round(need / 1000) + " 秒无错误也无进展，当作断连走重载阶梯" +
+        log("卡住 " + Math.round(need / 1000) + " 秒无错误也无进展，" +
+            (decoderStuck ? "数据在缓冲区里而首帧出不来，是解码卡住" : "当作断连") + "，走重载阶梯" +
             "（t=" + (v.currentTime || 0).toFixed(1) + "s" +
             " readyState=" + v.readyState +
             " 缓冲区间=" + bufferedRanges(v) + "）");
