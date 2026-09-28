@@ -106,12 +106,15 @@ node "$ROOT/tools/mirrors-verify.mjs" >/dev/null || { echo "  mirror ordering is
 
 echo "== packaging =="
 cd "$APP"
-rm -f ./*.wgt
+# (N): zsh aborts on a glob with no matches, and after a failed packaging run
+# there is no wgt left to match — the next deploy then died on this very line.
+rm -f ./*.wgt(N)
 tizen package -t wgt -s "$PROFILE" -- . 2>&1 | grep -E "Package File Location|error" || true
 # tizen names the package after <name> in config.xml, so never hard-code it:
 # renaming the app once left the installer pushing a stale wgt while the launch
 # step happily started the previously installed build.
-WGT=$(ls -1 ./*.wgt 2>/dev/null | head -1)
+WGTS=(./*.wgt(N))
+WGT=${WGTS[1]}
 [ -n "$WGT" ] || { echo "packaging produced no wgt"; exit 1; }
 echo "  built $WGT"
 
