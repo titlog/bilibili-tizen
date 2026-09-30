@@ -125,6 +125,9 @@ UP 主的全部投稿，返回键回到来的那个页签）。到画面约 **2.
 每条的来龙去脉在 [`docs/平台坑.md`](docs/平台坑.md)；全部测量、日志判据和排查纪律在
 [`CLAUDE.md`](CLAUDE.md)，那是这个项目的工作笔记，包括那些推翻了先前结论的记录。
 
+不限于 bilibili 的 Tizen 平台坑 —— 零售机上怎么拿到日志、`allow-navigation` 会悄悄打开 CSP、只有一个硬件解码器、
+视频走硬件视频层、MSE 常驻管线 —— 整理在 [tizen-tv-notes](https://github.com/titlog/tizen-tv-notes)。
+
 ## 目录
 
 ```

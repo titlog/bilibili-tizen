@@ -155,6 +155,10 @@ The stories behind each are in [`docs/平台坑.md`](docs/平台坑.md) (Chinese
 measurement, log line and the debugging discipline are in [`CLAUDE.md`](CLAUDE.md),
 the project's working notes, including the conclusions that were later overturned.
 
+The Tizen lessons that aren't specific to bilibili — getting logs off a retail set, how `allow-navigation`
+silently turns on a CSP, the single hardware decoder, the hardware video plane, a resident MSE pipeline — are
+collected in [tizen-tv-notes](https://github.com/titlog/tizen-tv-notes).
+
 ## Layout
 
 ```
