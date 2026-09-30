@@ -88,6 +88,13 @@ AVPlay 的 DASH 实现是对的，它只是坚持清单必须走 HTTP 到达，�
 下次直接用，而不是像社区版 Twitch 那样每次启动都必须联网 —— 断网时电视照样开得起来。
 jsdelivr 最快（55ms），三个托管都可达。
 
+> **⚠️ 这五条全通，只因为 `config.xml` 里没有 `<tizen:allow-navigation>` 和任何 `<tizen:content-security-policy*>`。**
+> 三者出现任何一个，应用就从「WARP 模式」（只由 `<access>` 管，没有 CSP）切到「CSP 模式」，没写 CSP 时套默认策略
+> `default-src *; script-src 'self'; style-src 'self'; object-src 'none';` —— `new Function`、`blob:` 脚本、远程脚本、
+> `data:` 图片、HTML 里的内联 `style` 属性**全部被拦，而且静默**（不抛异常，只有 `securitypolicyviolation` 事件说得出）。
+> 官方 Web Runtime 文档里写着，2026-09-30 设备实测：同一个探测 widget 只改一个变量装了 4 个变体，有
+> `allow-navigation` 的两个全拦、没有的两个全放，权限多少无关。**往 config.xml 里加这三个元素之前，先想想更新器。**
+
 > 这个探测本身踩了两个坑，都值得记。**一是 `FileStream` 没有 `readText()`**，
 > 只有 `read(charCount)`；写错的那次抛了未捕获的 TypeError，把探测拦腰打断，而
 > **唯一说出这件事的是 `window.onerror`**。二是最初写成
