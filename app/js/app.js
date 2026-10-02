@@ -3016,11 +3016,13 @@
     var NEXTUP_FIRST = 3;
     var NEXTUP_PAGE = 6;
 
-    /* Autoplays in a row with no key pressed in between. After three the
+    /* Autoplays in a row with no key pressed in between. After this many the
      * countdown is not started: a viewer who fell asleep otherwise chained
      * through related videos all night, each one filed into their bilibili
-     * history as watched. Any key resets it (Nav.onKey sees every press). */
-    var AUTOPLAY_UNATTENDED = 3;
+     * history as watched. Any key resets it (Nav.onKey sees every press).
+     * Was 3 until 2026-10-02 — that stopped ordinary lean-back viewing every
+     * few videos; 100 only catches the truly all-night case. */
+    var AUTOPLAY_UNATTENDED = 100;
     var autoplaysSinceKey = 0;
 
     function beginAutoNext() {
