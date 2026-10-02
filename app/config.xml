@@ -7,8 +7,8 @@
 
     <!-- The 10-char prefix must match the package attribute below.
          If Tizen Studio assigns you a different ID on import, let it win. -->
-    <tizen:application id="BiLiSpiKe0.BiliSpike"
-                       package="BiLiSpiKe0"
+    <tizen:application id="BiliTvApp0.Bilibili"
+                       package="BiliTvApp0"
                        required_version="6.0"/>
 
     <!-- Wildcard network access. On Tizen this widget access policy replaces

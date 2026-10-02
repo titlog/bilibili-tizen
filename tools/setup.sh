@@ -118,7 +118,7 @@ BILI_TV_IP="$TV_IP"
 BILI_TV_TARGET="$TARGET"
 BILI_TV_DUID="$TV_DUID"
 BILI_PROFILE="${BILI_PROFILE:-SamsungBili}"
-BILI_APP_ID="${BILI_APP_ID:-BiLiSpiKe0.BiliSpike}"
+BILI_APP_ID="${BILI_APP_ID:-BiliTvApp0.Bilibili}"
 EOF
 chmod 600 "$CONF"
 echo "     -> $CONF"

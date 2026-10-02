@@ -34,7 +34,7 @@ CONF="${BILI_TIZEN_CONF:-$HOME/.bilibili-tizen.conf}"
 PROFILE="${BILI_PROFILE:-SamsungBili}"
 TV_IP="${BILI_TV_IP:-}"
 TARGET="${BILI_TV_TARGET:-}"
-APP_ID="${BILI_APP_ID:-BiLiSpiKe0.BiliSpike}"
+APP_ID="${BILI_APP_ID:-BiliTvApp0.Bilibili}"
 
 if [ -z "$TV_IP" ]; then
   echo "没有配置电视地址。先跑一次：zsh tools/setup.sh"

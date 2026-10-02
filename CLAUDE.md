@@ -512,6 +512,12 @@ zsh tools/deploy.sh --selftest  # 同上，但构建会自己走一遍全流程�
 `collect.mjs`。收集器没开的话，上报静默失败。`tizen debug` 那个 Web Inspector
 是兜底手段，用在应用还没来得及上报任何东西就死掉的场合，比如加载期的语法错误。
 
+**应用编号是 `BiliTvApp0.Bilibili`（2026-10-02 起）。** 之前一直是探测版留下来的 `BiLiSpiKe0.BiliSpike`，
+2026-10-01 另一个项目的会话清理「spike」应用时按名字把正式版当探测版卸了。改编号在电视看来是另一个应用：
+旧的要单独卸（`tizen uninstall -p BiLiSpiKe0.BiliSpike -t <设备>`，或者电视上长按图标删），应用里存的东西
+（扫码登录、进度、自更新落盘的版本）不跟过来。`~/.bilibili-tizen.conf` 里的 `BILI_APP_ID` 同时改了。
+签名档 / 证书目录仍叫 `BiliSpike`，那是证书的名字，和应用编号无关，没动。
+
 ## 证书
 
 放在 `~/tizen-studio-data/SamsungCertificate/BiliSpike/`，**故意放在仓库外**，
