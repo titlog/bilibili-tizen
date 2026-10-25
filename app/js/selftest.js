@@ -977,6 +977,33 @@ var SelfTest = (function () {
             return null;
         }],
         ["下键拉出面板", 1200, function () { key(KEY.DOWN); return null; }],
+        /* 10-25, the viewer: down from 收藏, 看评论 or the speed chips went past
+         * 上一集 / 下一集 to the 合集 under them; only 弹幕 and 点赞 reached them.
+         * From the far end of the top row, down must land in the next row down
+         * — on 上一集 / 下一集 when they are there. The step after this one puts
+         * the ring back where the panel opens it. */
+        ["面板顶上一排最右边按下键，到紧挨着的下一排", 600, function () {
+            if (!visible("options")) { return "面板没有出现"; }
+            var top = document.querySelectorAll("#panel-actions .focusable"), from = top[top.length - 1];
+            if (!from) { return "面板顶上一排没有按钮"; }
+            Nav.focus(from);
+            var fr = from.getBoundingClientRect();
+            key(KEY.DOWN);
+            var to = Nav.current();
+            if (!to || to === from) { return "下键焦点没动"; }
+            var name = to.id || String(to.className).split(" ")[0];
+            if (visible("opt-episode-controls")) {
+                return /^panel-(prev|next)-episode$/.test(to.id) ? null
+                    : "有上一集 / 下一集，下键却越过它们落到了 " + name;
+            }
+            var tr = to.getBoundingClientRect(), all = document.querySelectorAll("#options .focusable");
+            for (var i = 0; i < all.length; i++) {
+                if (all[i].offsetParent === null) { continue; }
+                var r = all[i].getBoundingClientRect();
+                if (r.top >= fr.bottom - 6 && r.bottom <= tr.top + 6) { return "下键越过了中间那一排，落到了 " + name; }
+            }
+            return null;
+        }],
         /* 上一集 / 下一集 (PR #9, 10-25). Most recommended videos are one part
          * outside any 合集, so most runs only check that the buttons are not
          * there; with a next one, the panel must open on it and 确认 must play

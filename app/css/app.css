@@ -255,7 +255,7 @@ body.density-5 .card-info-date { display: block; width: 100%; margin: 2px 0 0; f
 }
 
 #panel-actions { margin: 22px 0 6px; }
-#panel-actions .btn { font-size: 24px; padding: 10px 24px; }
+#panel-actions .btn, #opt-episode-controls .btn { font-size: 24px; padding: 10px 24px; }
 /* Done: liked, coined, in a folder — lit the way the web page lights its icons. */
 #panel-actions .btn.act.on { color: #ff6699; border-color: rgba(255,102,153,0.55);
     background: rgba(255,102,153,0.12); }

@@ -85,4 +85,45 @@ Nav.focus(first);
 press("keydown", 40);
 assert.equal(Nav.current(), panelBelow, "Down must skip a card inside the veiled shell");
 veiled = null;
-console.log("✓ navigation: next row, short Enter, long Enter and repeat, nothing behind the player");
+
+/* The player's panel ("rows", 10-25): down from anywhere in the button row
+ * lands on 上一集 / 下一集, not on the 合集 tile under it. Laid out the way the
+ * panel was photographed: six buttons and a speed chip, two short buttons at
+ * the left edge, four tiles a row. */
+function panel(cls) {
+  const box = { className: cls, offsetParent: body, parentNode: body, scrollTop: 0,
+    scrollHeight: 0, clientHeight: 0,
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 1920, bottom: 580, width: 1920, height: 580 }) };
+  const at = (x, y, w, h) => {
+    const node = { className: "btn focusable", offsetParent: body, parentNode: box,
+      scrollHeight: 0, clientHeight: 0, getAttribute: () => null,
+      getBoundingClientRect: () => ({ left: x, top: y, right: x + w, bottom: y + h, width: w, height: h }) };
+    cards.push(node);
+    return node;
+  };
+  cards.length = 0;
+  const row = [64, 260, 470, 670, 880].map((x) => at(x, 0, 180, 56));
+  const speed = at(1200, 4, 100, 48);
+  const prev = at(64, 120, 136, 56), next = at(220, 120, 136, 56);
+  const tiles = [64, 516, 968, 1420].map((x) => at(x, 230, 436, 70));
+  return { row, speed, prev, next, tiles };
+}
+let p = panel("scroll rows");
+for (const from of [...p.row, p.speed]) {
+  Nav.focus(from);
+  press("keydown", 40);
+  assert.ok(Nav.current() === p.prev || Nav.current() === p.next,
+    "Down from any button in the panel's top row must land on 上一集 / 下一集");
+}
+Nav.focus(p.speed); press("keydown", 40);
+assert.equal(Nav.current(), p.next, "…the nearer of the two");
+Nav.focus(p.prev); press("keydown", 40);
+assert.equal(Nav.current(), p.tiles[0], "Down from 上一集 goes to the tile under it");
+Nav.focus(p.tiles[2]); press("keydown", 38);
+assert.equal(Nav.current(), p.next, "Up from a tile goes back to the episode row");
+Nav.focus(p.next); press("keydown", 38);
+assert.equal(Nav.current(), p.row[1], "Up from 下一集 goes to the button over it");
+p = panel("scroll");
+Nav.focus(p.row[3]); press("keydown", 40);
+assert.equal(Nav.current(), p.tiles[1], "Without \"rows\", down stays column-first (the tile under 收藏)");
+console.log("✓ navigation: next row, short Enter, long Enter and repeat, nothing behind the player, the panel goes row by row");

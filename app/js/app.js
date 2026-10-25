@@ -5751,7 +5751,7 @@
         optionsOpen = true;
         el("playerui").className = "hidden";
         document.body.className += " options-open";
-        el("options").className = "scroll";
+        el("options").className = "scroll rows";   /* nav.js reads both words: the scroller, up/down by row */
         el("options").scrollTop = 0;
         ot.mark("切布局");
 
@@ -5860,7 +5860,7 @@
         if (pa) { pa.more = ""; }
         paintActMore();
         document.body.className = document.body.className.replace(/\s*options-open/g, "");
-        el("options").className = "hidden scroll";
+        el("options").className = "hidden scroll rows";
         /* The thumbnails go with the screen: openOptions repaints from the list
          * every time anyway (that is how a late `related` response reaches an
          * open panel), so keeping them would only be images decoding behind a

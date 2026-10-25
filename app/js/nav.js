@@ -119,12 +119,27 @@ var Nav = (function () {
         else if (er.right > br.right - pad) { box.scrollLeft += er.right - (br.right - pad); }
     }
 
+    /* A box marked "rows" (the player's panel, 2026-10-25) is a stack of rows of
+     * different lengths, and there up and down go to the next row first, then
+     * to the nearest item in it. Column-first sent 收藏 / 看评论 / the speed
+     * chips straight past a two-button 上一集 / 下一集 row to the 合集 tiles
+     * under them, because only 弹幕 and 点赞 sat over those two buttons (the
+     * viewer: 「在后面几个按钮按了下键就跑到最下面的合集去了」). Not everywhere: on a
+     * screen of side-by-side columns the nearest row can be in the other one. */
+    function inRows(el) {
+        for (var n = el; n && n !== document.body; n = n.parentNode) {
+            if (n.className && (" " + n.className + " ").indexOf(" rows ") >= 0) { return true; }
+        }
+        return false;
+    }
+
     function move(dx, dy) {
         if (!current) { setFocus(focusables()[0]); return; }
         var from = centre(current);
         var best = null, bestScore = Infinity;
         var lane = null, laneScore = Infinity;
         var list = focusables();
+        var ahead = [], near = null;
 
         for (var i = 0; i < list.length; i++) {
             if (list[i] === current) { continue; }
@@ -137,6 +152,16 @@ var Nav = (function () {
             if (dx < 0 && ox >= -4) { continue; }
             if (dy > 0 && oy <= 4) { continue; }
             if (dy < 0 && oy >= -4) { continue; }
+            ahead.push({ el: list[i], to: to, ox: ox, oy: oy });
+            if (dy > 0 && (!near || to.r.top < near.r.top)) { near = to; }
+            if (dy < 0 && (!near || to.r.bottom > near.r.bottom)) { near = to; }
+        }
+        var rows = dy && near && inRows(current);
+
+        for (var j = 0; j < ahead.length; j++) {
+            to = ahead[j].to; ox = ahead[j].ox; oy = ahead[j].oy;
+            /* Rows: only what shares the nearest row's height. */
+            if (rows && !(to.r.top < near.r.bottom - 6 && to.r.bottom > near.r.top + 6)) { continue; }
 
             /* Distance along the axis of travel dominates; drift across it is
              * penalised so the eye follows a straight line. */
@@ -159,8 +184,8 @@ var Nav = (function () {
             var sameLane = dx
                 ? (to.r.top < from.r.bottom - 6 && to.r.bottom > from.r.top + 6)
                 : (to.r.left < from.r.right - 6 && to.r.right > from.r.left + 6);
-            if (sameLane && score < laneScore) { laneScore = score; lane = list[i]; }
-            if (score < bestScore) { bestScore = score; best = list[i]; }
+            if (sameLane && score < laneScore) { laneScore = score; lane = ahead[j].el; }
+            if (score < bestScore) { bestScore = score; best = ahead[j].el; }
         }
         if (lane) { setFocus(lane); }
         else if (best) { setFocus(best); }
