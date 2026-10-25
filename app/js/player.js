@@ -2971,6 +2971,22 @@ var Player = (function () {
 
         playProgressive: function (url, startMs) { reset(); playAvplay(url, startMs); },
         playLive: playLive,
+        /* What the MSE live watchdog in app.js reads each second: the playhead,
+         * and enough around it to tell a playlist that stopped growing (the
+         * live edge standing still) from bytes that arrived and are not being
+         * shown (seconds buffered ahead, readyState). */
+        liveProgress: function () {
+            if (mode !== "live") { return null; }
+            var v = el("html5-video"), edge = -1, buffering = false;
+            try {
+                if (shakaPlayer) {
+                    edge = shakaPlayer.seekRange().end;
+                    buffering = !!shakaPlayer.isBuffering();
+                }
+            } catch (e) {}
+            return { t: v.currentTime || 0, ahead: bufferedAhead(v), ranges: bufferedRanges(v),
+                     readyState: v.readyState, edge: edge, buffering: buffering };
+        },
         /* 直播 through AVPlay, from an HLS-TS playlist: for an engine whose MSE
          * cannot decode the live fMP4 (Tizen 3.0, issue #5). The AVPlay
          * listener's events are the same ones app.js already reads for live. */

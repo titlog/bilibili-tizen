@@ -4432,6 +4432,13 @@
      * 6–9.5 s here before its clock moved, and one 10.2 s start (10-22, 1.3.8
      * selftest) was read as "fMP4 cannot play" and closed the room. */
     var LIVE_NATIVE_FIRST_BUFFER = 20000;
+    /* MSE's playhead after the picture (10-25): 2300668, 原画 on MSE, stopped
+     * about twenty-five minutes in with no error and not one line in the log —
+     * Shaka kept quiet, the element raised nothing, and nothing else watched
+     * the live path once it was up. The viewer moved to another room and back
+     * after a few minutes, and it played. Fifteen seconds, as on demand: the
+     * time Shaka's own retries need before anything tears the player down. */
+    var LIVE_MSE_STALL = 15000;
 
     function openLive(v) {
         var cache = feedCache[state.screen];
@@ -4512,6 +4519,31 @@
                         onLiveEvent("error", "直播：MSE " + (LIVE_NATIVE_WAIT / 1000) + " 秒没出画面");
                     }
                 }, LIVE_NATIVE_WAIT);
+                /* ...and after the picture, its playhead has to move (LIVE_MSE_STALL).
+                 * The line says whether the live edge was still moving: a playlist
+                 * that stopped growing and a picture that stopped with bytes in
+                 * hand want different fixes, and this one had neither said. */
+                var seen = { t: -1, edge: -1, edgeAt: 0 };
+                var watch = setInterval(function () {
+                    if (liveRoom !== room || token !== room.token || room.failing || Player.mode() !== "live") {
+                        clearInterval(watch);
+                        return;
+                    }
+                    if (!room.timed) { return; }
+                    var s = Player.liveProgress(), now = new Date().getTime();
+                    if (!s) { return; }
+                    if (s.edge > seen.edge + 0.3) { seen.edge = s.edge; seen.edgeAt = now; }
+                    if (s.t > seen.t + 0.3) { seen.t = s.t; room.clockMovedAt = now; return; }
+                    if (Player.userPaused()) { room.clockMovedAt = now; return; }
+                    if (now - room.clockMovedAt <= LIVE_MSE_STALL) { return; }
+                    clearInterval(watch);
+                    var still = seen.edgeAt ? Math.round((now - seen.edgeAt) / 1000) : -1;
+                    onLiveEvent("error", "直播：MSE 放着放着 " + (LIVE_MSE_STALL / 1000) + " 秒画面没走（" + room.qnName +
+                                " t=" + s.t.toFixed(1) + "s 前方缓冲 " + s.ahead.toFixed(1) + "s 缓冲区间=" + s.ranges +
+                                " readyState=" + s.readyState + "，直播边缘" +
+                                (s.edge < 0 ? "读不到" : still >= 5 ? " " + still + " 秒没动" : "还在往前") +
+                                (s.buffering ? "，Shaka 说在缓冲" : "") + "）");
+                }, 1000);
             }
             if ((!liveNative || room.mseTry) && url && !room.mseRefused) { mse(""); return; }
             /* No fMP4 for Shaka: the FLV and TS are AVPlay's on any set (issue #7). */

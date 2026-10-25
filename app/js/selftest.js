@@ -1594,6 +1594,24 @@ var SelfTest = (function () {
             var moved = document.getElementById("live-meta").textContent !== probe.liveWas;
             return (moved && livePlaying()) ? null : WAIT;
         }, 30000, "换台 30 秒没出画面"],
+        /* 10-25: a room on MSE stopped mid-play with no error, and nothing
+         * watched the playhead once the picture was up. Pause the element
+         * behind the app's back: the playhead stops, and the room should
+         * reconnect by itself (15 s) and move again, still on MSE. */
+        ["直播：MSE 画面停住 → 自己重连、时间又走起来", 300, function () {
+            var st = window.__stLiveRoom() || {}, v = document.getElementById("html5-video");
+            if (!probe.mseFreeze) {
+                if (Player.mode() !== "live") { return "这个直播间不在 MSE 上"; }
+                probe.mseFreeze = { token: st.token, t0: -1 };
+                v.pause();
+                return WAIT;
+            }
+            if (st.token === probe.mseFreeze.token) { return WAIT; }
+            if (visible("shell")) { return "退回了网格（看 live: 那几行）"; }
+            if (Player.mode() !== "live" || !livePlaying()) { return WAIT; }
+            if (probe.mseFreeze.t0 < 0) { probe.mseFreeze.t0 = v.currentTime; return WAIT; }
+            return v.currentTime - probe.mseFreeze.t0 >= 1.5 ? null : WAIT;
+        }, 45000, "45 秒没重连起来（看 live: 那几行）"],
         /* Issue #7, 10-24 (Tizen 4.0): MSE could not decode one room's 原画, and
          * that moved the whole session onto an AVPlay that played nothing — the
          * room that had just played as well. Made to order: the next Shaka
