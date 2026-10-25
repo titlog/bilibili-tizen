@@ -4971,27 +4971,21 @@
         if (!playing) { cb(null); return; }
         var d = playing.detail, cid = playing.cid;
 
-        if (d.pages && d.pages.length > 1) {
-            for (var i = 0; i < d.pages.length - 1; i++) {
-                if (d.pages[i].cid === cid) {
-                    cb({ detail: d, cid: d.pages[i + 1].cid,
-                         title: "P" + (i + 2) + "  " + d.pages[i + 1].part });
-                    return;
-                }
-            }
+        /* The next part, then the next episode of the 合集, before anything
+         * the recommender thinks of: the uploader numbered them for a reason
+         * (2026-10-18). The 合集 only once the parts have run out — an episode
+         * can itself have parts. The panel's 下一集 asks the same function
+         * (episode-nav.js, PR #9), so the two cannot disagree. */
+        var adj = EpisodeNav.adjacent(d, cid, 1);
+        if (adj && adj.kind === "part") {
+            cb({ detail: d, cid: adj.cid, title: "P" + (adj.index + 1) + "  " + d.pages[adj.index].part });
+            return;
         }
-
-        /* The next episode of the 合集 before anything the recommender thinks
-         * of: the uploader numbered them for a reason (2026-10-18). Only once
-         * the parts above have run out — an episode can itself have parts. */
-        if (d.season) {
-            var at = seasonIndex(d.season, d.bvid);
-            if (at >= 0 && at + 1 < d.season.episodes.length) {
-                var ep = d.season.episodes[at + 1];
-                cb({ detail: seasonEpisodeDetail(ep), cid: ep.cid,
-                     title: "合集第 " + (at + 2) + " 集  " + ep.title });
-                return;
-            }
+        if (adj) {
+            var ep = d.season.episodes[adj.index];
+            cb({ detail: seasonEpisodeDetail(ep), cid: ep.cid,
+                 title: "合集第 " + (adj.index + 1) + " 集  " + ep.title });
+            return;
         }
 
         function fromList(list) {
@@ -5758,11 +5752,14 @@
         }
         ot.mark("相关");
 
-        /* The episode being watched when there is a list of them, else the
-         * row's first button. Spelled out since speed moved into the top row
-         * (2026-10-20): its current chip would win `#options .opt.current`. */
-        var firstFocus = ["#panel-next-episode", "#panel-prev-episode",
-                          "#opt-parts .opt.current", "#opt-season .opt.current", "#panel-dm"];
+        /* 下一集 when there is one (PR #9, 10-25): 下键 then 确认 is the next
+         * part. Else the episode being watched when there is a list of them —
+         * not 上一集, which on the last episode would make that 确认 go
+         * backwards — else the row's first button. Spelled out since speed
+         * moved into the top row (2026-10-20): its current chip would win
+         * `#options .opt.current`. */
+        var firstFocus = ["#panel-next-episode", "#opt-parts .opt.current",
+                          "#opt-season .opt.current", "#panel-dm"];
         for (var ff = 0; ff < firstFocus.length; ff++) {
             var ffNode = document.querySelector(firstFocus[ff]);
             if (ffNode && ffNode.offsetParent !== null) { Nav.focus(ffNode); break; }

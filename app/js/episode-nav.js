@@ -1,5 +1,5 @@
-/* Adjacent parts and collection episodes. Shared by the player's shortcut
- * buttons; recommendations are intentionally excluded. ES5 for older Tizen. */
+/* Adjacent parts and collection episodes: the panel's 上一集 / 下一集 and
+ * autoplay's next (app.js nextUp). Recommendations are never an episode. */
 var EpisodeNav = (function () {
     "use strict";
     function adjacent(detail, cid, direction) {
@@ -11,10 +11,7 @@ var EpisodeNav = (function () {
         if (at >= 0 && pages[at + direction]) {
             return { kind: "part", cid: pages[at + direction].cid, index: at + direction };
         }
-        /* At the edge of a multi-part upload, continue through its collection. */
-        if (at >= 0 && ((direction < 0 && at !== 0) || (direction > 0 && at !== pages.length - 1))) {
-            return null;
-        }
+        /* Past the first or last part (or a single one): the collection's. */
         var season = detail.season, episodes = season && season.episodes;
         if (!episodes) { return null; }
         var current = -1;

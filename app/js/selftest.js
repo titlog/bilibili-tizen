@@ -895,6 +895,47 @@ var SelfTest = (function () {
             return null;
         }],
         ["下键拉出面板", 1200, function () { key(KEY.DOWN); return null; }],
+        /* 上一集 / 下一集 (PR #9, 10-25). Most recommended videos are one part
+         * outside any 合集, so most runs only check that the buttons are not
+         * there; with a next one, the panel must open on it and 确认 must play
+         * it. In this block because it leaves the player anyway. */
+        ["面板的上一集 / 下一集跟着分 P 和合集走，有下一集就按", 900, function () {
+            if (!visible("options")) { return "面板没有出现"; }
+            rel.epFrom = null;
+            var prev = visible("panel-prev-episode"), next = visible("panel-next-episode");
+            var parts = document.querySelectorAll("#opt-parts .opt[data-cid]"), at = -1;
+            for (var i = 0; i < parts.length; i++) { if (/\bcurrent\b/.test(parts[i].className)) { at = i; } }
+            if (!visible("opt-parts-group") && !visible("opt-season-group") && (prev || next)) {
+                return "没有分 P 也不在合集里，面板却有" + (next ? "下一集" : "上一集");
+            }
+            if (at >= 0 && at < parts.length - 1 && !next) { return "正在看 P" + (at + 1) + " / " + parts.length + "，面板没有下一集"; }
+            if (at > 0 && !prev) { return "正在看 P" + (at + 1) + "，面板没有上一集"; }
+            if (!next) { post("跳过：这个视频后面没有下一 P，也没有合集的下一集"); return null; }
+            var btn = document.getElementById("panel-next-episode");
+            /* The part list can arrive after the panel opened, and a list that
+             * lands later must not move the focus — so reopen once, the way
+             * a viewer would, before holding it to where the panel opens. */
+            if (Nav.current() !== btn) { key(KEY.RETURN); key(KEY.DOWN); }
+            if (Nav.current() !== btn) { return "有下一集，面板却没有开在它上面"; }
+            rel.epFrom = document.getElementById("player-title").textContent + " · " +
+                         document.getElementById("player-part").textContent;
+            key(KEY.ENTER);
+            return null;
+        }],
+        ["按了下一集：换过去，画面起来了", 1000, function () {
+            if (!rel.epFrom) { return null; }
+            if (visible("shell")) { return "按了下一集退回了网格"; }
+            if (visible("options")) { return "按了下一集，面板还开着"; }
+            var now = document.getElementById("player-title").textContent + " · " +
+                      document.getElementById("player-part").textContent;
+            if (now === rel.epFrom || visible("player-loading")) { return WAIT; }
+            post("下一集：" + rel.epFrom.slice(0, 30) + " → " + now.slice(0, 30));
+            return null;
+        }, 20000, "20 秒了下一集还没放起来"],
+        ["下键再拉出面板", 1200, function () {
+            if (rel.epFrom) { key(KEY.DOWN); }
+            return null;
+        }],
         ["面板顶上有 UP 主芯片", 900, function () {
             if (!visible("options")) { return "面板没有出现"; }
             var chip = document.getElementById("panel-up");
