@@ -295,7 +295,11 @@ var SelfTest = (function () {
             if (!visible("panel-like") || !visible("panel-coin") || !visible("panel-fav")) {
                 return "三个按钮不全";
             }
-            if (document.getElementById("opt-danmaku")) { return "面板里又出现了弹幕那一排"; }
+            /* Any group about 弹幕, not one id: PR #10 brought one back as
+             * #opt-dm-area and this check, written for #opt-danmaku, let it by. */
+            var dmRow = !!document.getElementById("opt-danmaku"), labels = document.querySelectorAll("#options .opt-label");
+            for (var li = 0; li < labels.length; li++) { if (/弹幕/.test(labels[li].textContent)) { dmRow = true; } }
+            if (dmRow) { return "面板里又出现了弹幕那一排"; }
             if (!Auth.isLoggedIn()) { post("跳过：没登录，读不了点赞状态"); return null; }
             if (!API.videoActionReady() || !Accounts.active() || !Accounts.active().mid) {
                 post("跳过：这个账号是网页扫码登录的（或还没有 mid），面板不读这些状态");
@@ -1034,6 +1038,21 @@ var SelfTest = (function () {
             return changed && retained && shown && Settings.get("autoplayNext", true) === before
                 ? null : "开关切换、重进设置或恢复原偏好失败";
         }],
+        /* PR #10 (10-25): three places, so three presses come back round. */
+        ["弹幕位置按三下转一圈回到原值", 300, function () {
+            var btn = document.getElementById("btn-danmaku-area");
+            if (!btn) { return "设置页里没有弹幕位置"; }
+            var before = Settings.get("danmakuArea", "upper"), seen = {}, n = 0;
+            Nav.focus(btn);
+            for (var i = 0; i < 3; i++) {
+                key(KEY.ENTER);
+                if (!seen[btn.textContent]) { seen[btn.textContent] = 1; n++; }
+            }
+            Nav.focus(document.getElementById("btn-autoplay"));
+            post("弹幕位置：" + Object.keys(seen).join(" → "));
+            return n === 3 && Settings.get("danmakuArea", "upper") === before
+                ? null : "三下看到 " + n + " 种写法，设置 " + before + " → " + Settings.get("danmakuArea", "upper");
+        }],
         /* 2026-10-21. Only that the section is there and says what it should;
          * uploading is --diag's job, and this build has nowhere to send to. */
         ["诊断日志：开关、上传按钮在，写着这台电视的编号", 300, function () {
@@ -1384,25 +1403,42 @@ var SelfTest = (function () {
             }
             probe.dmWas = Settings.get("danmaku", "normal");
             Settings.set("danmaku", "normal");
+            /* 全屏 (PR #10): the layer is the whole picture and the renderer
+             * reads its height, so the rows below the default 756px fill too. */
+            probe.dmAreaWas = Settings.get("danmakuArea", "upper");
+            Settings.set("danmakuArea", "full");
             var card = document.querySelector('#feed-grid .card[data-i="0"]');
-            if (!card) { Settings.set("danmaku", probe.dmWas); probe.dm = null; return "网格里找不到第一张卡片"; }
+            if (!card) {
+                Settings.set("danmaku", probe.dmWas); Settings.set("danmakuArea", probe.dmAreaWas);
+                probe.dm = null; return "网格里找不到第一张卡片";
+            }
             Nav.focus(card);
             key(KEY.ENTER);
             probe.dmSeen = "";
+            probe.dmLow = 0;
             probe.dmTimer = setInterval(function () {
                 var n = document.querySelector("#danmaku .dm");
                 if (!probe.dmSeen && visible("danmaku") && n && n.textContent) { probe.dmSeen = n.textContent; }
+                var all = document.querySelectorAll("#danmaku .dm");
+                for (var i = 0; i < all.length; i++) {
+                    var top = all[i].getBoundingClientRect().top;
+                    if (top >= 756 && top > probe.dmLow) { probe.dmLow = Math.round(top); }
+                }
             }, 250);
             return null;
         }],
         ["弹幕：20 秒内画面上有弹幕", 20000, function () {
             if (!probe.dm) { return null; }
             clearInterval(probe.dmTimer);
-            post("弹幕池 " + probe.dm.n + " 条，画面上：「" + (probe.dmSeen || "").slice(0, 20) + "」");
-            return probe.dmSeen ? null : "播了 20 秒，画面上一条弹幕都没出现";
+            var h = document.getElementById("danmaku").clientHeight;
+            post("弹幕池 " + probe.dm.n + " 条，画面上：「" + (probe.dmSeen || "").slice(0, 20) + "」；全屏，弹幕层高 " + h +
+                 (probe.dmLow ? "，最低一条在 " + probe.dmLow + "px" : "，756px 以下没飞过弹幕"));
+            if (!probe.dmSeen) { return "播了 20 秒，画面上一条弹幕都没出现"; }
+            return h === 1080 ? null : "弹幕位置设成全屏，弹幕层只有 " + h + "px 高";
         }],
         ["弹幕：退出播放，设置恢复原样", 600, function () {
             if (!probe.dm) { return null; }
+            Settings.set("danmakuArea", probe.dmAreaWas);
             if (visible("shell")) { Settings.set("danmaku", probe.dmWas); return "不在播放（没有返回，免得在首页按返回把应用退了）"; }
             key(KEY.RETURN);
             Settings.set("danmaku", probe.dmWas);

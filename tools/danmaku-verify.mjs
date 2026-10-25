@@ -40,7 +40,7 @@ const T = ctx.Danmaku.test;
 console.log("显示区域");
 const area = ctx.Danmaku.area, areaClass = ctx.Danmaku.areaClass;
 check(["top", "upper", "full", "bad"].map(area).join(",") === "top,upper,full,upper",
-  "三种区域、未知设置回到避开底部");
+  "三种区域、未知设置回到避开字幕");
 check(areaClass("top", true) === "dm-area-top" &&
       areaClass("full", false) === "dm-area-full hidden", "开关不丢失区域设置");
 const css = fs.readFileSync(path.join(ROOT, "app/css/app.css"), "utf8");
@@ -50,9 +50,9 @@ const height = (selector) => {
   return match && Number(match[1]);
 };
 check(height("#danmaku.dm-area-top") === 270 &&
-      height("#danmaku.dm-area-upper") === 810 &&
+      height("#danmaku.dm-area-upper") === 756 && height("#danmaku") === 756 &&
       height("#danmaku.dm-area-full") === 1080,
-  "顶部 1/4、避开底部 1/4、全屏对应 1080p 画布");
+  "顶部 1/4、避开字幕（默认，上面 756px）、全屏对应 1080p 画布");
 check(height(".options-open #danmaku.dm-area-top") === 270 &&
       height(".options-open #danmaku") === 496,
   "播放面板展开时弹幕不盖住操作区");

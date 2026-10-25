@@ -3065,7 +3065,9 @@
     var DM_LEVELS = ["off", "low", "normal", "high"];
     var DM_NAMES = { off: "关", low: "少", normal: "标准", high: "多" };
     var DM_AREAS = ["top", "upper", "full"];
-    var DM_AREA_NAMES = { top: "顶部 1/4", upper: "避开底部 1/4", full: "全屏" };
+    /* Where they fly (PR #10, 10-25): a setting of this television, in 设置
+     * only, like the level. "upper" is the 756px above the subtitles. */
+    var DM_AREA_NAMES = { top: "顶部 1/4", upper: "避开字幕", full: "全屏" };
     var dm = null;            /* the renderer, built on first use */
     var viewerPaused = false; /* what setPaused last asked for; danmaku stop with it */
     function danmakuLevel() {
@@ -5555,21 +5557,6 @@
         }
     }
 
-    function paintDanmakuArea() {
-        var chips = document.querySelectorAll("#opt-dm-area .opt");
-        for (var i = 0; i < chips.length; i++) {
-            (function (node) {
-                var value = node.getAttribute("data-area");
-                node.className = "opt focusable" + (value === danmakuArea() ? " current" : "");
-                node.onselect = function () {
-                    setDanmakuArea(value);
-                    paintDanmakuArea();
-                    Nav.focus(node);
-                };
-            })(chips[i]);
-        }
-    }
-
     /* bilibili writes 「-」 for an upload with no description, and the panel
      * showed it as a stray dash under the uploader (10-20, the viewer: 「up 主
      * 下面那一行是啥？」). Blank, or only punctuation: no line at all. */
@@ -5770,7 +5757,9 @@
         paintEpisodeControls();
         paintSpeed();
         ot.mark("倍速");
-        paintDanmakuArea();
+        /* No 弹幕 row since 2026-10-20 (the viewer: 「弹幕的设置入口，就保留在统一设置的
+         * 那个入口」) — it is a setting of this television, not of one video.
+         * PR #10's 弹幕位置 row went the same way (10-25): 设置 only. */
 
         /* Related videos live in the panel now, so "what else" never costs the
          * viewer their place in the video. All of them, not the first sixteen:
