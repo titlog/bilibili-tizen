@@ -190,6 +190,28 @@ var SelfTest = (function () {
         return bad.length ? ("这些分区取不到内容：" + bad.join("、")) : null;
     }
 
+    /* 10-25: a Tizen 4.0 set's history and follows were refused by the gateway
+     * for their Origin and now go through a frame on api.bilibili.com. This
+     * set's never are, so the frame route is forced for one history report of
+     * the video playing — a real write, of progress it is making anyway. */
+    var frameWrite = null;
+
+    function frameWriteStep() {
+        if (!frameWrite) {
+            var ids = window.__stPlayingIds && window.__stPlayingIds();
+            if (!ids || !ids.aid || !ids.cid) { return WAIT; }   /* aid comes with view() */
+            frameWrite = {};
+            API._selftest.gateWrites(true);
+            API.report(ids.aid, ids.cid, Math.max(5, Math.floor(Player.position() || 0)),
+                       function () { frameWrite.ok = true; },
+                       function (why) { frameWrite.why = why; });
+            return WAIT;
+        }
+        if (!frameWrite.ok && !frameWrite.why) { return WAIT; }
+        API._selftest.gateWrites(false);
+        return frameWrite.ok ? null : "从框里上报失败：" + frameWrite.why;
+    }
+
     /* The end-of-video chooser, checked and then immediately disarmed.
      *
      * The countdown is eight seconds and the video reaches its end somewhere
@@ -281,6 +303,7 @@ var SelfTest = (function () {
             var t = document.getElementById("player-pos").textContent;
             return (t && t !== "0:00") ? null : "进度停在 0:00";
         }],
+        ["写操作改走 api.bilibili.com 的框：进度上报过得去", 300, frameWriteStep, 20000, "20 秒了框里的上报还没回来"],
         ["下键拉出面板", 1200, function () {
             key(KEY.DOWN);
             return null;

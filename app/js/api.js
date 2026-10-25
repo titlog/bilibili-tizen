@@ -12,6 +12,8 @@ var API = (function () {
     /* 直播 lives on its own host (2026-10-18). */
     var LIVE = "https://api.live.bilibili.com";
     var strongState = null;
+    /* Lines for the log from the detours below; app.js points it at report(). */
+    var note = function () {};
     /* Until when API.view asks its wbi twin first — see view(). */
     var viewGatedUntil = 0;
     var VIEW_GATE_MEMORY = 30 * 60 * 1000;
@@ -129,7 +131,6 @@ var API = (function () {
      * is why `Auth.csrf()` is checked by the caller rather than here — a write
      * that cannot be signed is not an error worth surfacing on a television. */
     function postForm(url, fields, headers, onOk, onFail) {
-        var xhr = new XMLHttpRequest();
         var settled = false;
         function fail(why) { if (!settled) { settled = true; if (onFail) { onFail(why); } } }
         function ok(j) { if (!settled) { settled = true; if (onOk) { onOk(j); } } }
@@ -146,6 +147,119 @@ var API = (function () {
             body = parts.join("&");
         }
 
+        var framed = url.indexOf(BASE + "/") === 0;
+        if (framed && originGated) { postInFrame(url, body, ok, fail); return; }
+        sendForm(new XMLHttpRequest(), url, body, headers, ok, function (why, gate) {
+            if (!gate || !framed) { fail(why); return; }
+            originGated = true;
+            note("api", "写操作被 B 站网关按来源拒了（" + url.slice(BASE.length).split("?")[0] +
+                 " " + why + " 网页），这次运行的写操作改从 api.bilibili.com 的框里发");
+            postInFrame(url, body, ok, function (why2) { fail(why + "；从框里发：" + why2); });
+        });
+    }
+
+    /* ── Writes the gateway refuses for their Origin (2026-10-25) ──
+     *
+     * A Tizen 4.0 set (Chromium 56), signed in with access_key, read everything
+     * and wrote nothing for days: history/report and relation/modify came back
+     * HTTP 403 by both credentials. That 403 is bilibili's gateway, not the API
+     * — an HTML page, not JSON — and it is about the Origin header. One POST
+     * each to history/report from the dev machine the same afternoon: no Origin,
+     * or https://www / api / app / space.bilibili.com, gets 200 and JSON;
+     * Origin file://, null or app://… gets the 403 page. GETs are checked the
+     * same way (nav with Origin file:// is 403 too), but an engine sends Origin
+     * only on a POST, which is why reads were fine there. That set sends the
+     * widget's own origin on every POST; the CU7090 (Chromium 120) sends none,
+     * so nothing here ever met it. Behind the check: history/report and every
+     * relation path (modify, batch/modify, tags/addUsers) on every host
+     * (api.biliapi.net/.com too). Not behind it: app.bilibili.com/x/v2/view/like
+     * and coin/add, medialist/gateway/coll/resource/deal — 赞、投币、收藏 work.
+     *
+     * So no other endpoint is a way round; douyin-tizen's frame is. A widget may
+     * script a cross-origin frame. With one on api.bilibili.com/robots.txt (30
+     * bytes of text), that frame's own fetch makes the POST same-origin, and it
+     * goes out as Origin https://api.bilibili.com, which the gateway lets
+     * through. Only after a gateway 403, then for the rest of the run, and only
+     * for api.bilibili.com. Whether Chromium 56 lets the frame be scripted has
+     * not been seen yet (douyin's has, on Tizen 6.5 and 9.0); the note says.
+     *
+     * fetch, not the frame's XMLHttpRequest: same-origin, an XHR would carry the
+     * frame's cookies whatever withCredentials says, and the jar may belong to a
+     * different account than the access_key in the body. A body with access_key
+     * goes without them; only the jar's own csrf route sends them. */
+    var originGated = false;     /* a gateway 403 came back this run */
+    var gateFrame = null;        /* { win, waiting } while it loads and after */
+    var gateFrameBroken = "";    /* why it cannot be used, once known */
+    var gateFrameNoted = false;
+
+    function withGateFrame(done) {
+        if (gateFrameBroken) { done(null, gateFrameBroken); return; }
+        if (gateFrame && gateFrame.win) { done(gateFrame.win, ""); return; }
+        if (gateFrame) { gateFrame.waiting.push(done); return; }
+        var f = document.createElement("iframe");
+        gateFrame = { win: null, waiting: [done] };
+        function settle(win, why) {
+            clearTimeout(timer);
+            var waiting = gateFrame.waiting;
+            gateFrame.waiting = [];
+            gateFrame.win = win;
+            if (!win) {
+                gateFrameBroken = why;
+                gateFrame = null;
+                if (f.parentNode) { f.parentNode.removeChild(f); }
+            }
+            for (var i = 0; i < waiting.length; i++) { waiting[i](win, why); }
+        }
+        var timer = setTimeout(function () { settle(null, "框 10 秒没装上"); }, 10000);
+        f.onload = function () {
+            var win = f.contentWindow;
+            try { void win.location.href; } catch (e) {
+                settle(null, "这台电视不让脚本进跨域框（" + e.name + "）"); return;
+            }
+            settle(win.fetch ? win : null, win.fetch ? "" : "框里没有 fetch");
+        };
+        f.style.cssText = "position:absolute;left:0;top:0;width:1px;height:1px;border:0;opacity:0;pointer-events:none";
+        f.src = BASE + "/robots.txt";
+        document.body.appendChild(f);
+    }
+
+    function postInFrame(url, body, ok, fail) {
+        function said(line) {
+            if (gateFrameNoted) { return; }
+            gateFrameNoted = true;
+            note("api", line);
+        }
+        withGateFrame(function (win, why) {
+            if (!win) { said("框用不了：" + why + "，写操作只能失败"); fail(why); return; }
+            var t0 = new Date().getTime();
+            win.fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: body,
+                credentials: /(^|&)access_key=/.test(body) ? "omit" : "same-origin"
+            }).then(function (res) {
+                return res.text().then(function (t) {
+                    if (res.status !== 200) {
+                        said("从框里发也被拒：HTTP " + res.status + (/^\s*</.test(t) ? " 网页" : ""));
+                        fail("HTTP " + res.status);
+                        return;
+                    }
+                    var j;
+                    try { j = JSON.parse(t); } catch (e) { fail("bad JSON"); return; }
+                    said("从框里发过去了（" + (new Date().getTime() - t0) + "ms，code " + j.code + "）");
+                    if (j.code !== 0) { fail("code " + j.code + " " + (j.message || "")); return; }
+                    ok(j);
+                });
+            }).then(null, function (e) {
+                said("从框里发失败：" + ((e && e.message) || e));
+                fail("network error");
+            });
+        });
+    }
+
+    /* `fail(why, refusedPage)`: the second argument is true for the gateway's
+     * 403 page, the one thing postForm answers by going round. */
+    function sendForm(xhr, url, body, headers, ok, fail) {
         xhr.open("POST", url, true);
         xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
         applySession(xhr);
@@ -159,7 +273,10 @@ var API = (function () {
         xhr.timeout = 20000;
         xhr.onreadystatechange = function () {
             if (xhr.readyState !== 4) { return; }
-            if (xhr.status !== 200) { fail("HTTP " + xhr.status); return; }
+            if (xhr.status !== 200) {
+                fail("HTTP " + xhr.status, xhr.status === 403 && /^\s*</.test(xhr.responseText || ""));
+                return;
+            }
             var j;
             try { j = JSON.parse(xhr.responseText); }
             catch (e) { fail("bad JSON"); return; }
@@ -387,6 +504,14 @@ var API = (function () {
     return {
         /* Which cover format this set was given, for the boot line. */
         thumbFormat: THUMB_FORMAT,
+
+        onNote: function (fn) { note = fn; },
+
+        /* deploy.sh --selftest walks the detour on a set that never needs it:
+         * this television's writes carry no Origin. */
+        _selftest: {
+            gateWrites: function (on) { originGated = !!on; }
+        },
 
         setCardWidth: function (px) { if (px > 0) { cardWidth = px; } },
 

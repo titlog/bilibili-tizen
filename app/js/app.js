@@ -2525,6 +2525,10 @@
                  label: playing.timedLabel || "", shown: !!playing.shown };
     };
     window.__stForgetRefusal = function () { webRefusedAt = 0; };
+    /* The video playing, for the selftest's one forced write through the frame. */
+    window.__stPlayingIds = function () {
+        return playing && playing.detail ? { aid: playing.detail.aid || 0, cid: playing.cid || 0 } : null;
+    };
     /* The panel's three buttons: what was read, without pressing anything. */
     window.__stPanelActs = function () {
         return pa ? { loaded: pa.loaded, loading: pa.loading, liked: pa.liked, coins: pa.coins,
@@ -7980,6 +7984,7 @@
         statusEl = el("status");
         toastEl = el("toast");
         Diag.init({ report: report });
+        API.onNote(report);
 
         Nav.registerKeys();
         Nav.onNote(function (m) { report("nav", m); });

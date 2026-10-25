@@ -109,7 +109,7 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
   （10-25：接收端 404 了八小时，那段时间的全丢了；认旧版本写的「没传上」，不占三分钟间隔）。**从源码装的构建也传**（1.4.1 起：#7 那台源码构建出了事，一行都没到我们这）；
   自测构建不传，`BILI_DIAG_TO=off` 不传（**这台开发机的 `~/.bilibili-tizen.conf` 里写着**，换电脑要补上），`BILI_DIAG_TO=<地址>` 传到那里。
   **桌面浏览器（UA 里没有 Tizen）一律不传**（10-23：抖音的桌面测试台没拦接收端，写到一半的代码报的错传上去两条，像两台新电视）。→ `server/README.md`
-- 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 138 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
+- 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 139 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
   **能靠按键复现的 bug，就给它加一步。** 等网络的步骤返回 `WAIT` 轮询，不写死等待；每次放的视频是推荐流里随手拿的，
   一步失败先看是不是只对那一部片子成立。
 
@@ -191,6 +191,9 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
   它的凭证在引擎全局 cookie jar 里、看不见，`withCredentials` 只在活动账号是 jar 的主人时设。
 - 写接口：点赞、投币、收藏、关注、播放进度上报都认 access_key；评论的写接口从电视发是 403，评论只读；
   **没有凭证时一个写请求都不发**（`compat-api-verify` 卡着）。
+- **老引擎（Chromium 56）的 POST 带着 widget 自己的 Origin**，进度上报和关注的路径被网关按 Origin 拒（HTTP 403 网页，不是 JSON）；
+  点赞、投币、收藏的路径不查。撞到那页 403 后这次运行的 api.bilibili.com 写请求改从 `api.bilibili.com/robots.txt` 的隐藏框里用 `fetch` 发
+  （同源，Origin 是 bilibili 的；带 access_key 时不带框里的 cookie）。Chromium 56 让不让进框还没见过，日志 `api:` 那行会说。→ `docs/账号与登录.md`
 - Token 续期没做：参数没对着服务器验证过，不往保管全家凭证的路径里塞猜测；`isLogin:false` 二义，不据此销毁账号。
 - 账号层的 bug 是静默的，所以在设备之外测（`accounts-verify.mjs`）。
 
@@ -286,6 +289,7 @@ tools/
   readme-shots.mjs    README 的截图（首页、搜索、弹幕、面板、设置、直播、顶栏；SHOTS=01,02 只拍几张；桌面浏览器、未登录、
                       会连哔哩哔哩，跑一次就好），先出到 dist/readme-shots 挑过再放进 docs/screenshots
   update-key.mjs      生成签名钥匙（只在换钥匙时用；--show 查对不对得上）
+  gated-verify.mjs    写操作被网关按 Origin 拒后改走框；卡发布
   diag-verify.mjs     诊断日志：去隐私、什么时候传什么时候不传、worker 收什么拒什么（node:sqlite 冒充 D1）、app.js 里没包的标题；卡发布
   diag-logs.mjs       读接收端里的诊断日志（令牌在 ~/.bilibili-tizen-diag-token）
   diag-local.mjs      本机冒充接收端（:8097），给 deploy.sh --diag 用
