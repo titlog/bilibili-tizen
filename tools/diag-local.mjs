@@ -6,13 +6,18 @@
  *   node tools/diag-local.mjs
  *   BILI_DIAG_URL=http://localhost:8097 BILI_DIAG_TOKEN=local node tools/diag-logs.mjs
  *
- * In memory: stopping it forgets everything. */
+ * In memory: stopping it forgets everything.
+ *
+ * FAIL=404 node tools/diag-local.mjs refuses every upload with that status, as
+ * the real hostname did for eight hours on 10-25 — to stage a missed upload
+ * that the next start sends again (diag.js, retryMissed). */
 import http from "node:http";
 import { d1 } from "./d1-sqlite.mjs";
 
 const worker = (await import("../server/diag-worker.mjs")).default;
 const PORT = Number(process.env.PORT || 8097);
 const env = { DB: d1(), READ_TOKEN: "local" };
+const FAIL = Number(process.env.FAIL || 0);
 
 http.createServer(async (req, res) => {
   const chunks = [];
@@ -21,7 +26,10 @@ http.createServer(async (req, res) => {
   const request = new Request("http://" + (req.headers.host || "localhost") + req.url, {
     method: req.method, headers: req.headers, body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
   });
-  const response = await worker.fetch(request, env);
+  const staged = FAIL && req.url.startsWith("/v1/upload") && req.method === "POST";
+  const response = staged
+    ? new Response(JSON.stringify({ error: "staged" }), { status: FAIL, headers: { "Content-Type": "application/json" } })
+    : await worker.fetch(request, env);
   const text = await response.text();
   if (req.url.startsWith("/v1/upload") && req.method === "POST") {
     let d = {}; try { d = JSON.parse(body.toString("utf8")); } catch (e) {}

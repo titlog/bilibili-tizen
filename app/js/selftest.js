@@ -2090,6 +2090,23 @@ var SelfTest = (function () {
         ["首页加载出卡片", 500, function () {
             return count("#feed-grid .card") > 1 ? null : WAIT;
         }, 20000, "20 秒了首页还没有卡片"],
+        /* 10-25: an upload that failed goes again a minute after the next
+         * start. To see it, run this mode once with the stand-in refusing
+         * (FAIL=404 node tools/diag-local.mjs — the uploads below fail), then
+         * again with it answering: here the missed one goes, before the
+         * manual upload below would make it moot. */
+        ["上次没传上的，这次启动后补传", 1000, function () {
+            if (dg.pending === undefined) {
+                dg.pending = Diag.status().pending;
+                if (!dg.pending) { post("跳过：上次的都传上了，没有要补传的"); return null; }
+                post("上次有没传上的，等补传（启动后一分钟，或三分钟间隔过了）");
+            }
+            var last = Diag.status().last;
+            if (!last) { return WAIT; }
+            if (!last.ok) { return "补传没传上：" + last.why; }
+            post("补传：编号 " + last.id);
+            return Diag.status().pending ? "补传了，还说有没传上的" : null;
+        }, 240000, "4 分钟了还没补传"],
         ["进设置，诊断日志开着、有接收地址", 300, function () {
             Nav.focus(document.querySelector('#tabs .tab[data-screen="settings"]'));
             key(KEY.ENTER);
@@ -2125,10 +2142,18 @@ var SelfTest = (function () {
         }],
         ["出一次事：8 秒后自动上传", 300, function () {
             dg.before = (Diag.status().last || {}).id;
+            /* Run twice within three minutes, the second run's incident is
+             * held back by the first's automatic upload: that is the gap
+             * working, not this failing. */
+            var sent = null;
+            try { sent = JSON.parse(localStorage.getItem("bili.diag.sent")); } catch (e) {}
+            dg.held = !!(sent && sent.at && new Date().getTime() - sent.at < Diag._test.AUTO_GAP);
+            if (dg.held) { post("跳过：三分钟内刚自动传过一份，这次出事会被拦下（连着跑 --diag 会这样）"); return null; }
             Diag.incident("自测：造的一次出事");
             return null;
         }],
         ["自动上传有了新编号", 1000, function () {
+            if (dg.held) { return null; }
             var last = Diag.status().last || {};
             if (last.id && last.id !== dg.before && !last.manual) { post("自动上传：编号 " + last.id); return null; }
             if (last.ok === false && !last.manual) { return "没传上：" + last.why; }

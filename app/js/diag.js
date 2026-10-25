@@ -40,6 +40,7 @@ var Diag = (function () {
     var AUTO_PER_DAY = 12;      /* …and a dozen a day: a set stuck in a loop must not become a firehose */
     var MANUAL_GAP = 10000;
     var PERSIST_EVERY = 15000;
+    var RETRY_AFTER = 60000;    /* a missed upload goes again this long after the next start */
 
     var OPEN = "", CLOSE = "";
 
@@ -211,7 +212,7 @@ var Diag = (function () {
     }
 
     /* reason: why this upload happened, in the words the viewer saw. */
-    function send(reason, manual, done) {
+    function send(reason, manual, done, retry) {
         done = done || function () {};
         /* A manual press is answered on 设置's status line, so every way it can
          * end — refused here included — is kept in `last`. */
@@ -228,7 +229,11 @@ var Diag = (function () {
             if (t - (s.manualAt || 0) < MANUAL_GAP) { refuse("刚传过，过几秒再按"); return; }
             s.manualAt = t;
         } else {
-            if (t - (s.at || 0) < AUTO_GAP) {
+            /* A retry (retryMissed) has waited the gap out itself, and does not
+             * start one: an incident right after it must not be held back —
+             * held back is never retried (10-25, on the set: the staged incident
+             * a second after the retry was). It still counts toward the day. */
+            if (!retry && t - (s.at || 0) < AUTO_GAP) {
                 report("diag", "没传（三分钟内自动传过一份）：" + reason);
                 done({ ok: false, why: "三分钟内传过" });
                 return;
@@ -239,7 +244,7 @@ var Diag = (function () {
                 return;
             }
             s.n++;
-            s.at = t;
+            if (!retry) { s.at = t; }
         }
         put(K_SENT, JSON.stringify(s));
 
@@ -284,6 +289,37 @@ var Diag = (function () {
         }
     }
 
+    /* ---------------- a missed upload, sent again ----------------
+     *
+     * An upload that failed used to be dropped: 没传上 went into the ring and
+     * nothing tried again. 10-25 the endpoint answered 404 for eight hours
+     * (another Worker had been given the hostname) and every incident on every
+     * set in that time was lost. Now each start looks at the ring: when its
+     * latest upload line is a 没传上 — written by this version or an older one,
+     * so a set that missed one before it updated sends it too — the ring goes
+     * again, once, a minute in and out of the way of the first video. It still
+     * holds what the missed upload held, unless 600 lines have been logged
+     * since. Not when the receiver refused the upload itself (400, 413): the
+     * same lines would be refused again. A retry that fails writes its own
+     * 没传上, so the start after tries again; the daily cap still holds. */
+    var MISSED = /diag: 没传上：(.*?)，走 https?(?:（[^（）]*）)?（([\s\S]*)）$/;
+    function missed() {
+        load();
+        for (var i = ring.length - 1; i >= 0; i--) {
+            if (/ diag: 传了 \d+ 行/.test(ring[i])) { return null; }
+            var m = MISSED.exec(ring[i]);
+            if (m) { return /^HTTP 4(?:00|13)\b/.test(m[1]) ? null : { why: m[1], reason: m[2].replace(/^补传：/, "") }; }
+        }
+        return null;
+    }
+    function retryMissed() {
+        if (!enabled() || !endpoint()) { return; }
+        var m = missed();
+        if (!m) { return; }
+        report("diag", "上次没传上（" + m.why + "），补传一次");
+        send("补传：" + m.reason, false, null, true);
+    }
+
     function incident(reason) {
         if (!enabled() || !endpoint()) { return; }
         reasons.push(String(reason || "?").slice(0, 120));
@@ -317,7 +353,11 @@ var Diag = (function () {
          * kept ring says where one run ends and the next begins. */
         init: function (opts) {
             if (opts && opts.report) { report = opts.report; }
-            if (enabled()) { push(stamp() + " diag: —— 新的一次启动 ——"); }
+            if (enabled()) {
+                push(stamp() + " diag: —— 新的一次启动 ——");
+                /* Past the automatic gap too, or the retry would only be held back. */
+                setTimeout(retryMissed, Math.max(RETRY_AFTER, (sentState().at || 0) + AUTO_GAP - now()));
+            }
         },
         upload: function (done) { send("在设置里手动上传", true, done); },
         enabled: enabled,
@@ -332,9 +372,10 @@ var Diag = (function () {
         },
         status: function () {
             return { enabled: enabled(), configured: !!endpoint(), device: shown(deviceId()),
-                     lines: (load(), ring.length), sending: sending || !!settleTimer, last: last };
+                     lines: (load(), ring.length), sending: sending || !!settleTimer, last: last,
+                     pending: !!missed() };
         },
         _test: { NET: NET, endpoint: endpoint, ring: function () { return ring.slice(); },
-                 SETTLE: SETTLE, AUTO_GAP: AUTO_GAP, AUTO_PER_DAY: AUTO_PER_DAY }
+                 SETTLE: SETTLE, AUTO_GAP: AUTO_GAP, AUTO_PER_DAY: AUTO_PER_DAY, RETRY_AFTER: RETRY_AFTER }
     };
 })();

@@ -105,7 +105,8 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
   `Diag.incident()` 的地方）时把最近 600 行传到 `server/diag-worker.mjs`（Cloudflare Worker + D1，在自己的域名上 —— 10-25 起域名挂在 `~/code/diag` 那个统一入口上、它把这几条路径转过来，这里**不挂 routes**；`workers.dev`
   在有的网络里连不上），设置里能手动传、能关，默认开。`node tools/diag-logs.mjs --device <设置页里的编号>` 读。**往 `report()` 里放标题、
   用户名、UP 主名、收藏夹名、搜索词，一律包 `Diag.priv()`**（`diag-verify` 卡着 `.title` / `.uname` / `.author`），mid、签名参数
-  和 IP 由 `scrub()` 兜底（接收端存之前再去一遍）。新的失败出口用 `trouble(文字)` 而不是 `toast()`。**从源码装的构建也传**（1.4.1 起：#7 那台源码构建出了事，一行都没到我们这）；
+  和 IP 由 `scrub()` 兜底（接收端存之前再去一遍）。新的失败出口用 `trouble(文字)` 而不是 `toast()`。**没传上的下次启动一分钟后补传一次**
+  （10-25：接收端 404 了八小时，那段时间的全丢了；认旧版本写的「没传上」，不占三分钟间隔）。**从源码装的构建也传**（1.4.1 起：#7 那台源码构建出了事，一行都没到我们这）；
   自测构建不传，`BILI_DIAG_TO=off` 不传（**这台开发机的 `~/.bilibili-tizen.conf` 里写着**，换电脑要补上），`BILI_DIAG_TO=<地址>` 传到那里。
   **桌面浏览器（UA 里没有 Tizen）一律不传**（10-23：抖音的桌面测试台没拦接收端，写到一半的代码报的错传上去两条，像两台新电视）。→ `server/README.md`
 - 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 138 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
