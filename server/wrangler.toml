@@ -8,7 +8,10 @@ compatibility_date = "2026-09-01"
 # Not on *.workers.dev: some networks block it, and the first television this
 # exists for is on one of them.
 workers_dev = false
-routes = [{ pattern = "diag.titdev.nl", custom_domain = true }]
+# No route of its own since 10-25: the hostname belongs to the Worker in
+# ~/code/diag (every app's reports), which passes this Worker's paths through
+# unchanged with a service binding. A route here would take the hostname back
+# on the next deploy and cut off those apps instead.
 
 [[d1_databases]]
 binding = "DB"

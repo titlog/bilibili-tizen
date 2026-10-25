@@ -35,7 +35,10 @@ bilibili-tizen、douyin-tizen、telegram-tizen 共用，按 `app` 字段分开�
 ## 部署
 
 Worker 和 D1 库都叫 `tizen-diag`（2026-10-21 建）。
-配置都在 `wrangler.toml`（自定义域名、D1 绑定、每天 04:00 UTC 的清理、关掉请求日志），在这个目录里：
+**它没有自己的域名了（10-25 起）**：域名挂在另一个收所有应用诊断报告的 Worker 上，那个 Worker 把 `/v1/upload`、`/v1/list`、
+`/v1/get`、`/v1/update/…` 原样转给这个（service binding）。`wrangler.toml` 里别再加 `routes`，否则下次部署会把域名抢回来，
+那边的应用就断了（10-25 反过来发生过一次：那边一部署，这三个应用的上传、读日志、更新中转全成了 404，断了八小时）。
+配置都在 `wrangler.toml`（D1 绑定、每天 04:00 UTC 的清理、关掉请求日志），在这个目录里：
 
 ```bash
 npx wrangler@4 d1 create tizen-diag                                   # 只第一次；id 填进 wrangler.toml
