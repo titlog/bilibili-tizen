@@ -190,6 +190,58 @@ var SelfTest = (function () {
         return bad.length ? ("这些分区取不到内容：" + bad.join("、")) : null;
     }
 
+    /* 10-25: four sets on no account got -352 from the web ranking, which
+     * this set (signed in) never does. Forced here for 舞蹈, 排行 and vlog: the
+     * app ranking, asked twice if it comes back empty, then the web route with
+     * a buvid3. The app route's cards carry a bvid worked out from the aid, so
+     * one is looked up by that bvid and has to come back as the same video. */
+    var rankDetour = null;
+
+    function startRankDetour() {
+        rankDetour = {};
+        API._selftest.rank352(true);
+        var want = [["dance", 1004], ["ranking", 0], ["vlog", 1029]];
+        for (var i = 0; i < want.length; i++) {
+            (function (name, rid) {
+                API.ranking(rid, function (items) { rankDetour[name] = items; },
+                            function (why) { rankDetour[name] = "失败 " + why; });
+            })(want[i][0], want[i][1]);
+        }
+    }
+
+    function rankDetourVerdict() {
+        var d = rankDetour;
+        if (d.dance === undefined || d.ranking === undefined || d.vlog === undefined) { return WAIT; }
+        API._selftest.rank352(false);
+        function said(v) { return typeof v === "string" ? v : v.length + " 条"; }
+        post("退路 舞蹈=" + said(d.dance) + " 排行=" + said(d.ranking) + " vlog=" + said(d.vlog));
+        /* vlog can end on the buvid3 retry, the unproven half: said, not failed. */
+        if (typeof d.dance === "string" || !d.dance.length) { return "舞蹈没从 app 端排行拿到内容：" + said(d.dance); }
+        if (typeof d.ranking === "string" || !d.ranking.length) { return "排行没从 app 端拿到内容：" + said(d.ranking); }
+        for (var i = 0; i < d.dance.length; i++) {
+            var c = d.dance[i];
+            if (!/^BV1[0-9A-Za-z]{9}$/.test(c.bvid) || !c.aid || !c.title || !c.pic) {
+                return "app 端的卡片缺东西：第 " + (i + 1) + " 张 " + JSON.stringify({ bvid: c.bvid, aid: c.aid });
+            }
+        }
+        return null;
+    }
+
+    function rankDetourBvid() {
+        var d = rankDetour;
+        if (!d.view) {
+            d.view = "asked";
+            var c = d.dance[0];
+            API.view(c.bvid, function (v) { d.view = { aid: v.aid, want: c.aid, bvid: c.bvid }; },
+                     function (why) { d.view = { why: why, bvid: c.bvid }; });
+            return WAIT;
+        }
+        if (d.view === "asked") { return WAIT; }
+        if (d.view.why) { return "按换算出来的 " + d.view.bvid + " 查不到视频：" + d.view.why; }
+        post("换算的 bvid " + d.view.bvid + " → aid " + d.view.aid + "（app 端给的 " + d.view.want + "）");
+        return Number(d.view.aid) === Number(d.view.want) ? null : "bvid 换算错了：查回来的是另一个视频";
+    }
+
     /* 10-25: a Tizen 4.0 set's history and follows were refused by the gateway
      * for their Origin and now go through a frame on api.bilibili.com. This
      * set's never are, so the frame route is forced for one history report of
@@ -293,6 +345,9 @@ var SelfTest = (function () {
         ["探测流地址", 200, function () { probeStream(); probeZones(); return null; }],
         ["等待探测结果", 4000, function () { return null; }],
         ["分区都有内容", 100, zoneVerdict],
+        ["排行被 -352 时改走 app 端排行", 200, function () { startRankDetour(); return null; }],
+        ["app 端的排行出来了，卡片都有 bvid", 300, rankDetourVerdict, 20000, "20 秒了退路还没都回来"],
+        ["换算出来的 bvid 查得回同一个视频", 300, rankDetourBvid, 15000, "15 秒了按 bvid 还没查回来"],
         ["按确认键开始播放", 200, function () { key(KEY.ENTER); return null; }],
         ["播放器接管画面", 6000, function () {
             if (visible("shell")) { return "浏览界面没有让位给播放器"; }

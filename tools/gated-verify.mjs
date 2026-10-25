@@ -1,9 +1,15 @@
-/* The way round bilibili's gateway (2026-10-25), with no TV and no network:
+/* The two ways round bilibili's gates (2026-10-25), with no TV and no network:
  *
+ *   - 排行 / 分区 answering -352: the app ranking first (asked twice when it
+ *     comes back empty), then the web route once more with a buvid3, each step
+ *     noted — and nothing of it when the web route answers or fails otherwise;
  *   - a write refused by the gateway for its Origin (HTTP 403, an HTML page):
  *     sent again from a frame on api.bilibili.com, and every write after it
  *     straight there; not for other hosts, not for a JSON 403, and a frame the
- *     engine will not let us script fails the write with the reason. */
+ *     engine will not let us script fails the write with the reason.
+ *
+ * And the aid → bvid mapping the app routes need, against pairs read from the
+ * web ranking the same day. */
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
@@ -11,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const src = fs.readFileSync(fileURLToPath(new URL("../app/js/api.js", import.meta.url)), "utf8");
 const flush = () => new Promise((r) => setTimeout(r, 0));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* One fresh api.js per scenario: the gate and the frame are per run. */
 function load({ frame = "ok" } = {}) {
@@ -87,6 +94,137 @@ function settle(run) {
 }
 
 const GATE_PAGE = '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">\n<html lang="zh-cn"><head>';
+
+// ── aid → bvid ──
+{
+  const { API } = load();
+  for (const [aid, bvid] of [[117488360692339, "BV1U3n46GEzY"], [117465862377753, "BV1xwnE6jEUZ"],
+    [117494736158923, "BV1fjHP6eECY"], [117488545172306, "BV1nsn46YEYf"], [117483344238170, "BV1SAn168E4B"],
+    [117483931441323, "BV16xnm6pE3d"], [170001, "BV17x411w7KC"]]) {
+    assert.equal(API.bvidOf(aid), bvid, `av${aid}`);
+    assert.equal(API.bvidOf(String(aid)), bvid, `"${aid}"`);
+  }
+  assert.equal(API.bvidOf(0), "");
+  assert.equal(API.bvidOf("x"), "");
+}
+
+const appItem = (aid, extra = {}) => ({ title: "t" + aid, cover: "http://i0.hdslb.com/bfs/archive/a.jpg", param: String(aid),
+  goto: "av", play: 1704021, mid: 8960728, name: "日食记", pub_date: 1792659600, duration: 990, cid: 42950856166, ...extra });
+
+// ── 排行: web answers → nothing else is asked, nothing noted ──
+{
+  const t = load();
+  t.respond({ code: 0, data: { list: [{ aid: 170001, bvid: "BV17x411w7KC", title: "a", pic: "x", duration: 60 }] } });
+  const r = settle((ok, fail) => t.API.ranking(1004, ok, fail));
+  assert.equal(r.ok[0].length, 1);
+  assert.equal(t.calls.length, 1);
+  assert.deepEqual(t.notes, []);
+}
+
+// ── another failure is not -352: straight to the caller ──
+{
+  const t = load();
+  t.respond({ code: -404, message: "啥都木有" });
+  const r = settle((ok, fail) => t.API.ranking(1004, ok, fail));
+  assert.match(r.fail, /^code -404/);
+  assert.equal(t.calls.length, 1);
+}
+
+// ── -352 on a zone → app rank/region, items in the card shape with a bvid ──
+{
+  const t = load();
+  t.respond({ code: -352, message: "-352" });
+  t.respond({ code: 0, data: [appItem(117483931441323), appItem(117488360692339, { goto: "live" }), { param: "" }] });
+  const r = settle((ok, fail) => t.API.ranking(1004, ok, fail));
+  assert.equal(r.fail, undefined);
+  const items = r.ok[0];
+  assert.equal(items.length, 1, "only goto=av with an aid");
+  assert.equal(items[0].bvid, "BV16xnm6pE3d");
+  assert.equal(items[0].aid, 117483931441323);
+  assert.equal(items[0].cid, 42950856166);
+  assert.equal(items[0].author, "日食记");
+  assert.equal(items[0].mid, 8960728);
+  assert.equal(items[0].duration, "16:30");
+  assert.match(items[0].pic, /^https:\/\/i0\.hdslb\.com\//);
+  const app = new URL(t.calls[1].url);
+  assert.equal(app.origin + app.pathname, "https://app.bilibili.com/x/v2/rank/region");
+  assert.equal(app.searchParams.get("rid"), "1004");
+  assert.equal(app.searchParams.get("ps"), "100");
+  assert.deepEqual(t.notes, ["feed: 分区 1004 的排行 code -352 -352，改走 app 端排行：1 条"]);
+}
+
+// ── -352 on 排行 itself → the app's whole-site ranking ──
+{
+  const t = load();
+  t.respond({ code: -352, message: "-352" });
+  t.respond({ code: 0, data: [appItem(170001)] });
+  const r = settle((ok, fail) => t.API.ranking(0, ok, fail));
+  assert.equal(r.ok[0][0].bvid, "BV17x411w7KC");
+  const app = new URL(t.calls[1].url);
+  assert.equal(app.pathname, "/x/v2/rank");
+  assert.equal(app.searchParams.get("order"), "all");
+  assert.equal(app.searchParams.get("rid"), null);
+}
+
+// ── the app route comes back empty (one time in four, any zone) → asked once more ──
+{
+  const t = load();
+  t.respond({ code: -352, message: "-352" });
+  t.respond({ code: 0, data: [] });
+  t.respond({ code: 0, data: [appItem(170001)] });
+  let r;
+  t.API.ranking(1011, (items) => { r = { ok: items }; }, (why) => { r = { fail: why }; });
+  assert.equal(r, undefined, "the second ask waits");
+  await sleep(600);
+  assert.equal(r.ok.length, 1);
+  assert.equal(new URL(t.calls[2].url).searchParams.get("rid"), "1011");
+  assert.deepEqual(t.notes, ["feed: 分区 1011 的排行 code -352 -352，改走 app 端排行（第 2 次）：1 条"]);
+  assert.equal(t.left(), 0);
+}
+
+// ── empty twice → the web route again with a buvid3 ──
+{
+  const t = load();
+  t.respond({ code: -352, message: "-352" });
+  t.respond({ code: 0, data: [] });
+  t.respond({ code: 0, data: [] });
+  t.respond({ code: 0, data: { b_3: "D1F0C0DE-0000-0000-0000-000000000000infoc", b_4: "x" } });
+  t.respond({ code: 0, data: { list: [{ aid: 170001, bvid: "BV17x411w7KC", title: "v" }] } });
+  let r;
+  t.API.ranking(1009, (items) => { r = { ok: items }; }, (why) => { r = { fail: why }; });
+  await sleep(600);
+  assert.equal(r.ok.length, 1);
+  assert.match(t.calls[3].url, /\/x\/frontend\/finger\/spi$/, "spi is asked without the account");
+  const again = new URL(t.calls[4].url);
+  assert.equal(again.searchParams.get("rid"), "1009");
+  assert.equal(again.searchParams.get("buvid3"), "D1F0C0DE-0000-0000-0000-000000000000infoc");
+  assert.deepEqual(t.notes, ["feed: 分区 1009 的排行 code -352 -352，app 端排行两次都是空的，带 buvid3 重问：1 条"]);
+
+  // The buvid3 is asked for once a run.
+  t.respond({ code: -352, message: "-352" });
+  t.respond({ code: 0, data: [] });
+  t.respond({ code: 0, data: [] });
+  t.respond({ code: -352, message: "-352" });
+  let r2;
+  t.API.ranking(1006, (items) => { r2 = { ok: items }; }, (why) => { r2 = { fail: why }; });
+  await sleep(600);
+  assert.match(r2.fail, /^code -352/, "the screen keeps the first answer");
+  assert.equal(t.calls.filter((c) => /finger\/spi/.test(c.url)).length, 1);
+  assert.match(t.notes[1], /^feed: 分区 1006 的排行 code -352 -352，app 端排行两次都是空的，带 buvid3 重问：code -352/);
+  assert.equal(t.left(), 0);
+}
+
+// ── the app route fails too, and no buvid3 comes back → the original failure ──
+{
+  const t = load();
+  t.respond({ code: -352, message: "-352" });
+  t.respond({ code: -3, message: "API校验密匙错误" });
+  t.respond({ code: -412, message: "请求被拦截" });
+  const r = settle((ok, fail) => t.API.ranking(1020, ok, fail));
+  assert.match(r.fail, /^code -352/);
+  assert.deepEqual(t.notes, ["feed: 分区 1020 的排行 code -352 -352，app 端排行也不行：code -3 API校验密匙错误，也拿不到 buvid3"]);
+  assert.equal(t.left(), 0);
+}
 
 // ── a write refused by the gateway → once more from the frame, and after that only there ──
 {
@@ -194,4 +332,4 @@ const GATE_PAGE = '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN
   assert.equal(t.notes[1], "api: 从框里发也被拒：HTTP 403 网页");
 }
 
-console.log("✓ gates: gateway-refused writes go through the frame");
+console.log("✓ gates: ranking -352 falls back to the app route then buvid3, gateway-refused writes go through the frame, aid→bvid");

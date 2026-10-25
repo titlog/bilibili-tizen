@@ -419,6 +419,81 @@ var API = (function () {
         };
     }
 
+    /* aid → bvid, the site's own mapping (pskdje/bilibili-API-collect,
+     * docs/misc/bvid_desc.md), for the app routes that name a video by aid
+     * alone. Doubles, not BigInt (Chromium 47): every value stays below 2^52,
+     * exact in a double, and the one XOR goes in two 32-bit halves. */
+    var BV_ALPHABET = "FcwAPNKTMug3GV5Lj7EJnHpWsx4tb8haYeviqBz6rkCy12mUSDQX9RdoZf";
+    var BV_XOR = 23442827791579, TWO32 = 4294967296;
+
+    function bvidOf(aid) {
+        aid = Number(aid);
+        if (!(aid > 0) || aid >= Math.pow(2, 51)) { return ""; }
+        var x = Math.pow(2, 51) + aid;
+        var hi = (Math.floor(x / TWO32) ^ Math.floor(BV_XOR / TWO32)) >>> 0;
+        var lo = ((x % TWO32) ^ (BV_XOR % TWO32)) >>> 0;
+        var t = hi * TWO32 + lo;
+        var b = ["B", "V", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0"];
+        for (var i = 11; t > 0 && i >= 3; i--) {
+            b[i] = BV_ALPHABET.charAt(t % 58);
+            t = Math.floor(t / 58);
+        }
+        var s = b[3]; b[3] = b[9]; b[9] = s;
+        s = b[4]; b[4] = b[7]; b[7] = s;
+        return b.join("");
+    }
+
+    /* The app ranking: rank/region for a zone (it takes the 1000-series ids),
+     * rank?order=all for the whole site. Its items are the app's shape: `param`
+     * is the aid as a string, `name` the uploader, `duration` seconds, a `cid`
+     * to start on, and no bvid. */
+    function rankingApp(rid, onOk, onFail) {
+        var params = { pn: 1, ps: 100, platform: "android", mobi_app: "android", build: 7280300 };
+        if (rid) { params.rid = rid; } else { params.order = "all"; }
+        getJson("https://app.bilibili.com/x/v2/" + (rid ? "rank/region?" : "rank?") + Auth.signTv(params),
+                function (d) {
+            var raw = d || [], out = [];
+            for (var i = 0; i < raw.length; i++) {
+                var x = raw[i], aid = Number(x && x.param) || 0;
+                if (!aid || x.goto !== "av" || !bvidOf(aid)) { continue; }
+                out.push({
+                    bvid: bvidOf(aid),
+                    aid: aid,
+                    cid: x.cid || null,
+                    title: stripEm(x.title),
+                    pic: thumb(x.cover),
+                    author: x.name || "",
+                    mid: x.mid || 0,
+                    duration: duration(x.duration || 0),
+                    play: count(x.play),
+                    publishedAt: Number(x.pub_date || 0) || 0
+                });
+            }
+            onOk(out);
+        }, onFail);
+    }
+
+    /* A buvid3 from the site's own fingerprint endpoint, once a run. It names
+     * this television to bilibili, as the website's does; nothing else is sent
+     * it, and diag.js scrubs it like the rest. */
+    var buvidKnown = null, buvidWaiting = null;
+    var rank352 = false;   /* selftest: the web ranking answers -352 */
+
+    function buvid3(done) {
+        if (buvidKnown !== null) { done(buvidKnown); return; }
+        if (buvidWaiting) { buvidWaiting.push(done); return; }
+        buvidWaiting = [done];
+        getJson(BASE + "/x/frontend/finger/spi", function (d) {
+            settle((d && d.b_3) || "");
+        }, function () { settle(""); }, true);
+        function settle(b) {
+            buvidKnown = b || null;   /* a failure is asked again next time */
+            var w = buvidWaiting;
+            buvidWaiting = null;
+            for (var i = 0; i < w.length; i++) { w[i](b); }
+        }
+    }
+
     function normalise(v) {
         return {
             bvid: v.bvid,
@@ -506,11 +581,14 @@ var API = (function () {
         thumbFormat: THUMB_FORMAT,
 
         onNote: function (fn) { note = fn; },
+        bvidOf: bvidOf,
 
-        /* deploy.sh --selftest walks the detour on a set that never needs it:
-         * this television's writes carry no Origin. */
+        /* deploy.sh --selftest walks the two detours on a set that never needs
+         * them: this television's writes carry no Origin, and its ranking goes
+         * with an access_key. */
         _selftest: {
-            gateWrites: function (on) { originGated = !!on; }
+            gateWrites: function (on) { originGated = !!on; },
+            rank352: function (on) { rank352 = !!on; }
         },
 
         setCardWidth: function (px) { if (px > 0) { cardWidth = px; } },
@@ -663,10 +741,55 @@ var API = (function () {
             });
         },
 
+        /* -352 (2026-10-25): four sets on no account, 10-22 to 10-24, saw
+         * 「加载失败：code -352」 on 排行 and the zone tabs — this endpoint only —
+         * while 推荐 and 热门 loaded in the same minute; a signed-in set never
+         * has (access_key rides along). Reproduced from the dev machine after a
+         * dozen of these in a few minutes, and then, interleaved in the same
+         * seconds: web -352, app.bilibili.com/x/v2/rank/region code 0 with 100;
+         * a WBI signature or a TV-appkey signature, still -352; a buvid3 cookie
+         * from finger/spi, code 0 — and so, twice, a buvid3 in the query, but
+         * the gate lifted soon after and that pair could not be told apart from
+         * the gate lifting. So: the app route first, measured. It takes the
+         * 1000-series ids, but any zone comes back code 0 and empty about one
+         * time in four, the same request asked again (人工智能 55/55/0/55, 户外潮流
+         * 0/55/55/55, 绘画 55/55/55/0; 资讯 empty every time), so an empty answer
+         * is asked once more. Empty twice, the web route once more with a buvid3,
+         * and the note says whether that did anything. */
         ranking: function (rid, onOk, onFail) {
-            getJson(BASE + "/x/web-interface/ranking/v2?type=all&rid=" + (rid || 0), function (d) {
-                onOk((d.list || []).map(normalise));
-            }, onFail);
+            var url = BASE + "/x/web-interface/ranking/v2?type=all&rid=" + (rid || 0);
+            var where = rid ? "分区 " + rid + " 的排行" : "排行";
+            if (rank352) { setTimeout(function () { refused("code -352 -352（自测）"); }, 0); }
+            else { getJson(url, function (d) { onOk((d.list || []).map(normalise)); }, refused); }
+            function refused(why) {
+                if (!/^code -352\b/.test(String(why))) { onFail(why); return; }
+                appTry(why, 1);
+            }
+            function appTry(why, n) {
+                rankingApp(rid, function (items) {
+                    if (items.length) {
+                        note("feed", where + " " + why + "，改走 app 端排行" + (n > 1 ? "（第 " + n + " 次）" : "") +
+                             "：" + items.length + " 条");
+                        onOk(items);
+                        return;
+                    }
+                    if (n < 2) { setTimeout(function () { appTry(why, n + 1); }, 500); return; }
+                    withBuvid(why, "app 端排行两次都是空的");
+                }, function (whyApp) { withBuvid(why, "app 端排行也不行：" + whyApp); });
+            }
+            function withBuvid(why, app) {
+                buvid3(function (b) {
+                    if (!b) { note("feed", where + " " + why + "，" + app + "，也拿不到 buvid3"); onFail(why); return; }
+                    getJson(url + "&buvid3=" + encodeURIComponent(b), function (d) {
+                        var items = (d.list || []).map(normalise);
+                        note("feed", where + " " + why + "，" + app + "，带 buvid3 重问：" + items.length + " 条");
+                        onOk(items);
+                    }, function (why2) {
+                        note("feed", where + " " + why + "，" + app + "，带 buvid3 重问：" + why2);
+                        onFail(why);
+                    });
+                });
+            }
         },
 
         /* search/all/v2 needs no WBI signature, unlike search/type which

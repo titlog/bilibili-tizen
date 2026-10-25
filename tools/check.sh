@@ -36,7 +36,7 @@ node "$ROOT/tools/mirrors-verify.mjs" >/dev/null || { echo "  mirror ordering is
 # The interactive features (PR #2): a write must never leave without a
 # credential, and a hold on OK opens the menu without starting the video.
 node "$ROOT/tools/compat-api-verify.mjs" || { echo "  video actions or library API regressed"; exit 1; }
-node "$ROOT/tools/gated-verify.mjs" || { echo "  the ways round bilibili's gates regressed (writes refused for their Origin)"; exit 1; }
+node "$ROOT/tools/gated-verify.mjs" || { echo "  the ways round bilibili's gates regressed (ranking -352, writes refused for their Origin)"; exit 1; }
 node "$ROOT/tools/nav-verify.mjs" || { echo "  remote navigation regressed"; exit 1; }
 node "$ROOT/tools/episode-nav-verify.mjs" || { echo "  episode shortcuts regressed"; exit 1; }
 # Tizen 5.5 has no flex gap. A new gap without its fallback looks fine on any
