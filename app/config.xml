@@ -2,7 +2,7 @@
 <widget xmlns="http://www.w3.org/ns/widgets"
         xmlns:tizen="http://tizen.org/ns/widgets"
         id="https://github.com/bilibili-tizen/bilibili-tizen"
-        version="1.4.5"
+        version="1.4.6"
         viewmodes="maximized">
 
     <!-- The 10-char prefix must match the package attribute below.
