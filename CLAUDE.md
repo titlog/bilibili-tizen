@@ -102,7 +102,7 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
 - 判别实验常驻：AVPlay 失败时 `probe:`（XHR 再要一次：403 是被拒、206 是 AVPlay 的问题）；DASH 卡住时
   `判别探测`、`分段请求 发出/回来/在飞`、`传输形状`。日志对照表在 `docs/调试与日志.md`。
 - **别人的电视**（2026-10-21 起，`diag.js`）：出事（播放全部失败、页面加载失败、js 报错、更新包被标坏……调 `trouble()` /
-  `Diag.incident()` 的地方）时把最近 600 行传到 `server/diag-worker.mjs`（Cloudflare Worker + D1，挂自己的域名，`workers.dev`
+  `Diag.incident()` 的地方）时把最近 600 行传到 `server/diag-worker.mjs`（Cloudflare Worker + D1，在自己的域名上 —— 10-25 起域名挂在 `~/code/diag` 那个统一入口上、它把这几条路径转过来，这里**不挂 routes**；`workers.dev`
   在有的网络里连不上），设置里能手动传、能关，默认开。`node tools/diag-logs.mjs --device <设置页里的编号>` 读。**往 `report()` 里放标题、
   用户名、UP 主名、收藏夹名、搜索词，一律包 `Diag.priv()`**（`diag-verify` 卡着 `.title` / `.uname` / `.author`），mid、签名参数
   和 IP 由 `scrub()` 兜底（接收端存之前再去一遍）。新的失败出口用 `trouble(文字)` 而不是 `toast()`。**从源码装的构建也传**（1.4.1 起：#7 那台源码构建出了事，一行都没到我们这）；

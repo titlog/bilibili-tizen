@@ -6,7 +6,7 @@ bilibili-tizen、douyin-tizen、telegram-tizen 共用，按 `app` 字段分开�
 
 ## 为什么是这样
 
-- **挂在自己的域名上，不用 `*.workers.dev`**：`workers.dev` 在有的网络里连不上，而第一个要靠它
+- **在自己的域名上，不用 `*.workers.dev`**（10-25 起域名挂在统一的诊断入口上、由它转过来，见「部署」）：`workers.dev` 在有的网络里连不上，而第一个要靠它
   诊断的电视（#5）就在这样的网络里。
 - **谁都能写**：地址就在公开的应用里，放什么密钥都藏不住。限住的是形状和大小、同一台电视
   一小时 20 份、全站一天 2 万份，以及 30 天的寿命。读要令牌（Worker 的 secret `READ_TOKEN`）。
@@ -44,6 +44,7 @@ Worker 和 D1 库都叫 `tizen-diag`（2026-10-21 建）。
 npx wrangler@4 d1 create tizen-diag                                   # 只第一次；id 填进 wrangler.toml
 npx wrangler@4 d1 execute tizen-diag --remote --file=schema.sql       # 幂等，加了表或索引再跑一次
 npx wrangler@4 deploy                                                  # 改了 diag-worker.mjs 之后只跑这条
+(cd ~/code/diag && npm run smoke)                                      # 部署完都跑：每条路径是不是由该回答它的 Worker 回答
 (umask 077; openssl rand -hex 24 > ~/.bilibili-tizen-diag-token)       # 只第一次
 npx wrangler@4 secret put READ_TOKEN < ~/.bilibili-tizen-diag-token
 ```
