@@ -35,6 +35,28 @@ vm.createContext(ctx);
 vm.runInContext(SRC + "\nthis.Danmaku = Danmaku;", ctx);
 const T = ctx.Danmaku.test;
 
+/* Three global display areas are clips on one renderer: switching must not
+ * allocate another comment list or alter the density cap. */
+console.log("显示区域");
+const area = ctx.Danmaku.area, areaClass = ctx.Danmaku.areaClass;
+check(["top", "upper", "full", "bad"].map(area).join(",") === "top,upper,full,upper",
+  "三种区域、未知设置回到避开底部");
+check(areaClass("top", true) === "dm-area-top" &&
+      areaClass("full", false) === "dm-area-full hidden", "开关不丢失区域设置");
+const css = fs.readFileSync(path.join(ROOT, "app/css/app.css"), "utf8");
+const height = (selector) => {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(escaped + "\\s*\\{[^}]*height:\\s*(\\d+)px").exec(css);
+  return match && Number(match[1]);
+};
+check(height("#danmaku.dm-area-top") === 270 &&
+      height("#danmaku.dm-area-upper") === 810 &&
+      height("#danmaku.dm-area-full") === 1080,
+  "顶部 1/4、避开底部 1/4、全屏对应 1080p 画布");
+check(height(".options-open #danmaku.dm-area-top") === 270 &&
+      height(".options-open #danmaku") === 496,
+  "播放面板展开时弹幕不盖住操作区");
+
 /* ---------------- parsing ---------------- */
 console.log("解析");
 const REAL = "<d p=\"0.97700,5,25,16707842,0,0,0,1,10\">封面我以为claude呢（doge）</d><d p=\"8.21700,1,25,16777215,0,0,0,2,10\">其实类似于听书对吧</d><d p=\"14.44600,1,25,16777215,0,0,0,3,10\">捉个虫，旗子的zi应该是轻声而非三声，不然就成“棋子”了</d><d p=\"7.11100,5,25,16707842,0,0,0,4,10\">我好像有点障碍</d><d p=\"3.78500,5,25,16707842,0,0,0,5,10\">封面我以为雀巢的小花呢（doge）</d><d p=\"0.59200,1,25,16777215,0,0,0,6,10\">请合上眼睛想象画面</d><d p=\"14.19600,1,25,16777215,0,0,0,7,10\">口述影像！</d><d p=\"86.68300,5,25,41194,0,0,0,8,10\">一听这首歌就想哭</d><d p=\"28.87800,1,25,16777215,0,0,0,9,9\">如果我是盲人迪士尼城堡，我没见过呀，我不知道是什么样子呀，除非我是后天性的</d><d p=\"19.14000,1,25,16777215,0,0,0,10,9\">经典迪士尼开场</d><d p=\"25.74400,1,25,16777215,0,0,0,11,9\">这不是变成了听书吗？</d><d p=\"24.12800,1,25,16777215,0,0,0,12,9\">话说盲人知道迪士尼城堡长什么样吗？</d><d p=\"18.36500,5,25,41194,0,0,0,13,9\">《迪 士 尼 绘 本 故 事》</d><d p=\"3.25000,1,25,16777215,0,0,0,14,9\">我也以为是claude（蓝色限定版）</d><d p=\"23.90700,1,25,16777215,0,0,0,15,9\">我好像真的看见了，这个画面感</d><d p=\"24.46100,1,25,16777215,0,0,0,16,9\">什么是迪士尼城堡?</d><d p=\"26.08200,1,25,16777215,0,0,0,17,8\">搞了半天还得自己想</d><d p=\"36.87100,1,25,16777215,0,0,0,18,8\">有声小说？</d><d p=\"45.94100,1,25,16777215,0,0,0,19,8\">什么是城堡？什么是气船…</d><d p=\"29.78800,1,25,16777215,0,0,0,20,8\">烟花是啥，好吃吗</d><d p=\"23.02600,1,25,16777215,0,0,0,21,8\">什么是河流，什么是城堡，什么烟花</d><d p=\"20.49300,1,25,16777215,0,0,0,22,8\">好多年前学校青协做过给盲人讲电影，现在还是有人坚持做这件事啊，突然有点感慨</d><d p=\"32.44600,1,25,16777215,0,0,0,23,8\">大部分盲人不是完全黑的，是视力残疾</d><d p=\"20.32900,1,25,16777215,0,0,0,24,8\">放了个滚木啥意思？</d>";

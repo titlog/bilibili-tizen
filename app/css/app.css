@@ -785,8 +785,8 @@ body.density-5 .library-item { width: 344px; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* 弹幕 (danmaku.js, 2026-10-18). The top ~70% of the picture — the bottom is
- * the subtitles' and the progress bar's. No z-index: document order puts it
+/* 弹幕 (danmaku.js, 2026-10-18). The default avoids the bottom quarter;
+ * settings can use only the top quarter or the whole picture. No z-index: document order puts it
  * under the subtitles and the player chrome. Plain text-shadow for the outline;
  * CSS filters were measured expensive on this set (douyin-tizen).
  *
@@ -795,8 +795,11 @@ body.density-5 .library-item { width: 344px; }
  * draws the whole box off screen every frame, and a blurred shadow is slow to
  * raster each time a comment enters. Together they cost 12 frames in 14 s at
  * the median (73 at worst) — the shake the viewer saw — against 2 without. */
-#danmaku { position: absolute; left: 0; top: 0; width: 1920px; height: 756px;
+#danmaku { position: absolute; left: 0; top: 0; width: 1920px; height: 810px;
     overflow: hidden; pointer-events: none; }
+#danmaku.dm-area-top { height: 270px; }
+#danmaku.dm-area-upper { height: 810px; }
+#danmaku.dm-area-full { height: 1080px; }
 #danmaku .dm { position: absolute; left: 0; top: 0; white-space: nowrap;
     font-weight: 600; line-height: 1.24; will-change: transform; opacity: 0.85;
     text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000; }
@@ -806,4 +809,5 @@ body.density-5 .library-item { width: 344px; }
  * The renderer reads the height and only sends new comments down the rows
  * still in view; the ones crossing a hidden row are clipped until it closes. */
 .options-open #danmaku { height: 496px; }
+.options-open #danmaku.dm-area-top { height: 270px; }
 

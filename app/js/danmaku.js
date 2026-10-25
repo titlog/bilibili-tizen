@@ -409,6 +409,11 @@ var Danmaku = (function () {
     return {
         load: load,
         renderer: renderer,
+        /* Area is a CSS clip on the existing renderer, not a second layer or
+         * another copy of the comment list. Invalid stored values stay safe. */
+        area: function (v) { return v === "top" || v === "full" ? v : "upper"; },
+        areaClass: function (v, visible) { return "dm-area-" + (v === "top" || v === "full" ? v : "upper") +
+                   (visible ? "" : " hidden"); },
         /* Pure pieces, exposed for tools/danmaku-verify.mjs. */
         test: { parse: parse, Lanes: Lanes, SPEED: SPEED, GAP: GAP, FIXED_MS: FIXED_MS, WIDTH: WIDTH,
                 /* deploy.sh --dmperf compares speeds within one run. */

@@ -3064,11 +3064,24 @@
      * the stream for this set's slow link. */
     var DM_LEVELS = ["off", "low", "normal", "high"];
     var DM_NAMES = { off: "关", low: "少", normal: "标准", high: "多" };
+    var DM_AREAS = ["top", "upper", "full"];
+    var DM_AREA_NAMES = { top: "顶部 1/4", upper: "避开底部 1/4", full: "全屏" };
     var dm = null;            /* the renderer, built on first use */
     var viewerPaused = false; /* what setPaused last asked for; danmaku stop with it */
     function danmakuLevel() {
         var v = Settings.get("danmaku", "normal");
         return DM_NAMES[v] ? v : "normal";
+    }
+    function danmakuArea() {
+        return Danmaku.area(Settings.get("danmakuArea", "upper"));
+    }
+    function showDanmaku(visible) {
+        el("danmaku").className = Danmaku.areaClass(danmakuArea(), visible);
+    }
+    function setDanmakuArea(v) {
+        Settings.set("danmakuArea", Danmaku.area(v));
+        showDanmaku(!!(playing && playing.danmakuStarted && danmakuLevel() !== "off"));
+        report("settings", "弹幕位置=" + DM_AREA_NAMES[danmakuArea()]);
     }
     function danmakuRenderer() {
         if (!dm && typeof Danmaku !== "undefined") {
@@ -3079,7 +3092,7 @@
     }
     function clearDanmaku() {
         if (dm) { dm.clear(); dm.set([]); }
-        el("danmaku").className = "hidden";
+        showDanmaku(false);
     }
     function startDanmaku() {
         if (!playing || playing.danmakuStarted || danmakuLevel() === "off" || !danmakuRenderer()) { return; }
@@ -3089,7 +3102,7 @@
             if (playing !== session) { return; }
             dm.set(list);
             dm.rate(Player.rate());
-            el("danmaku").className = "";
+            showDanmaku(true);
             report("danmaku", list.length + " 条（" + DM_NAMES[danmakuLevel()] + "），" + (new Date().getTime() - t0) + "ms");
         }, function (why) {
             if (playing === session) { report("danmaku", "弹幕取不到：" + why); }
@@ -3100,8 +3113,8 @@
         /* What the panel's on/off switch turns back on to. */
         if (v !== "off") { Settings.set("danmakuOnLevel", v); }
         if (danmakuRenderer()) { dm.density(v); }
-        if (v === "off") { el("danmaku").className = "hidden"; }
-        else if (playing && playing.danmakuStarted) { el("danmaku").className = ""; }
+        if (v === "off") { showDanmaku(false); }
+        else if (playing && playing.danmakuStarted) { showDanmaku(true); }
         else { startDanmaku(); }
         report("settings", "弹幕=" + DM_NAMES[v]);
     }
@@ -3215,7 +3228,8 @@
             '<div class="section">播放</div>' +
             '<div class="actions"><div class="btn focusable" id="btn-autoplay"></div>' +
             '<div class="btn focusable" id="btn-subtitles"></div>' +
-            '<div class="btn focusable" id="btn-danmaku"></div></div>' +
+            '<div class="btn focusable" id="btn-danmaku"></div>' +
+            '<div class="btn focusable" id="btn-danmaku-area"></div></div>' +
 
             '<div class="section">画质</div>' +
             '<div class="actions"><div class="btn focusable" id="btn-quality"></div></div>' +
@@ -3267,6 +3281,13 @@
         dmBtn.onselect = function () {
             setDanmakuLevel(DM_LEVELS[(DM_LEVELS.indexOf(danmakuLevel()) + 1) % DM_LEVELS.length]);
             paintDm();
+        };
+        var dmAreaBtn = el("btn-danmaku-area");
+        function paintDmArea() { dmAreaBtn.textContent = "弹幕位置：" + DM_AREA_NAMES[danmakuArea()]; }
+        paintDmArea();
+        dmAreaBtn.onselect = function () {
+            setDanmakuArea(DM_AREAS[(DM_AREAS.indexOf(danmakuArea()) + 1) % DM_AREAS.length]);
+            paintDmArea();
         };
 
         /* Self-update (update.js), in a few words: only what the viewer would
@@ -5534,6 +5555,21 @@
         }
     }
 
+    function paintDanmakuArea() {
+        var chips = document.querySelectorAll("#opt-dm-area .opt");
+        for (var i = 0; i < chips.length; i++) {
+            (function (node) {
+                var value = node.getAttribute("data-area");
+                node.className = "opt focusable" + (value === danmakuArea() ? " current" : "");
+                node.onselect = function () {
+                    setDanmakuArea(value);
+                    paintDanmakuArea();
+                    Nav.focus(node);
+                };
+            })(chips[i]);
+        }
+    }
+
     /* bilibili writes 「-」 for an upload with no description, and the panel
      * showed it as a stray dash under the uploader (10-20, the viewer: 「up 主
      * 下面那一行是啥？」). Blank, or only punctuation: no line at all. */
@@ -5734,8 +5770,7 @@
         paintEpisodeControls();
         paintSpeed();
         ot.mark("倍速");
-        /* No 弹幕 row since 2026-10-20 (the viewer: 「弹幕的设置入口，就保留在统一设置的
-         * 那个入口」) — it is a setting of this television, not of one video. */
+        paintDanmakuArea();
 
         /* Related videos live in the panel now, so "what else" never costs the
          * viewer their place in the video. All of them, not the first sixteen:
