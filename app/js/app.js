@@ -126,6 +126,17 @@
         Diag.incident(text);
     }
 
+    /* Refusals that logging in answers, said as that to a viewer on no account
+     * (10-25: 「需要登录才能用的，就提示用户先登录，不要默默报错」). -101 is
+     * bilibili's 「账号未登录」; -352 is the risk check that catches requests
+     * carrying no account — 排行 and the zone tabs on four sets with none,
+     * 10-22 to 10-24, never on a signed-in one. Empty when signed in, and for
+     * any other answer, which logging in would not change. */
+    function loginNeeded(why) {
+        if (Auth.isLoggedIn() || !/code -(?:101|352)\b/.test(String(why))) { return ""; }
+        return "没登录时 B 站不给，先去「我的」扫码登录再试";
+    }
+
     /* Errors used to be terminal: the only escape from "加载失败" was to switch
      * tab and come back. */
     function showError(message, retry) {
@@ -2163,7 +2174,7 @@
              * tab said them is here (10-22: five 「code -352」 from a set in HK,
              * and nothing to say which feed). */
             report("feed", kind + " 加载失败（" + why + "），给了重试按钮");
-            showError("加载失败：" + why, function () { loadFeed(kind); });
+            showError(loginNeeded(why) || ("加载失败：" + why), function () { loadFeed(kind); });
         };
         if (bootSlot) {
             /* Asked while the picker was up; a failure there is asked again
@@ -2893,7 +2904,7 @@
         }, function (why) {
             if (!stillViewing(token) || state.query.trim() !== term) { return; }
             results = el("results");
-            if (results) { results.innerHTML = '<div class="empty">搜索失败：' + esc(why) + '</div>'; }
+            if (results) { results.innerHTML = '<div class="empty">' + esc(loginNeeded(why) || ("搜索失败：" + why)) + '</div>'; }
         });
     }
 
@@ -3239,7 +3250,8 @@
 
             '<div class="section">画质</div>' +
             '<div class="actions"><div class="btn focusable" id="btn-quality"></div></div>' +
-            '<div class="me-sub" style="margin-top:24px">1080P 高码率和 4K 需要大会员，拿不到时用能拿到的最高一档。</div>' +
+            '<div class="me-sub" style="margin-top:24px">' + (Auth.isLoggedIn() ? "" : "没登录时清晰度更低，先去「我的」扫码登录就能用 1080P。") +
+            '1080P 高码率和 4K 需要大会员，拿不到时用能拿到的最高一档。</div>' +
             '<div class="section">观看记录</div>' +
             '<div class="actions"><div class="btn focusable" id="btn-clear-history">清空观看记录</div></div>' +
             '<div class="me-sub" style="margin-top:24px">只清这台电视上的，B 站账号里的历史不受影响。</div>' +
@@ -4295,7 +4307,7 @@
         }, function (why) {
             if (!stillViewing(token)) { return; }
             cancelOpening();
-            trouble("打开失败：" + why);
+            trouble(loginNeeded(why) || ("打开失败：" + why));
         });
     }
 
@@ -5288,7 +5300,7 @@
             if (commentsView !== view || view.token !== token || view.root !== root) { return; }
             view.loading = false;
             view.more = false;
-            view.error = "评论暂时无法读取（" + why + "）";
+            view.error = loginNeeded(why) || ("评论暂时无法读取（" + why + "）");
             report("comments", view.error);
             paintComments(0);
         }
@@ -5308,7 +5320,7 @@
                 session.detail.aid = d.aid;
                 openComments();
             }, function (why) {
-                if (playing === session) { trouble("评论暂时无法打开：" + why); }
+                if (playing === session) { trouble(loginNeeded(why) || ("评论暂时无法打开：" + why)); }
             });
             return;
         }
@@ -6528,7 +6540,7 @@
                     repaintResumeStrip();
                 });
             } else {
-                trouble("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
+                trouble(loginNeeded(whyText) || ("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）"));
             }
             failOut();
         }
