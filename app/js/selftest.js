@@ -1098,8 +1098,8 @@ var SelfTest = (function () {
             return null;
         }],
         /* 返回 from an UP page opened in the panel goes back to the video, at
-         * that second, the ring on the chip (10-20, the viewer: 「应该退到刚刚
-         * 那个视频呀」); the tab is two more presses away. */
+         * that second, the ring on the chip (10-20: back to the video just
+         * left, not out to the tab); the tab is two more presses away. */
         ["返回键回到刚才那个视频", 600, function () { key(KEY.RETURN); return null; }],
         ["回到那个视频，面板开着，焦点在 UP 主芯片", 1000, function () {
             if (visible("shell")) { return "返回键退回了网格，没有回到视频"; }

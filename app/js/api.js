@@ -871,7 +871,7 @@ var API = (function () {
         /* The dynamic feed pages by cursor, not by number: `page=2` on its
          * own answers the first page again, the grid's de-duplication then
          * finds nothing new and marks the tab exhausted — one screen of 动态,
-         * ever (reported 2026-09-07: 「动态页面的数量也太少了」). The cursor is
+         * ever (reported 2026-09-07 as far too few 动态). The cursor is
          * the `offset` each answer carries; page 1 starts from none. */
         /* The cursor travels with the caller's cache, not in module state:
          * a page answer that app.js discards (tab changed, cache cleared)

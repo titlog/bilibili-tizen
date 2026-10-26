@@ -123,9 +123,9 @@ var Nav = (function () {
      * different lengths, and there up and down go to the next row first, then
      * to the nearest item in it. Column-first sent 收藏 / 看评论 / the speed
      * chips straight past a two-button 上一集 / 下一集 row to the 合集 tiles
-     * under them, because only 弹幕 and 点赞 sat over those two buttons (the
-     * viewer: 「在后面几个按钮按了下键就跑到最下面的合集去了」). Not everywhere: on a
-     * screen of side-by-side columns the nearest row can be in the other one. */
+     * under them, because only 弹幕 and 点赞 sat over those two buttons (seen
+     * on the set the same day). Not everywhere: on a screen of side-by-side
+     * columns the nearest row can be in the other one. */
     function inRows(el) {
         for (var n = el; n && n !== document.body; n = n.parentNode) {
             if (n.className && (" " + n.className + " ").indexOf(" rows ") >= 0) { return true; }

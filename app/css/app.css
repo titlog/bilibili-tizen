@@ -327,8 +327,8 @@ body.density-5 .card-info-date { display: block; width: 100%; margin: 2px 0 0; f
 
 /* ---------------- toast ---------------- */
 
-/* In the middle of the screen, not along the bottom (2026-10-20, the viewer:
-   「这种文字提示，你就在屏幕中央提示……在屏幕下方，有时候注意不到」 — the 番剧
+/* In the middle of the screen, not along the bottom (2026-10-20: a notice
+   down there is easy to miss — the 番剧
    region-lock notice was missed down there). Above the panel and the side views. */
 #toast {
     position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -652,7 +652,7 @@ body.density-5 .library-item { width: 344px; }
 .opt-up.focused { border-color: #ff6699; background: rgba(255,102,153,0.18); }
 .panel-meta-rest { white-space: nowrap; }
 /* 关注 (2026-10-20), beside the uploader's chip and on their page. */
-/* The uploader chip's own light grey, not pink (the viewer: 「不要用粉色，太亮了」);
+/* The uploader chip's own light grey, not pink (pink was too bright);
    「已关注」 in dimmer text. */
 .opt-follow {
     font-size: 24px; padding: 8px 22px; border-radius: 999px;
@@ -711,9 +711,9 @@ body.density-5 .library-item { width: 344px; }
  * twenty-odd lines, and getting from the related videos back up to the
  * uploader took that many presses of 上 — the selftest ran out at 24. */
 .opt-row.hscroll { flex-wrap: nowrap; overflow: hidden; }
-/* ⟶ 2026-10-20 the 合集 went back to tiles, four to a row (the viewer: 「不要放在
- * 一行展示，就一直平铺展示这样更直观」): 4 × 436 + 3 × 16 = 1792. 分P followed
- * the same evening (「分 P 也像合集那样按段折叠吧」). */
+/* ⟶ 2026-10-20 the 合集 went back to tiles, four to a row (tiles read more
+ * plainly than one sideways row): 4 × 436 + 3 × 16 = 1792. 分P followed
+ * the same evening, folded into ranges like the 合集. */
 #opt-season .opt, #opt-parts .opt { width: 436px; max-width: none; }
 /* Past 50 the 合集 — and since the same evening 分P — is a row of ranges
    instead (openEpisodeList). */

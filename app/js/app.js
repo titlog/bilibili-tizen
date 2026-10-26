@@ -127,7 +127,8 @@
     }
 
     /* Refusals that logging in answers, said as that to a viewer on no account
-     * (10-25: 「需要登录才能用的，就提示用户先登录，不要默默报错」). -101 is
+     * (10-25: what needs an account should ask for a sign-in, not fail with a
+     * bare error). -101 is
      * bilibili's 「账号未登录」; -352 is the risk check that catches requests
      * carrying no account — 排行 and the zone tabs on four sets with none,
      * 10-22 to 10-24, never on a signed-in one. Empty when signed in, and for
@@ -137,10 +138,25 @@
         return "没登录时 B 站不给，先去「我的」扫码登录再试";
     }
 
+    /* The sign-in prompt is the answer, not a fault: the screen already says
+     * what to do, and uploading it told the developer nothing new — 10-26,
+     * three sets on no account uploaded 「先去「我的」扫码登录再试」 as
+     * incidents in one day. The line stays in the log, and goes up with the
+     * next real incident. */
+    function askLogin(text, why) {
+        toast(text);
+        report("account", "没登录被拒，提示了扫码登录（" + why + "）");
+    }
+    /* trouble() unless logging in is the answer. */
+    function troubleOrLogin(why, text) {
+        var login = loginNeeded(why);
+        if (login) { askLogin(login, why); } else { trouble(text); }
+    }
+
     /* Errors used to be terminal: the only escape from "加载失败" was to switch
      * tab and come back. */
-    function showError(message, retry) {
-        Diag.incident(message);
+    function showError(message, retry, notFault) {
+        if (!notFault) { Diag.incident(message); }
         setScreen('<div class="empty">' + esc(message) +
             '<div class="actions" style="justify-content:center;margin-top:32px">' +
             '<div class="btn focusable" id="btn-retry">重试</div></div></div>');
@@ -668,13 +684,14 @@
 
     /* ---------------- 点赞 / 投币 / 收藏 in the play panel (2026-10-20) ----------------
      *
-     * Three buttons, as on the web page. The viewer: 「能不能用三个按钮来表示？现在用
-     * 一个弹窗、二次弹窗，不好看呀！交互也不顺畅，就和网页的三个按钮逻辑保持一致就好」.
-     * 点赞 toggles. 投币 opens 投 1 枚 / 投 2 枚 in the row under the buttons, and
-     * likes as well, as the web page's 「同时点赞内容」 (ticked by default) does —
-     * picking the count is the one confirmation, as the web page asks once. 收藏
-     * toggles the account's folder when it has one, and opens the folders in that
-     * row when it has several. Lit buttons and counts say what was done; success
+     * Three buttons, as on the web page: a popup with a second popup behind it
+     * looked bad and was awkward to move through, and the web page's three
+     * buttons are the logic to follow. 点赞 toggles. 投币 opens 投 1 枚 /
+     * 投 2 枚 in the row under the buttons, and likes as well, as the web
+     * page's 「同时点赞内容」 (ticked by default) does — picking the count is
+     * the one confirmation, as the web page asks once. 收藏 toggles the
+     * account's folder when it has one, and opens the folders in that row
+     * when it has several. Lit buttons and counts say what was done; success
      * gets no toast. The long-press menu on cards is unchanged. */
     var pa = null;   /* this video's: key, aid, liked, coins, folders, loading, loaded, busy, more, d */
 
@@ -957,7 +974,7 @@
 
     /* ---------------- 关注 (2026-10-20) ----------------
      *
-     * The viewer: 「增加一个关注 UP 主的功能」. Beside the uploader's chip in the
+     * Following an uploader from the television. Beside the uploader's chip in the
      * play panel and on their page, the way the web page puts 「+ 关注」 by the
      * name: pink 「+ 关注」, grey 「已关注」, a press toggles. No confirmation for
      * unfollowing — pressing again undoes it. Read once per account and
@@ -1367,10 +1384,10 @@
     /* Picking from the panel: same `fromPanel` reason, and the panel has to come
      * down first or the new video starts underneath it.
      *
-     * And 返回 from the video picked comes back here (2026-10-20, the viewer:
-     * 「从相关推荐点进去之后再按返回，应该回到这个相关推荐，而不是一下子跳回到
-     * 首页」): the video being left, where it was, and which card was picked
-     * go on `backStack`, and backFromPlayer() replays it from that second with
+     * And 返回 from the video picked comes back here (2026-10-20: 返回 after a
+     * related pick should land back on the related videos, not jump all the
+     * way out to the home page): the video being left, where it was, and
+     * which card was picked go on `backStack`, and backFromPlayer() replays it from that second with
      * the panel open and the ring on that card. */
     var panelGrid = cardPager("opt-related", function (v) {
         if (playing && playing.detail) {
@@ -1525,7 +1542,7 @@
      * concurrent requests to one host strictly one at a time, about 21ms apart —
      * so a screen of 270 cards is 270 queued image requests down the same pipe
      * the player uses. A hundred is roughly six seconds of that at worst, deep
-     * enough that the complaint it answers ("历史太少") does not come back, and
+     * enough that the history no longer feels too short, and
      * shallow enough to stay a list rather than a download. If it ever needs to
      * be deeper, page it in as the focus nears the end the way the feed does —
      * do not simply raise this. */
@@ -1691,7 +1708,7 @@
     /* 人工智能 (1011) and 科技数码 (1012) were tabs until 2026-08-15 and were
      * taken out of the bar because nobody in this room watches them.
      *
-     * ⟶ 2026-10-18 the viewer asked to choose (「自选分区页签」), so every zone
+     * ⟶ 2026-10-18 the zone tabs became the viewer's choice, so every zone
      * is here: the 30 public main zones of the current layout, in the site's
      * own order. bilibili still publishes no list; this one is the community's
      * (pskdje/bilibili-API-collect, docs/video/video_zone_v2.md). It agrees with
@@ -1714,8 +1731,8 @@
     var ZONES = {};
     for (var zi = 0; zi < ZONE_LIST.length; zi++) { ZONES[ZONE_LIST[zi][0]] = ZONE_LIST[zi][2]; }
 
-    /* The whole top bar is the viewer's (2026-10-18: 「直播 动态 排行 稍后 热门
-     * 我的都可以设置，只是第一个默认推荐就好了，其次顺序也可以允许用户调整」).
+    /* The whole top bar is the viewer's (2026-10-18: 直播 动态 排行 稍后 热门
+     * 我的 can all be added, taken out and reordered; only 推荐 stays first).
      * 推荐 is first and 搜索 / 设置 are last, fixed — 设置 is the way back to
      * this choice, and 推荐 is what the set opens on. Between them, whatever is
      * in `tabs`, in its order: the built-in pages and the zones alike. The
@@ -2174,7 +2191,7 @@
              * tab said them is here (10-22: five 「code -352」 from a set in HK,
              * and nothing to say which feed). */
             report("feed", kind + " 加载失败（" + why + "），给了重试按钮");
-            showError(loginNeeded(why) || ("加载失败：" + why), function () { loadFeed(kind); });
+            showError(loginNeeded(why) || ("加载失败：" + why), function () { loadFeed(kind); }, !!loginNeeded(why));
         };
         if (bootSlot) {
             /* Asked while the picker was up; a failure there is asked again
@@ -4307,17 +4324,28 @@
         }, function (why) {
             if (!stillViewing(token)) { return; }
             cancelOpening();
-            trouble(loginNeeded(why) || ("打开失败：" + why));
+            /* -404 / 62002 on a card is the 稿件 itself: deleted, hidden, or not
+             * visible from this region. 10-26: a set in HK and one in TW, both
+             * opening search results, got 「打开失败：wbi/view code -404 啥都木有」
+             * again and again — the raw answer on screen, an upload each time,
+             * and no line saying which video. Search keeps listing videos that
+             * the 稿件 page will not show here; that is not a fault to report. */
+            if (API.gone(why) || /code 62002/.test(String(why))) {
+                report("player", v.bvid + " " + Diag.priv(String(v.title || "").slice(0, 20)) + " 打不开：" + why +
+                       "（稿件没了，或者这个地区看不到）");
+                toast("这个视频看不了：可能已经被删除，或者在你所在的地区不能看");
+                return;
+            }
+            troubleOrLogin(why, "打开失败：" + why);
         });
     }
 
     /* A card without a cid (搜索, 动态, UP 主页, 收藏夹…) has to ask view() for
      * one before anything can play. That round trip used to show a toast,
      * 「正在打开…」, which then sat under the picture for its full four seconds
-     * once the video was up (the viewer, 10-18: 「点开一个视频，不要在下方显示
-     * 正在打开」). Now the player's own loading screen comes up at once with the
-     * card's title — the same thing a card that carries its cid shows — so the
-     * press still visibly does something. Until view() answers, keys are held
+     * once the video was up (taken out 10-18). Now the player's own loading
+     * screen comes up at once with the card's title — the same thing a card
+     * that carries its cid shows — so the press still visibly does something. Until view() answers, keys are held
      * back from the grid behind it and 返回 goes back to that grid. */
     var opening = false;
     function showOpening(v) {
@@ -5352,7 +5380,7 @@
                 session.detail.aid = d.aid;
                 openComments();
             }, function (why) {
-                if (playing === session) { trouble(loginNeeded(why) || ("评论暂时无法打开：" + why)); }
+                if (playing === session) { troubleOrLogin(why, "评论暂时无法打开：" + why); }
             });
             return;
         }
@@ -5450,8 +5478,8 @@
              * and Nav.reset puts the focus on `.opt.current`, so the row opens
              * on the part being watched rather than at P1. */
             /* ⟶ 2026-10-20 tiled four to a row like the 合集, and past fifty
-             * folded into ranges whose list opens on the right (the viewer:
-             * 「分 P 也像合集那样按段折叠吧」). */
+             * folded into ranges whose list opens on the right, the same as
+             * the 合集. */
             var folded = d.pages.length > SEASON_FOLD;
             if (folded) {
                 var curP = -1;
@@ -5487,7 +5515,7 @@
             /* Say so. Hiding the group here is what a single-part video does,
              * and a viewer who knows the upload has twenty parts cannot tell
              * the two apart — that is exactly how the 412 of 2026-09-07 got
-             * reported: 「按向下没有出来分 P 列表」. */
+             * reported: as 下 opening no part list. */
             group.className = "opt-group";
             el("opt-parts").innerHTML = '<div class="empty">分 P 列表加载失败（' +
                 esc(playing.metaWhy || "?") + "）</div>";
@@ -5606,8 +5634,8 @@
     }
 
     /* bilibili writes 「-」 for an upload with no description, and the panel
-     * showed it as a stray dash under the uploader (10-20, the viewer: 「up 主
-     * 下面那一行是啥？」). Blank, or only punctuation: no line at all. */
+     * showed it as a stray dash under the uploader (10-20: nobody could tell
+     * what that line was). Blank, or only punctuation: no line at all. */
     function paintDesc(desc) {
         var text = String(desc || "").replace(/^\s+|\s+$/g, "").slice(0, 400);
         var node = el("panel-desc");
@@ -5780,9 +5808,9 @@
              * what is behind the video, so this press means 返回. */
             if (state.screen === kind) { stopPlayback(); return; }
             var mid = cur.mid, name = cur.author, face = cur.face;
-            /* 返回 from that page comes back here (2026-10-20, the viewer: 「从一个
-             * 视频下方的 UP 主点进他的 UP 主页，然后再按返回键，为什么就退到了首页？
-             * 应该退到刚刚那个视频呀」): this video, this second, the related-pick
+            /* 返回 from that page comes back here (2026-10-20: an UP page opened
+             * from under a video should go back to that video on 返回, not out
+             * to the home page): this video, this second, the related-pick
              * trail behind it, and the ring back on the chip. */
             var ret = { detail: cur, cid: playing.cid, kind: kind, pick: -1, focus: "panel-up",
                         at: Player.hasPosition() ? Player.position() : lastKnownPosition,
@@ -5805,8 +5833,8 @@
         paintEpisodeControls();
         paintSpeed();
         ot.mark("倍速");
-        /* No 弹幕 row since 2026-10-20 (the viewer: 「弹幕的设置入口，就保留在统一设置的
-         * 那个入口」) — it is a setting of this television, not of one video.
+        /* No 弹幕 row since 2026-10-20 (its one place is the settings page) — it
+         * is a setting of this television, not of one video.
          * PR #10's 弹幕位置 row went the same way (10-25): 设置 only. */
 
         /* Related videos live in the panel now, so "what else" never costs the
@@ -6572,7 +6600,7 @@
                     repaintResumeStrip();
                 });
             } else {
-                trouble(loginNeeded(whyText) || ("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）"));
+                troubleOrLogin(whyText, "播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
             }
             failOut();
         }
@@ -7105,7 +7133,7 @@
      * uploader page, opened from the panel or the end-of-video chooser. It runs
      * after the wake refresh has been paid, so a page opened on a set that slept
      * through the video still sits on top of a fresh home feed. */
-    /* Where the time goes between 返回 and the grid (10-22, 「按返回键感觉卡顿」):
+    /* Where the time goes between 返回 and the grid (10-22, 返回 felt sluggish):
      * each synchronous step, then the frames after it — a stall a viewer
      * feels is a long frame, not a long function. One line per exit. */
     function backTimer(what) {
@@ -7194,7 +7222,7 @@
     }
 
     /* Every key, timed to the frames after it (10-22, after 返回 went from
-     * ~280 ms to ~50 ms: 「再看看还有哪些地方可以优化体验」). A line only when it
+     * ~280 ms to ~50 ms: to find what else still feels slow). A line only when it
      * was slow — the first frame or any frame in the next 0.6 s over 100 ms,
      * which a viewer feels as the set ignoring the remote for a moment. One
      * measurement at a time: a held key's repeats are the same press. */
@@ -7839,10 +7867,10 @@
              * and that is the one thing that gets a refused stream through.
              * 10-23/24: two sets on no account, refused on most videos, told
              * to wait a few minutes. */
-            trouble(refused
-                ? (Auth.accessKey() ? "视频流被拒绝（403）——可能是临时限流，过几分钟再试，或换一个视频"
-                                    : "视频流被拒绝（403）——先去「我的」扫码登录再试")
-                : "播放错误：" + data);
+            if (refused && !Auth.accessKey()) { askLogin("视频流被拒绝（403）——先去「我的」扫码登录再试", "视频流 403"); }
+            else {
+                trouble(refused ? "视频流被拒绝（403）——可能是临时限流，过几分钟再试，或换一个视频" : "播放错误：" + data);
+            }
             failOut();
         }
     });

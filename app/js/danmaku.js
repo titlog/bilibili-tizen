@@ -28,7 +28,7 @@ var Danmaku = (function () {
      * fractional step (it was 1920/7000, 4.57 px a frame) a comment lands between
      * pixels on most frames and the compositor draws it filtered — the text goes
      * soft and sharp from frame to frame, which reads as a stutter in the
-     * scroll (10-18, the viewer: 「从右往左飘的时候还是能看出一点点卡顿感」).
+     * scroll (10-18: still a slight judder as comments drift right to left).
      * Keyframes start and end on whole pixels for the same reason. A short
      * comment crosses in ~8.5 s. */
     var SPEED = 0.24;
