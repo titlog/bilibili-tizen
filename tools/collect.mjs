@@ -54,6 +54,15 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  /* A media url that answers nothing for ?ms= and then hangs up: the selftest's
+   * durl that fails before any picture, with time to press keys on the black
+   * screen first (10-27). A refused port fails too fast to press anything. */
+  if (req.method === "GET" && req.url.startsWith("/hang")) {
+    const ms = Math.min(30000, Number(new URL(req.url, "http://x").searchParams.get("ms")) || 8000);
+    setTimeout(() => req.socket.destroy(), ms);
+    return;
+  }
+
   if (req.method !== "POST") { res.writeHead(200).end("collector up"); return; }
 
   let body = "";

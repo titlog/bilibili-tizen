@@ -1050,7 +1050,10 @@ var SelfTest = (function () {
             var chip = document.getElementById("panel-up");
             if (!chip || chip.offsetParent === null) { return "面板里没有 UP 主芯片"; }
             if (!chip.textContent) { return "UP 主芯片上没有名字"; }
-            rel.upVideo = document.getElementById("player-title").textContent;
+            /* The cid, not the title on screen: a 合集 episode opened by 下一集
+             * shows the episode's name until view() answers with the 稿件's,
+             * and the return paints the latter (10-27, 「3-8 赵敏有多聪明…」). */
+            rel.upVideo = (window.__stPlayingIds() || {}).cid || 0;
             post("UP 主芯片：" + chip.textContent);
             return null;
         }],
@@ -1104,7 +1107,7 @@ var SelfTest = (function () {
         ["回到那个视频，面板开着，焦点在 UP 主芯片", 1000, function () {
             if (visible("shell")) { return "返回键退回了网格，没有回到视频"; }
             if (visible("player-loading")) { return WAIT; }
-            if (document.getElementById("player-title").textContent !== rel.upVideo) { return WAIT; }
+            if (((window.__stPlayingIds() || {}).cid || 0) !== rel.upVideo) { return WAIT; }
             if (!visible("options")) { return WAIT; }
             return document.querySelector("#panel-up.focused") ? null : "面板开了，焦点却不在 UP 主芯片上";
         }, 15000, "15 秒了还没回到刚才那个视频"],
@@ -1548,6 +1551,54 @@ var SelfTest = (function () {
             key(KEY.RETURN);
             Settings.set("danmaku", probe.dmWas);
             return visible("danmaku") ? "退出播放之后弹幕层还在" : null;
+        }],
+
+        /* 10-27 (a set on no account): the durl failed before any picture, the
+         * viewer pressed right twice on the black screen, and the failure was
+         * taken for one mid-play — 「播放中出错，从 0:20 用 DASH 原地重启」
+         * sent the whole ladder into the same 403s again and the exit said
+         * 「播放错误」 instead of the 扫码登录 line. Before a picture it is a
+         * startup failure: DASH takes over (到画面(兜底)) from where the presses
+         * asked. The durl is the collector holding the request eight seconds
+         * and hanging up. */
+        ["渐进式出画面前失败：打开一个视频，渐进式换成吊着的地址", 600, function () {
+            probe.pf = null;
+            if (!visible("shell")) { return "不在首页（上一步没退出播放）"; }
+            var card = document.querySelector('#feed-grid .card[data-i="2"]');
+            if (!card) { return "网格里找不到第三张卡片"; }
+            window.__stProgFailOnce(REPORT_TO.replace(/\/report$/, "") + "/hang?ms=8000");
+            Nav.focus(card);
+            key(KEY.ENTER);
+            probe.pf = {};
+            return null;
+        }],
+        ["渐进式出画面前失败：黑屏里按两下右键", 300, function () {
+            if (!probe.pf) { return null; }
+            if (Player.mode() !== "avplay" || !visible("player-loading")) { return WAIT; }
+            key(KEY.RIGHT);
+            key(KEY.RIGHT);
+            return null;
+        }, 8000, function () {
+            var m = Player.mode() || "没起来";
+            probe.pf = null;
+            return "8 秒了还没走渐进式（播放器 " + m + "）——日志里有没有「自测：渐进式换成」";
+        }],
+        ["渐进式出画面前失败：换 DASH 兜底，从按到的地方起", 300, function () {
+            if (!probe.pf) { return null; }
+            var st = window.__stStrongState();
+            if (!st || !st.shown || Player.mode() !== "mse" || visible("player-loading")) { return WAIT; }
+            var t = secs(document.getElementById("player-pos").textContent);
+            post("渐进式出画面前失败：" + st.label + "，从 " + t + "s");
+            if (st.label !== "到画面(兜底)") { return "走的是「" + st.label + "」：出画面前的失败被当成了播放中出错"; }
+            return t >= 15 ? null : "兜底从 " + t + "s 起，黑屏里按的两下右键丢了";
+        }, 25000, "25 秒了 DASH 兜底还没出画面"],
+        /* Also after a bail above that left the player up, so 顶栏 starts home. */
+        ["渐进式出画面前失败：退出播放", 600, function () {
+            if (visible("shell")) {
+                return probe.pf ? "不在播放（没有返回，免得在首页按返回把应用退了）" : null;
+            }
+            key(KEY.RETURN);
+            return null;
         }],
 
         /* 顶栏 (2026-10-18): the bar is the viewer's — added to from 设置,

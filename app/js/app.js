@@ -2543,6 +2543,12 @@
     window.__stLoadFeed = function (kind) { loadFeed(kind); };
     window.__stDanmaku = function (level) { setDanmakuLevel(level); };
 
+    /* The next video opens on progressive, at a url that fails before any
+     * picture — the black screen 10-27 pressed right on. A refused durl cannot
+     * be ordered up either. */
+    var stProgFailUrl = "";
+    window.__stProgFailOnce = function (url) { stProgFailUrl = url; };
+
     /* For deploy.sh --tokenswap: what the session made of a refusal, and a way
      * to leave the 15-minute window (C) behind so normal viewing is not
      * steered by a refusal the test manufactured. */
@@ -6517,6 +6523,16 @@
              * per-video 「渐进式败绩」 lesson only spared the *second* entry;
              * every other tie paid in full. Progressive still wins when it is
              * strictly better, and stays the last resort after DASH. */
+            if (stProgFailUrl) {
+                var stUrl = stProgFailUrl;
+                stProgFailUrl = "";
+                if (prog) {
+                    report("player", "自测：渐进式换成 " + stUrl + "，先走它");
+                    startProgressive({ quality: prog.quality, accept: prog.accept, urls: [stUrl] });
+                    return;
+                }
+                report("player", "自测：这个视频没有渐进式，照常走");
+            }
             if (dash && (!prog || dashQn >= prog.quality)) {
                 playDash(dash, dashQn); return;
             }
@@ -7679,9 +7695,19 @@
              * reset the position to zero.
              *
              * Same distinction the progress report already makes — progress is
-             * distance from startMs, never the clock. */
+             * distance from startMs, never the clock.
+             *
+             * And only once there has been a picture: before the duration is
+             * known the right key is a bare seekBy, which moves the position
+             * too. 10-27 a set on no account pressed it twice on a black
+             * screen, the refused last-resort durl read as 「播放中出错」 at
+             * 0:20, the whole ladder ran into the same 403s again and it exited
+             * on 「播放错误：shaka load 失败」 instead of the 扫码登录 line. The
+             * seek is still where the viewer wants to be, so the next leg
+             * starts there. */
             var watchedMs = lastKnownPosition - (playing.startMs || 0);
-            if (watchedMs > 3000) {
+            if (!playing.shown && watchedMs > 0) { playing.startMs = lastKnownPosition; }
+            if (playing.shown && watchedMs > 3000) {
                 /* This used to log 「保持不动」 and do exactly that — nothing.
                  * The guard was written against stale errors restarting a
                  * healthy video, but stale errors are already filtered by the
