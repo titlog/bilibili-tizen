@@ -16,6 +16,9 @@ var API = (function () {
     var note = function () {};
     /* Until when API.view asks its wbi twin first — see view(). */
     var viewGatedUntil = 0;
+    /* …and until when it asks the app's view first: both web ones were gated. */
+    var viewAppUntil = 0;
+    var viewGate2 = false;   /* selftest: both web view paths answer 412 */
     var VIEW_GATE_MEMORY = 30 * 60 * 1000;
     /* How long the strong path's second-stage header reads wait after the
      * manifest has been handed over — the start's own segment requests go to
@@ -443,6 +446,26 @@ var API = (function () {
         return b.join("");
     }
 
+    /* bvid → aid, the same mapping backwards: for when the only call that
+     * hands back an aid, view(), is the one being refused. Nine base-58 digits
+     * stay under 2^53, so the double is exact. 0 for anything that is not one. */
+    function aidOf(bvid) {
+        var b = String(bvid || "").split("");
+        if (b.length !== 12 || !/^BV1$/i.test(b.slice(0, 3).join(""))) { return 0; }
+        var s = b[3]; b[3] = b[9]; b[9] = s;
+        s = b[4]; b[4] = b[7]; b[7] = s;
+        var t = 0;
+        for (var i = 3; i < 12; i++) {
+            var n = BV_ALPHABET.indexOf(b[i]);
+            if (n < 0) { return 0; }
+            t = t * 58 + n;
+        }
+        var m = t % Math.pow(2, 51);
+        var hi = (Math.floor(m / TWO32) ^ Math.floor(BV_XOR / TWO32)) >>> 0;
+        var lo = ((m % TWO32) ^ (BV_XOR % TWO32)) >>> 0;
+        return hi * TWO32 + lo;
+    }
+
     /* The app ranking: rank/region for a zone (it takes the 1000-series ids),
      * rank?order=all for the whole site. Its items are the app's shape: `param`
      * is the aid as a string, `name` the uploader, `duration` seconds, a `cid`
@@ -538,12 +561,14 @@ var API = (function () {
         for (var i = 0; i < s.sections.length; i++) {
             var list = s.sections[i].episodes || [];
             for (var j = 0; j < list.length; j++) {
+                /* The app's view (see view()) puts cover and duration on the
+                 * episode itself, where the web one has them under `arc`. */
                 var e = list[j], arc = e.arc || {};
                 if (!e.bvid || !e.cid) { continue; }
                 eps.push({ bvid: e.bvid, aid: e.aid || arc.aid || 0, cid: e.cid,
                            title: e.title || arc.title || "",
-                           pic: thumb(arc.pic),
-                           duration: duration(arc.duration || (e.page && e.page.duration)) });
+                           pic: thumb(arc.pic || e.cover),
+                           duration: duration(arc.duration || e.duration || (e.page && e.page.duration)) });
             }
         }
         return eps.length > 1 ? { id: s.id, title: s.title || "", episodes: eps } : null;
@@ -582,13 +607,16 @@ var API = (function () {
 
         onNote: function (fn) { note = fn; },
         bvidOf: bvidOf,
+        aidOf: aidOf,
 
         /* deploy.sh --selftest walks the two detours on a set that never needs
          * them: this television's writes carry no Origin, and its ranking goes
          * with an access_key. */
         _selftest: {
             gateWrites: function (on) { originGated = !!on; },
-            rank352: function (on) { rank352 = !!on; }
+            rank352: function (on) { rank352 = !!on; },
+            /* Off also forgets that the app's view goes first: the gate was made up. */
+            viewGate2: function (on) { viewGate2 = !!on; if (!on) { viewAppUntil = 0; } }
         },
 
         setCardWidth: function (px) { if (px > 0) { cardWidth = px; } },
@@ -1547,36 +1575,93 @@ var API = (function () {
             function gated(why) { return /^HTTP |^bad JSON|code -352|code -403/.test(String(why)); }
             var plain = BASE + "/x/web-interface/view?bvid=" + bvid;
             var twin = BASE + "/x/web-interface/wbi/view?bvid=" + bvid;
-            /* The gate is not per request: 2026-09-28 it answered 412 to 14 of
-             * 14 videos, each one a wasted request into the very IP gate that
-             * was refusing it. Once it has refused, the twin goes first for a
-             * while, with the plain endpoint kept as the fallback in case the
-             * gate has moved to the twin instead. */
-            if (new Date().getTime() < viewGatedUntil) {
-                getJson(twin, function (d) {
-                    onOk(shape(d), "wbi/view 答上了（view 近来被闸，先问它）");
-                }, function (why2) {
-                    if (!gated(why2)) { onFail("wbi/view " + why2); return; }
-                    getJson(plain, function (d) {
-                        viewGatedUntil = 0;
-                        onOk(shape(d), "wbi/view 答 " + why2 + "，view 又答上了");
-                    }, function (why1) {
-                        onFail("wbi/view " + why2 + "；view " + why1);
+            /* Both of those are on api.bilibili.com, and the gate closes both:
+             * 10-25 and 10-29 a set opening search results got 412 from each,
+             * and 「打开失败」 was the end of it — a card with no cid has nothing
+             * else to start from. The phone app's own view, on app.bilibili.com
+             * (the host the space list moved to for the same gate, docs/平台坑.md),
+             * answers the same payload by aid, signed the way rank/region is,
+             * and the bvid gives the aid without asking (aidOf). Measured from
+             * here 10-29 while view answered 412: code 0, the same fields
+             * shape() reads, 合集 episodes with cover and duration on the
+             * episode itself; no is_upower_*, and a 充电专属 video is -404 to it.
+             * Whether it answers while *both* web
+             * paths are gated could not be produced from here — the `via`
+             * line, or the failure text, will say. */
+            function askApp(onDone, onMiss) {
+                var aid = aidOf(bvid);
+                if (!aid) { onMiss("bvid 算不出 aid"); return; }
+                getJson("https://app.bilibili.com/x/v2/view?" +
+                        Auth.signTv({ aid: aid, platform: "android", mobi_app: "android", build: 7280300 }),
+                        function (d) { onDone(shape(d)); }, onMiss);
+            }
+            function appAfter(tried) {
+                askApp(function (v) {
+                    viewAppUntil = new Date().getTime() + VIEW_GATE_MEMORY;
+                    onOk(v, tried + "，app 端 view 答上了（之后 30 分钟先问它）");
+                }, function (why3) {
+                    /* Its 「没有」 is not the 稿件 gone: 10-29 it answered -404 for a
+                     * 充电专属 video the web view serves (the app playurl: 87007).
+                     * Said without the code, so it is not read as deleted. */
+                    onFail(tried + "；app 端 view " + (/code (?:-404|62002)\b/.test(String(why3))
+                        ? "也不给（它说没有不作数：充电专属它也这么答）" : why3));
+                });
+            }
+            function web(appLast) {
+                if (viewGate2) {
+                    var faked = "view HTTP 412（自测）；wbi/view HTTP 412（自测）";
+                    if (appLast) { appAfter(faked); } else { onFail(faked); }
+                    return;
+                }
+                /* The gate is not per request: 2026-09-28 it answered 412 to 14
+                 * of 14 videos, each one a wasted request into the very IP gate
+                 * that was refusing it. Once it has refused, the twin goes first
+                 * for a while, with the plain endpoint kept as the fallback in
+                 * case the gate has moved to the twin instead. */
+                if (new Date().getTime() < viewGatedUntil) {
+                    getJson(twin, function (d) {
+                        onOk(shape(d), "wbi/view 答上了（view 近来被闸，先问它）");
+                    }, function (why2) {
+                        if (!gated(why2)) { onFail("wbi/view " + why2); return; }
+                        getJson(plain, function (d) {
+                            viewGatedUntil = 0;
+                            onOk(shape(d), "wbi/view 答 " + why2 + "，view 又答上了");
+                        }, function (why1) {
+                            var tried = "wbi/view " + why2 + "；view " + why1;
+                            if (appLast && gated(why1)) { appAfter(tried); return; }
+                            onFail(tried);
+                        });
                     });
+                    return;
+                }
+                getJson(plain, function (d) {
+                    onOk(shape(d), "view 直接答上了");
+                }, function (why1) {
+                    if (!gated(why1)) { onFail(why1); return; }
+                    viewGatedUntil = new Date().getTime() + VIEW_GATE_MEMORY;
+                    getJson(twin, function (d) {
+                        onOk(shape(d), "view 答 " + why1 + "，wbi/view 不签名答上了（之后 30 分钟先问它）");
+                    }, function (why2) {
+                        var tried = "view " + why1 + "；wbi/view " + why2;
+                        if (appLast && gated(why2)) { appAfter(tried); return; }
+                        onFail(tried);
+                    });
+                });
+            }
+            /* Once both have been gated and the app answered, it goes first for
+             * a while; any failure there hands back to the web pair, which then
+             * has the last word (a 稿件 gone is theirs to say). */
+            if (new Date().getTime() < viewAppUntil) {
+                askApp(function (v) {
+                    onOk(v, "app 端 view 答上了（两个 web 端点近来都被闸，先问它）");
+                }, function (why3) {
+                    viewAppUntil = 0;
+                    note("meta", bvid + " app 端 view " + why3 + "，回去问网页端");
+                    web(false);
                 });
                 return;
             }
-            getJson(plain, function (d) {
-                onOk(shape(d), "view 直接答上了");
-            }, function (why1) {
-                if (!gated(why1)) { onFail(why1); return; }
-                viewGatedUntil = new Date().getTime() + VIEW_GATE_MEMORY;
-                getJson(twin, function (d) {
-                    onOk(shape(d), "view 答 " + why1 + "，wbi/view 不签名答上了（之后 30 分钟先问它）");
-                }, function (why2) {
-                    onFail("view " + why1 + "；wbi/view " + why2);
-                });
-            });
+            web(true);
         },
 
         /* bilibili's "this 稿件 is gone" as getJson formats it. Three places

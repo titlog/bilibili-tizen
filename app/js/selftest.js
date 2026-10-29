@@ -1553,6 +1553,66 @@ var SelfTest = (function () {
             return visible("danmaku") ? "退出播放之后弹幕层还在" : null;
         }],
 
+        /* 10-25 and 10-29: opening search results, a set got 412 from both
+         * view paths and 「打开失败」 — a card without a cid has only view() to
+         * start from. With both made to answer 412, the app's view on
+         * app.bilibili.com has to answer from this set, and such a card play. */
+        ["两个网页端 view 都 412：问 app 端 view", 300, function () {
+            probe.gv = { i: 1, skipped: [] };
+            API._selftest.viewGate2(true);
+            return null;
+        }],
+        /* Down the recommended list until one answers: a 充电专属 video is -404
+         * to the app's view (10-29, the first run), which says nothing of it. */
+        ["app 端 view 答上了：同一个视频，有 cid、分 P、UP 主，aid 和按 bvid 算的一样", 300, function () {
+            var g = probe.gv;
+            if (!g.asked) {
+                var v = (window.__stItems || [])[g.i];
+                if (!v || !v.bvid || g.i > 5) {
+                    API._selftest.viewGate2(false);
+                    return "推荐前 " + g.i + " 个都没从 app 端 view 答上：" + g.skipped.join("；");
+                }
+                g.asked = true; g.v = v; g.d = null; g.why = "";
+                API.view(v.bvid, function (d, via) { g.d = d; g.via = via; }, function (why) { g.why = why; });
+                return WAIT;
+            }
+            if (g.why) {
+                g.skipped.push(g.v.bvid + " " + g.why.replace(/^.*；app 端 view /, ""));
+                g.i++; g.asked = false;
+                return WAIT;
+            }
+            if (!g.d) { return WAIT; }
+            post("app 端 view：" + g.v.bvid + " " + g.via + "，分P " + (g.d.pages || []).length +
+                 (g.d.season ? "，合集 " + g.d.season.episodes.length + " 集" : "") +
+                 (g.skipped.length ? "（之前跳过 " + g.skipped.join("；") + "）" : ""));
+            var bad = !/app 端 view 答上了/.test(g.via) ? "答上的不是 app 端：" + g.via :
+                      g.d.bvid !== g.v.bvid ? "答的是另一个视频 " + g.d.bvid :
+                      !g.d.cid || !(g.d.pages || []).length ? "没有 cid 或分 P" :
+                      !g.d.author ? "没有 UP 主" :
+                      g.d.aid !== API.aidOf(g.v.bvid) ? "aid " + g.d.aid + " 和按 bvid 算的 " + API.aidOf(g.v.bvid) + " 对不上" : "";
+            if (bad) { API._selftest.viewGate2(false); }
+            return bad || null;
+        }, 30000, function () { API._selftest.viewGate2(false); return "30 秒了 app 端 view 还没答"; }],
+        ["打开这个视频的一张没 cid 的卡片", 300, function () {
+            window.__stOpenNoCid(probe.gv.v);
+            return null;
+        }],
+        ["它出画面了", 1000, function () {
+            var t = document.getElementById("toast");
+            if (t && t.className !== "hidden" && /打开失败|看不了/.test(t.textContent)) {
+                API._selftest.viewGate2(false);
+                return "提示了「" + t.textContent + "」";
+            }
+            var st = window.__stStrongState();
+            return st && st.shown ? null : WAIT;
+        }, 30000, function () { API._selftest.viewGate2(false); return "30 秒了还没出画面"; }],
+        ["退出播放，撤掉造出来的闸", 600, function () {
+            API._selftest.viewGate2(false);
+            if (visible("shell")) { return "不在播放（没有返回，免得在首页按返回把应用退了）"; }
+            key(KEY.RETURN);
+            return null;
+        }],
+
         /* 10-27 (a set on no account): the durl failed before any picture, the
          * viewer pressed right twice on the black screen, and the failure was
          * taken for one mid-play — 「播放中出错，从 0:20 用 DASH 原地重启」

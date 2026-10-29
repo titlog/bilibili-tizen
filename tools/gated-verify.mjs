@@ -8,7 +8,9 @@
  *     straight there; not for other hosts, not for a JSON 403, and a frame the
  *     engine will not let us script fails the write with the reason.
  *
- * And the aid → bvid mapping the app routes need, against pairs read from the
+ * view() with both web paths gated: the app's view, by the aid the bvid gives.
+ *
+ * And the aid ↔ bvid mapping the app routes need, against pairs read from the
  * web ranking the same day. */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -103,9 +105,103 @@ const GATE_PAGE = '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN
     [117483931441323, "BV16xnm6pE3d"], [170001, "BV17x411w7KC"]]) {
     assert.equal(API.bvidOf(aid), bvid, `av${aid}`);
     assert.equal(API.bvidOf(String(aid)), bvid, `"${aid}"`);
+    assert.equal(API.aidOf(bvid), aid, bvid);
   }
+  /* And back: two pairs the app's view answered 10-29 (aid asked, bvid given). */
+  assert.equal(API.aidOf("BV1oXnx6sEnc"), 117488562013838);
+  assert.equal(API.aidOf("BV1Nwso6vEpi"), 117521495625208);
+  for (let aid = 1; aid < 2 ** 50; aid = aid * 7 + 3) { assert.equal(API.aidOf(API.bvidOf(aid)), aid, `round trip av${aid}`); }
   assert.equal(API.bvidOf(0), "");
   assert.equal(API.bvidOf("x"), "");
+  assert.equal(API.aidOf(""), 0);
+  assert.equal(API.aidOf("BV1oXnx6sEn"), 0);
+  assert.equal(API.aidOf("BV1oXnx6sEn0"), 0);   /* 0 is not in the alphabet */
+  assert.equal(API.aidOf("av170001"), 0);
+}
+
+// ── view(): both web paths gated → the app's view, by the aid the bvid gives ──
+{
+  const viewData = (extra = {}) => ({ bvid: "BV1oXnx6sEnc", aid: 117488562013838, cid: 42977132680, title: "片子",
+    desc: "", owner: { mid: 1, name: "up", face: "" }, stat: { view: 3, like: 1, coin: 0, favorite: 0 },
+    duration: 60, pages: [{ cid: 42977132680, page: 1, part: "P1", duration: 60 }], ...extra });
+  const t = load();
+  t.respond(GATE_PAGE, 412);
+  t.respond(GATE_PAGE, 412);
+  t.respond({ code: 0, data: viewData({ ugc_season: { id: 9, title: "合集", sections: [{ episodes: [
+    { bvid: "BV1oXnx6sEnc", aid: 117488562013838, cid: 42977132680, title: "一", cover: "http://i0.hdslb.com/bfs/archive/a.jpg", duration: 61 },
+    { bvid: "BV17x411w7KC", aid: 170001, cid: 2, title: "二", cover: "http://i0.hdslb.com/bfs/archive/b.jpg", duration: 62 }] }] } }) });
+  let r = settle((ok, fail) => t.API.view("BV1oXnx6sEnc", ok, fail));
+  await flush();
+  assert.ok(r.ok, "both gated: answered by the app's view (" + r.fail + ")");
+  assert.match(t.calls[0].url, /\/x\/web-interface\/view\?bvid=BV1oXnx6sEnc(&|$)/);
+  assert.match(t.calls[1].url, /\/x\/web-interface\/wbi\/view\?bvid=BV1oXnx6sEnc(&|$)/);
+  assert.match(t.calls[2].url, /^https:\/\/app\.bilibili\.com\/x\/v2\/view\?.*\baid=117488562013838\b/);
+  assert.equal(r.ok[1], "view HTTP 412；wbi/view HTTP 412，app 端 view 答上了（之后 30 分钟先问它）");
+  assert.equal(r.ok[0].cid, 42977132680);
+  assert.equal(r.ok[0].pages.length, 1);
+  assert.equal(r.ok[0].season.episodes.length, 2, "the app's 合集 episodes are read");
+  assert.equal(r.ok[0].season.episodes[1].duration, "1:02", "duration on the episode itself");
+  assert.ok(r.ok[0].season.episodes[1].pic, "cover on the episode itself");
+
+  /* The next one goes to the app first. */
+  t.respond({ code: 0, data: viewData() });
+  r = settle((ok, fail) => t.API.view("BV1oXnx6sEnc", ok, fail));
+  await flush();
+  assert.match(t.calls[3].url, /^https:\/\/app\.bilibili\.com\/x\/v2\/view\?/);
+  assert.equal(r.ok[1], "app 端 view 答上了（两个 web 端点近来都被闸，先问它）");
+
+  /* It failing hands back to the web pair (twin first: the gate is remembered),
+   * and the web pair has the last word — no second app request. */
+  t.respond({ code: -500, message: "x" });
+  t.respond(GATE_PAGE, 412);
+  t.respond({ code: -404, message: "啥都木有" });
+  r = settle((ok, fail) => t.API.view("BV1oXnx6sEnc", ok, fail));
+  await flush();
+  assert.match(t.calls[5].url, /\/wbi\/view\?/);
+  assert.match(t.calls[6].url, /\/web-interface\/view\?/);
+  assert.equal(r.fail, "wbi/view HTTP 412；view code -404 啥都木有");
+  assert.ok(t.API.gone(r.fail));
+  assert.equal(t.left(), 0);
+  assert.ok(t.notes.some((n) => /app 端 view code -500 x，回去问网页端/.test(n)), t.notes.join("\n"));
+}
+{
+  /* A gone 稿件 on the twin is the twin's answer: no app request. */
+  const t = load();
+  t.respond(GATE_PAGE, 412);
+  t.respond({ code: -404, message: "啥都木有" });
+  const r = settle((ok, fail) => t.API.view("BV1oXnx6sEnc", ok, fail));
+  await flush();
+  assert.equal(r.fail, "view HTTP 412；wbi/view code -404 啥都木有");
+  assert.equal(t.calls.length, 2);
+}
+{
+  /* All three refusing: the text names each. The app's -404 is not the 稿件
+   * gone — it says that for a 充电专属 video the web view serves (10-29). */
+  const t = load();
+  t.respond(GATE_PAGE, 412);
+  t.respond(GATE_PAGE, 412);
+  t.respond({ code: -404, message: "啥都木有" });
+  let r = settle((ok, fail) => t.API.view("BV1oXnx6sEnc", ok, fail));
+  await flush();
+  assert.equal(r.fail, "view HTTP 412；wbi/view HTTP 412；app 端 view 也不给（它说没有不作数：充电专属它也这么答）");
+  assert.ok(!t.API.gone(r.fail));
+  assert.ok(!/62002/.test(r.fail));
+  const u = load();
+  u.respond(GATE_PAGE, 412);
+  u.respond(GATE_PAGE, 412);
+  u.respond({ code: -500, message: "服务器错误" });
+  r = settle((ok, fail) => u.API.view("BV1oXnx6sEnc", ok, fail));
+  await flush();
+  assert.equal(r.fail, "view HTTP 412；wbi/view HTTP 412；app 端 view code -500 服务器错误");
+}
+{
+  /* The plain path answering asks nothing else. */
+  const t = load();
+  t.respond({ code: 0, data: { bvid: "BV17x411w7KC", aid: 170001, cid: 1, title: "a", pages: [] } });
+  const r = settle((ok, fail) => t.API.view("BV17x411w7KC", ok, fail));
+  await flush();
+  assert.equal(r.ok[1], "view 直接答上了");
+  assert.equal(t.calls.length, 1);
 }
 
 const appItem = (aid, extra = {}) => ({ title: "t" + aid, cover: "http://i0.hdslb.com/bfs/archive/a.jpg", param: String(aid),
@@ -332,4 +428,4 @@ const appItem = (aid, extra = {}) => ({ title: "t" + aid, cover: "http://i0.hdsl
   assert.equal(t.notes[1], "api: 从框里发也被拒：HTTP 403 网页");
 }
 
-console.log("✓ gates: ranking -352 falls back to the app route then buvid3, gateway-refused writes go through the frame, aid→bvid");
+console.log("✓ gates: ranking -352 falls back to the app route then buvid3, gateway-refused writes go through the frame, view gated twice goes to the app's view, aid↔bvid");

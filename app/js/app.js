@@ -2541,6 +2541,10 @@
     /* For the danmaku frame-time run (deploy.sh --dmperf): open a list that
      * has dense comments, and switch danmaku off and on between windows. */
     window.__stLoadFeed = function (kind) { loadFeed(kind); };
+    /* A card that carries no cid (搜索, 动态, UP 主页…): what opens it is view(). */
+    window.__stOpenNoCid = function (v) {
+        playVideo({ bvid: v.bvid, title: v.title, pic: v.pic, author: v.author, duration: v.duration, play: v.play });
+    };
     window.__stDanmaku = function (level) { setDanmakuLevel(level); };
 
     /* The next video opens on progressive, at a url that fails before any
@@ -7028,8 +7032,13 @@
                 report("player", "用 bvid 换 aid 失败后已经换了视频，丢弃（" + why + "）");
                 return;
             }
-            report("player", "用 bvid 换 aid 失败（" + why + "）");
-            cb(0);
+            /* The aid is a function of the bvid; view() was asked for the
+             * panel's sake as much as for it. 10-25, both view paths 412: 「403
+             * 那条路也换不到 aid」, on a video whose bvid was in hand. */
+            var local = API.aidOf(d.bvid);
+            report("player", "用 bvid 换 aid 失败（" + why + "）" + (local ? "，按 bvid 算出 aid" : ""));
+            if (local) { session.detail.aid = local; }
+            cb(local);
         });
     }
 
