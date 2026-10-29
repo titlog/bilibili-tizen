@@ -53,7 +53,7 @@ zsh tools/setup.sh              # 只跑一次：这台电视、这台电脑、�
 node tools/collect.mjs | tee /tmp/bili.log   # 终端 1，一直开着（收集器不落盘，要回读就 tee）
 zsh tools/deploy.sh             # 终端 2：检查、签名、安装、启动（约 15 秒）
 zsh tools/deploy.sh --selftest  # 同上，构建自己走一遍全流程并上报（约 4 分钟，会自己放视频）
-zsh tools/deploy.sh --tokenswap # 只测「播放中 web 令牌被拒 → 换强令牌」（约 1 分钟，给 CDN 一个坏请求）
+zsh tools/deploy.sh --tokenswap # 只测「播放中 web 令牌被拒 → 换强令牌」和「排头失手、下一台 403」（约 1 分钟，给 CDN 两个坏请求）
 zsh tools/deploy.sh --dmperf    # 弹幕帧耗时
 zsh tools/deploy.sh --diag      # 诊断日志上传：设置里手动传一次、造一次出事自动传（先开 node tools/diag-local.mjs）
 node tools/diag-logs.mjs        # 读别人电视传上来的诊断日志（--device 编号 / <id>）
@@ -143,14 +143,16 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
 - 单文件（`durl`）封顶 720P，DASH 给到 1080P+；**两种形式并行请求，打平时 DASH 胜**。DASH 只能走 MSE（Shaka，
   清单以 `blob:` 交给它）：AVPlay 只肯从 HTTP 拿 MPD，而 widget 不能监听端口。
 - **换 CDN 节点不行**（签名绑主机）。**镜像只排序、不丢弃**（哪台是死的是当天的天气）；Shaka 对 401/403 不做
-  BaseURL 转移，所以 403 过的主机按视频拉黑、清单重建前 `preferGoodHosts`。
+  BaseURL 转移，所以 403 过的主机按视频拉黑、清单重建前 `preferGoodHosts`。**可恢复的失败之后它会换到下一台**：排头掐一下线，
+  重试就落到不认这个令牌的那台。接手的那台 403、排头没拒过这个文件 = 那台主机的事：记（主机, 文件）、之后不再把它放进这个文件的
+  候选，接着从排头放，不剔文件、不换令牌、不拆播放器（10-29，两台没登录的电视因此退出）。
 - CDN 按 IP 对突发请求限流，冷却以秒计：Shaka 重试跨度约十秒、首次加载被网络类错误拒了隔几秒重来一次；
   **从开发机探测要节制**，电视和开发机是同一个出口 IP。
 - **令牌强度由 playurl 的 `platform` 决定**：web 端点（`pc`）的令牌常被 403，app 端点（`android`，带 access_key）
   的强令牌被接受。撞 403 就换强令牌，缺 aid 先用 bvid 换。→ `docs/播放流令牌-app端点根治.md`
 - 强令牌（2026-10-20 起）：文件头**沿用 web 清单的分段索引**（同一路径即同一文件），不再现读；**播放中被拒不拆播放器**，
   后台铸好之后改写之后的分段请求、`retryStreaming`，换上后播放器的清单也换成强令牌那份；在用的文件对不全就整个重建一次；
-  **任何视频被拒后 15 分钟内**，新视频开播直接铸强令牌。`--tokenswap` 测这条路。
+  **任何视频被拒后 15 分钟内**，新视频开播直接铸强令牌。没 access_key 时不去换（当场换不了，退路是拆掉重建）。`--tokenswap` 测这条路。
 - **没登录时 `ranking/v2`（排行、分区页签）会 -352**：认 buvid3 cookie，不认签名。回 -352 就改走 app 端排行（`rank/region`，
   认 1000 号段分区号和全站；四次里约有一次随机回空，空了再问一次；条目没有 bvid，`bvidOf()` 从 aid 算），两次都空再带 `buvid3` 问一次 web。→ `docs/平台坑.md`
 - 哪台镜像、哪份文件、哪个编码族坏，都是**分钟级的天气**：坏文件 5 分钟过期，按视频的教训 6 小时过期，教训只当软偏好。

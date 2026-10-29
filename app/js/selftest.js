@@ -2241,7 +2241,48 @@ var SelfTest = (function () {
             return /近来被拒/.test(st.label) ? null :
                 "第二个没走「近来被拒」那条路（" + (st.label || "web 令牌") + "）";
         }, 25000, "25 秒了第二个还没出画面"],
+        /* 10-29: on no account, a cut on the lead host sent Shaka's retry to the
+         * next one, whose 403 tore a playing video down. That refusal is the
+         * host's: no swap, no rebuild, the stream goes on from the lead. */
+        ["退出播放，忘掉被拒（第三个从 web 令牌起）", 300, function () {
+            key(KEY.RETURN);
+            window.__stForgetRefusal();
+            return null;
+        }],
+        ["回到网格（第三个之前）", 500, function () { return visible("shell") ? null : WAIT; }, 5000, "5 秒了还没回到网格"],
+        ["打开推荐第三个视频", 300, function () { return swOpen(2); }],
+        ["第三个出画面、播过 6 秒", 1000, function () {
+            if (visible("shell") || visible("player-loading")) { return WAIT; }
+            return swPos() > 6000 ? null : WAIT;
+        }, 30000, function () { return "30 秒了还没播到 6 秒（位置 " + Math.round(swPos() / 1000) + "s）"; }],
+        ["造一次：排头镜像失手、下一台 403（当作没登录）", 200, function () {
+            var st = window.__stStrongState();
+            if (!st || st.route !== "dash") { return "这个视频走的不是 DASH，用不上"; }
+            if (st.strong) { return "这个视频一开始就是强令牌，造不出 web 令牌被拒"; }
+            sw.failovers = Player.test.swapInfo().failovers;
+            Player.test.fakeFailover();
+            return null;
+        }],
+        ["只记下那台主机：不换令牌、不重建", 500, function () {
+            var info = Player.test.swapInfo();
+            if (info.pending || info.swapped) { return "去换令牌了 —— 没登录时那是死路"; }
+            if (visible("player-loading") || visible("shell")) { return "加载画面或网格出来了 —— 那是重建或退出"; }
+            if (info.failovers > sw.failovers) { sw.failAt = swPos(); return null; }
+            return WAIT;
+        }, 20000, function () {
+            var info = Player.test.swapInfo();
+            return info.failoverLeft ? "改坏的请求一直没发出去（这个视频的文件只有一台主机？）" :
+                   "20 秒了没走到那条路（看 player: 那几行）";
+        }],
+        ["之后接着放", 8000, function () {
+            Player.test.endFakes();
+            var moved = swPos() - sw.failAt;
+            post("下一台被拒：在 " + Math.round(sw.failAt / 1000) + "s，之后 8 秒走了 " + (moved / 1000).toFixed(1) + "s");
+            if (visible("player-loading") || visible("shell")) { return "之后重建或退出了"; }
+            return moved >= 5000 ? null : "之后 8 秒只走了 " + (moved / 1000).toFixed(1) + " 秒";
+        }],
         ["收尾：退出播放，忘掉这次造出来的被拒", 300, function () {
+            Player.test.endFakes();
             if (!visible("shell")) { key(KEY.RETURN); }
             window.__stForgetRefusal();
             /* And the six-hour lesson the swap wrote for the first video: the

@@ -16,7 +16,9 @@ SELFTEST=false
 [ "$1" = "--dmperf" ] && SELFTEST='"dmperf"'
 # --tokenswap: a web-token 403 made to order mid-play (selftest.js, 2026-10-20) —
 # checks the strong token is swapped in without a rebuild, and that the next
-# video starts on it. One spoiled request to the CDN per run.
+# video starts on it; then (10-29) a third video's lead host made unreachable and
+# the next one's signature spoiled, as on no account: no swap, no rebuild. Two
+# spoiled requests to the CDN per run.
 [ "$1" = "--tokenswap" ] && SELFTEST='"tokenswap"'
 # --diag: the diagnostics upload through 设置 and from an incident (selftest.js,
 # 2026-10-21), sent to BILI_DIAG_TO — by default tools/diag-local.mjs on this

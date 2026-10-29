@@ -1124,7 +1124,8 @@ var Player = (function () {
                 if (!swapQuiet++) { log("换令牌期间又来一个 403（" + hostOf(err.data[0]) + "），先不动"); }
                 return;
             }
-            if (is403 && canSwapToken()) { startTokenSwap(err); return; }
+            if (is403 && canSwapToken() && strongMintable()) { startTokenSwap(err); return; }
+            if (is403 && refusedOnFailover(err)) { return; }
             noteBadHost(err);
             /* A critical 403 usually names one *file*, not one host — the
              * 15:54 incident: hev1-720p answered 403 on every host while its
@@ -1150,7 +1151,7 @@ var Player = (function () {
                 if (badTok && offerStrongToken()) { return; }
                 if (badTok && droppable(lastDash.dash, badTok)) {
                     var fromTok = (haveTime ? lastTime : (lastDash.startMs || 0));
-                    log("文件 " + badTok + " 被 403，从清单剔除，从 " +
+                    log("文件 " + badTok + " 被 403（" + hostOf(err.data[0]) + "），从清单剔除，从 " +
                         Math.round(fromTok / 1000) + "s 原地重建");
                     emit("status", "网络不顺，正在自动重试…");
                     incidentAt = new Date().getTime();
@@ -1305,6 +1306,20 @@ var Player = (function () {
                         return String(u).replace(/([?&]upsig=)[^&]*/, "$1" + "0000000000000000");
                     });
                     log("自测：把这个分段请求的签名改坏了，等 CDN 拒绝");
+                } else if (fakeFailover && request.uris.length > 1 && marks && marks.loaded !== undefined) {
+                    fakeFailover = 0;
+                    request.uris = [String(request.uris[0]).replace(/^[a-z]+:\/\/[^\/]+/i, "http://127.0.0.1:9"),
+                                    String(request.uris[1]).replace(/([?&]upsig=)[^&]*/, "$1" + "0000000000000000")];
+                    log("自测：排头镜像换成连不上的地址、下一台改坏签名，等 Shaka 换过去被拒");
+                }
+                /* A host that refused a file under this manifest's token is not
+                 * asked for it again while another host is listed — see
+                 * refusedOnFailover. */
+                var refused = lastDash && lastDash.dash && lastDash.dash.refused;
+                if (refused && request.uris.length > 1) {
+                    var rTok = fileTokenOf(request.uris[0]);
+                    var keep = request.uris.filter(function (u) { return !refused[hostOf(u) + " " + rTok]; });
+                    if (keep.length) { request.uris = keep; }
                 }
                 /* Send time per (file, range start), so the first media
                  * segment can be paired with its own request — see media1. */
@@ -1849,6 +1864,9 @@ var Player = (function () {
     /* deploy.sh --tokenswap: spoil the next media request's signature so the
      * CDN answers a real 403 — a refusal cannot be ordered up otherwise. */
     var fake403 = 0;
+    /* The same, for a refusal on the second host after the first one failed —
+     * and, for that check, a session that cannot mint (no account). */
+    var fakeFailover = 0, fakeNoMint = false, failoverRefusals = 0;
     function swapPathOf(u) { return String(u || "").replace(/^[a-z]+:\/\/[^\/]+/i, "").split(/[?#]/)[0]; }
 
     /* Only once there is a picture on a web manifest, and only the first time:
@@ -1859,6 +1877,54 @@ var Player = (function () {
         return mode === "mse" && !!shakaPlayer && !loadPending && haveTime &&
                !!lastDash && !!lastDash.dash && !lastDash.dash.strong &&
                !lastDash.dash.strongTried && !strongEmitted;
+    }
+
+    /* Whether app.js could mint a strong token for this session at all — what
+     * its tokenSwap handler asks. Without an access_key the swap is declined
+     * on the spot, and what that falls back to is the teardown. */
+    function strongMintable() {
+        if (fakeNoMint) { return false; }
+        return typeof Auth !== "undefined" && Auth.isLoggedIn() && !!Auth.accessKey();
+    }
+
+    /* A 403 from a host that was not first in its file's list is that host
+     * refusing this token — not the file, not the lead: Shaka moves on to the
+     * next BaseURL only after a *recoverable* failure on the one before (4.12's
+     * NetworkingEngine; a 401/403 is critical and never moves on). 10-29, two
+     * sets on no account, akam serving the web token: a cut on akam, the retry
+     * on cosov, its 403 — and the ladder took it for the token (a swap that
+     * cannot happen without an access_key, a teardown, then the progressive
+     * file akam had refused at the start: out, five minutes in) or for the
+     * file (480p and 360p excised in turn on a cosov 403 each, the list emptied
+     * twice: out, while the probe read 206 from akam for that same file). The
+     * pair goes on the manifest — the token is the manifest's, so a refetch or
+     * the strong one starts clean — the request filter leaves it out, and the
+     * stream goes on from the lead. At most files × hosts. When the lead has
+     * refused the file too, this is the ordinary 403 below. Only with a
+     * picture up: a load's 403 is load()'s catch's, whose immediate rebuild
+     * keys on noteBadHost learning the host *there*. */
+    function refusedOnFailover(err) {
+        var u = err.data && err.data[0], dash = lastDash && lastDash.dash;
+        var h = hostOf(u), tok = fileTokenOf(u);
+        if (!h || !tok || !dash || loadPending || !haveTime) { return false; }
+        var reps = [].concat(dash.video || [], dash.audio || []), lead = "";
+        for (var i = 0; i < reps.length; i++) {
+            if (repToken(reps[i]) === tok) { lead = hostOf((reps[i].urls && reps[i].urls[0]) || reps[i].baseUrl); break; }
+        }
+        var refused = dash.refused || (dash.refused = {});
+        if (!lead || lead === h || refused[lead + " " + tok]) { return false; }
+        if (!refused[h + " " + tok]) {
+            refused[h + " " + tok] = true;
+            failoverRefusals++;
+            noteBadHost(err);
+            var ahead = 0;
+            try { ahead = bufferedAhead(el("html5-video")); } catch (e) {}
+            log("文件 " + tok + " 在 " + lead + " 失手后换到 " + h + "，被 " + err.data[1] +
+                "：是这台主机不认这个令牌，不怪文件、不换令牌；这个文件不再找它要，接着从 " + lead +
+                " 放，前方还有 " + ahead.toFixed(1) + " 秒");
+        }
+        try { shakaPlayer.retryStreaming(); } catch (e2) {}
+        return true;
     }
 
     function startTokenSwap(err) {
@@ -2964,8 +3030,13 @@ var Player = (function () {
             fake403: function () {
                 if (typeof SELFTEST !== "undefined" && SELFTEST) { fake403 = 1; }
             },
+            fakeFailover: function () {
+                if (typeof SELFTEST !== "undefined" && SELFTEST) { fakeFailover = 1; fakeNoMint = true; }
+            },
+            endFakes: function () { fakeFailover = 0; fakeNoMint = false; },
             swapInfo: function () {
-                return { pending: !!swapPending, swapped: !!tokenSwap, fakeLeft: fake403, mode: mode };
+                return { pending: !!swapPending, swapped: !!tokenSwap, fakeLeft: fake403, mode: mode,
+                         failoverLeft: fakeFailover, failovers: failoverRefusals };
             }
         },
 
