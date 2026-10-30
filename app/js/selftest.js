@@ -1678,6 +1678,49 @@ var SelfTest = (function () {
             return count('#feed-grid .card[data-i="2"]') ? null : WAIT;
         }, 20000, function () { return "20 秒了推荐还没画出三张卡片"; }],
 
+        /* 10-30: seven seconds after a wake from standby both playurl forms
+         * answered HTTP 0 at once, and a second press a second later played.
+         * The player makes that press itself, once, and uploads nothing. */
+        ["连不上：打开一个视频，两种播放地址都回 HTTP 0", 600, function () {
+            probe.cut = null;
+            var v = (window.__stItems || [])[3];
+            if (!v) { return "推荐里没有第四张卡片"; }
+            if (!visible("shell")) { return "不在首页（上一步没退出播放）"; }
+            document.getElementById("toast").className = "hidden";
+            /* A refusal another video met would mint the strong token, and
+             * that manifest plays without either form. Put back afterwards:
+             * the steps below were written against it. */
+            probe.cut = { said: [], was: Diag.incident, refusedAt: window.__stForgetRefusal() };
+            Diag.incident = function (r) { probe.cut.said.push(r); probe.cut.was(r); };
+            API._selftest.playurlDown(2);
+            window.__stOpenNoCid(v);
+            return null;
+        }],
+        ["自己再要了一次，出画面了，不算出事", 1000, function () {
+            if (!probe.cut) { return null; }
+            if (probe.cut.said.length) {
+                Diag.incident = probe.cut.was;
+                API._selftest.playurlDown(0);
+                return "当出事传了：" + probe.cut.said.join(" / ");
+            }
+            var st = window.__stStrongState();
+            if (!st || !st.shown) { return WAIT; }
+            Diag.incident = probe.cut.was;
+            var left = API._selftest.playurlDown(0);
+            return left ? "造出来的 HTTP 0 还剩 " + left + " 个没用上（播放地址没从这条路要）" : null;
+        }, 30000, function () {
+            Diag.incident = probe.cut.was;
+            API._selftest.playurlDown(0);
+            return "30 秒了还没出画面";
+        }],
+        ["连不上：退出播放", 600, function () {
+            if (!probe.cut) { return null; }
+            window.__stRecallRefusal(probe.cut.refusedAt);
+            if (visible("shell")) { return "不在播放（没有返回，免得在首页按返回把应用退了）"; }
+            key(KEY.RETURN);
+            return null;
+        }],
+
         /* 10-27 (a set on no account): the durl failed before any picture, the
          * viewer pressed right twice on the black screen, and the failure was
          * taken for one mid-play — 「播放中出错，从 0:20 用 DASH 原地重启」

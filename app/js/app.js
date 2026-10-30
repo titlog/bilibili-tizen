@@ -2584,7 +2584,10 @@
                  strong: !!(playing.dashReady && playing.dashReady.strong),
                  label: playing.timedLabel || "", shown: !!playing.shown };
     };
-    window.__stForgetRefusal = function () { webRefusedAt = 0; };
+    /* Returns what it forgot: a step that only needs the window out of its
+     * way puts it back with __stRecallRefusal, for the steps after it. */
+    window.__stForgetRefusal = function () { var was = webRefusedAt; webRefusedAt = 0; return was; };
+    window.__stRecallRefusal = function (at) { webRefusedAt = at; };
     /* The video playing, for the selftest's one forced write through the frame. */
     window.__stPlayingIds = function () {
         return playing && playing.detail ? { aid: playing.detail.aid || 0, cid: playing.cid || 0 } : null;
@@ -6491,6 +6494,28 @@
             if (got.dash === undefined || got.prog === undefined ||
                     got.resume === undefined || got.strong === undefined) { return; }
 
+            /* Both forms failed without reaching bilibili — HTTP 0, at once.
+             * 10-30 (MY, Tizen 5.0): seven seconds after a wake from 1h47m of
+             * standby, both answered HTTP 0 within the second; the viewer
+             * pressed again a second later and it played, but the first press
+             * had said 「播放失败」 and uploaded an incident. That second press
+             * is made here instead, once. A timeout is not retried: twenty
+             * seconds have already gone. */
+            var cut = /^(HTTP 0|network error)$/;
+            if (!got.strong && !got.dash && !got.prog && !session.netRetried &&
+                    cut.test(got.dashWhy || "") && cut.test(got.progWhy || "")) {
+                session.netRetried = true;
+                report("player", "两种形式都没连上（dash " + got.dashWhy + " / durl " + got.progWhy +
+                       "），1.5 秒后原样再要一次");
+                el("loading-status").textContent = "网络不顺，正在自动重试…";
+                got.dash = got.prog = undefined;
+                got.dashWhy = got.progWhy = "";
+                setTimeout(function () {
+                    if (playing === session) { askStreams(true); }
+                }, 1500);
+                return;
+            }
+
             /* bilibili's own record for this video, which knows about every
              * device including this one. It only moves the position within the
              * part already chosen: naming a different part is a decision that
@@ -6745,38 +6770,42 @@
             });
         }
 
-        ask(pre && pre.dash, function (ok, fail) {
-            API.playurlDash(detail.bvid, cid, Settings.qnCap(), ok, fail);
-        }, function (dash) {
-            if (playing !== session) { return; }
-            var best = Player.pickDashVideo(dash);
-            report("player", "dash offers qn=" + ((best && best.id) || 0) +
-                   " accept=" + (dash.acceptQuality || []).join(","));
-            got.dash = dash;
-            decide();
-        }, function (dashWhy) {
-            if (playing !== session) { return; }
-            report("player", "no dash (" + dashWhy + ")");
-            got.dash = null;
-            got.dashWhy = dashWhy;
-            decide();
-        });
+        /* `fresh`: past the prefetch — decide()'s one retry asks again. */
+        function askStreams(fresh) {
+            ask(!fresh && pre && pre.dash, function (ok, fail) {
+                API.playurlDash(detail.bvid, cid, Settings.qnCap(), ok, fail);
+            }, function (dash) {
+                if (playing !== session) { return; }
+                var best = Player.pickDashVideo(dash);
+                report("player", "dash offers qn=" + ((best && best.id) || 0) +
+                       " accept=" + (dash.acceptQuality || []).join(","));
+                got.dash = dash;
+                decide();
+            }, function (dashWhy) {
+                if (playing !== session) { return; }
+                report("player", "no dash (" + dashWhy + ")");
+                got.dash = null;
+                got.dashWhy = dashWhy;
+                decide();
+            });
 
-        ask(pre && pre.prog, function (ok, fail) {
-            API.playurlProgressive(detail.bvid, cid, Settings.qnCap(), ok, fail);
-        }, function (r) {
-            if (playing !== session) { return; }
-            report("player", "progressive gave qn=" + r.quality +
-                   " accept=" + (r.accept || []).join(","));
-            got.prog = r;
-            decide();
-        }, function (why) {
-            if (playing !== session) { return; }
-            report("player", "no durl (" + why + ")");
-            got.prog = null;
-            got.progWhy = why;
-            decide();
-        });
+            ask(!fresh && pre && pre.prog, function (ok, fail) {
+                API.playurlProgressive(detail.bvid, cid, Settings.qnCap(), ok, fail);
+            }, function (r) {
+                if (playing !== session) { return; }
+                report("player", "progressive gave qn=" + r.quality +
+                       " accept=" + (r.accept || []).join(","));
+                got.prog = r;
+                decide();
+            }, function (why) {
+                if (playing !== session) { return; }
+                report("player", "no durl (" + why + ")");
+                got.prog = null;
+                got.progWhy = why;
+                decide();
+            });
+        }
+        askStreams(false);
 
         /* Third of the three, and the only one playback can start without —
          * hence the timer. A resume point is worth a third of a second of

@@ -20,6 +20,7 @@ var API = (function () {
     var viewAppUntil = 0;
     var viewGate2 = false;   /* selftest: both web view paths answer 412 */
     var viewNoCid = false;   /* selftest: the next view() answer has no cid and no parts */
+    var playurlDown = 0;     /* selftest: this many playurl answers fail as HTTP 0 */
     var VIEW_GATE_MEMORY = 30 * 60 * 1000;
     /* How long the strong path's second-stage header reads wait after the
      * manifest has been handed over — the start's own segment requests go to
@@ -598,6 +599,14 @@ var API = (function () {
         return { init: init, index: index };
     }
 
+    /* selftest: playurl the way a set just out of standby met it — HTTP 0 at once. */
+    function playurlCut(onFail) {
+        if (playurlDown <= 0) { return false; }
+        playurlDown--;
+        setTimeout(function () { onFail("HTTP 0"); }, 0);
+        return true;
+    }
+
     /* A stream url without its host and its signature: what names the file. */
     function streamPath(u) {
         return String(u || "").replace(/^[a-z]+:\/\/[^\/]+/i, "").split(/[?#]/)[0];
@@ -620,7 +629,9 @@ var API = (function () {
             /* Off also forgets that the app's view goes first: the gate was made up. */
             viewGate2: function (on) { viewGate2 = !!on; if (!on) { viewAppUntil = 0; } },
             viewNoCid: function (on) { viewNoCid = !!on; },
-            dynamic101: function (on) { dynamic101 = !!on; }
+            dynamic101: function (on) { dynamic101 = !!on; },
+            /* Set with a count, read with none: what is left of it. */
+            playurlDown: function (n) { if (arguments.length) { playurlDown = n; } return playurlDown; }
         },
 
         setCardWidth: function (px) { if (px > 0) { cardWidth = px; } },
@@ -1710,6 +1721,7 @@ var API = (function () {
         /* Progressive first: AVPlay handles durl natively, with real seeking and
          * hardware decode. DASH is only needed when a video has no durl. */
         playurlProgressive: function (bvid, cid, qn, onOk, onFail) {
+            if (playurlCut(onFail)) { return; }
             var url = BASE + "/x/player/playurl?bvid=" + bvid + "&cid=" + cid +
                       "&qn=" + (qn || 64) + "&fnval=1";
             getJson(url, function (d) {
@@ -1722,6 +1734,7 @@ var API = (function () {
         },
 
         playurlDash: function (bvid, cid, qn, onOk, onFail) {
+            if (playurlCut(onFail)) { return; }
             /* The 4K bit (128) joins the AV1 one when the quality setting reaches
              * 4K — see fnvalFor. */
             /* 2064 = 16 (DASH) | 2048 (AV1). fnval gates which codec families
