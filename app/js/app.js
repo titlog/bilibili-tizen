@@ -131,12 +131,30 @@
      * bare error). -101 is
      * bilibili's 「账号未登录」; -352 is the risk check that catches requests
      * carrying no account — 排行 and the zone tabs on four sets with none,
-     * 10-22 to 10-24, never on a signed-in one. Empty when signed in, and for
-     * any other answer, which logging in would not change. */
+     * 10-22 to 10-24, never on a signed-in one. Empty for any other answer,
+     * which logging in would not change, and when signed in — except that a
+     * key bilibili has stopped accepting is told to scan again on -101
+     * (10-30: a set in VN scanned in, and six minutes later the key was dead;
+     * every start since said 「服务器不认这个会话」, and 动态 put
+     * 「加载失败：code -101 账号未登录」 on the screen and uploaded it). */
     function loginNeeded(why) {
-        if (Auth.isLoggedIn() || !/code -(?:101|352)\b/.test(String(why))) { return ""; }
-        return "没登录时 B 站不给，先去「我的」扫码登录再试";
+        if (!/code -(?:101|352)\b/.test(String(why))) { return ""; }
+        if (!Auth.isLoggedIn()) { return "没登录时 B 站不给，先去「我的」扫码登录再试"; }
+        if (keyRefused() && /code -101\b/.test(String(why))) {
+            return "登录已失效，先去「我的」重新扫码登录再试";
+        }
+        return "";
     }
+    /* The access_key bilibili answered isLogin=false to. By access_key that
+     * answer is not the ambiguous one the Cookie route gave (docs/账号与登录.md):
+     * the key is dead. Only what the screen says changes; the account stays.
+     * Kept by key rather than account: scanning in again files a new key
+     * under the same account. */
+    var refusedKey = "";
+    function noteSession(me, key) {
+        if (!me.isLogin && key) { refusedKey = key; }
+    }
+    function keyRefused() { return !!refusedKey && refusedKey === Auth.accessKey(); }
 
     /* The sign-in prompt is the answer, not a fault: the screen already says
      * what to do, and uploading it told the developer nothing new — 10-26,
@@ -145,7 +163,7 @@
      * next real incident. */
     function askLogin(text, why) {
         toast(text);
-        report("account", "没登录被拒，提示了扫码登录（" + why + "）");
+        report("account", (keyRefused() ? "登录已失效被拒" : "没登录被拒") + "，提示了扫码登录（" + why + "）");
     }
     /* trouble() unless logging in is the answer. */
     function troubleOrLogin(why, text) {
@@ -260,11 +278,13 @@
          * noticing it arrives nowhere: this line said 「route=Cookie 头，服务器
          * 认得 X」 while the jar did the work. It now names what actually
          * travels, and `whoami` keeps measuring rather than asserting. */
-        var route = Auth.accessKey() ? "access_key"
+        var key = Auth.accessKey();
+        var route = key ? "access_key"
                   : (Auth.jarIsOurs() ? "cookie jar" : "无凭证");
         API.nav(function (me) {
             report("account", Accounts.count() + " 个账号，当前 route=" + route +
                    "，服务器" + (me.isLogin ? ("认得 " + Diag.priv(me.uname)) : "不认这个会话"));
+            noteSession(me, key);
             if (!me.isLogin) { return; }
             if (!Accounts.describe(acc.id, me)) {
                 report("account", "服务器答的是 mid=" + me.mid + " " + Diag.priv(me.uname) +
@@ -2545,6 +2565,8 @@
     window.__stOpenNoCid = function (v) {
         playVideo({ bvid: v.bvid, title: v.title, pic: v.pic, author: v.author, duration: v.duration, play: v.play });
     };
+    /* As if the start-up check had found this set's key dead. */
+    window.__stRefuseKey = function (on) { refusedKey = on ? (Auth.accessKey() || "") : ""; };
     window.__stDanmaku = function (level) { setDanmakuLevel(level); };
 
     /* The next video opens on progressive, at a url that fails before any
@@ -3687,7 +3709,11 @@
             paintHistory();
         });
 
+        var key = Auth.accessKey();
         API.nav(function (me) {
+            /* Before the view check: a key that died mid-run is dead whichever
+             * screen the viewer has moved on to. */
+            noteSession(me, key);
             /* A slow nav landing after the viewer switched account or tab used
              * to repaint the screen they had left, under the wrong name. */
             if (!stillViewing(token)) { return; }
@@ -4327,8 +4353,23 @@
 
         var token = newView();
         showOpening(v);
-        API.view(v.bvid, function (d) {
+        API.view(v.bvid, function (d, via) {
             if (!stillViewing(token)) { return; }
+            /* Which endpoint answered: the gated pair or the app's. */
+            report("meta", videoTag(v) + " 打开没带 cid 的卡片，" + via);
+            /* 10-30: two cards on an uploader's page, listed only once the set
+             * was signed in (signed out, from here, the page lists two others
+             * and wbi/view answers 62002 for both), came back code 0 with no
+             * cid and no part list. playurl was asked for cid=undefined, both
+             * forms answered -400, and the upload said 「拿不到播放地址」. Still
+             * uploaded: what bilibili answered there is not known yet. */
+            if (!d.cid) {
+                cancelOpening();
+                report("player", videoTag(v) + " 打不开：view 答上了却没有 cid，分P " + (d.pages || []).length);
+                toast("这个视频现在看不了");
+                Diag.incident("打不开：view 答上了却没有 cid（" + via + "）");
+                return;
+            }
             opening = false;
             play(d, resumeCid(d));
         }, function (why) {

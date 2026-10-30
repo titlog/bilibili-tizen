@@ -19,6 +19,7 @@ var API = (function () {
     /* …and until when it asks the app's view first: both web ones were gated. */
     var viewAppUntil = 0;
     var viewGate2 = false;   /* selftest: both web view paths answer 412 */
+    var viewNoCid = false;   /* selftest: the next view() answer has no cid and no parts */
     var VIEW_GATE_MEMORY = 30 * 60 * 1000;
     /* How long the strong path's second-stage header reads wait after the
      * manifest has been handed over — the start's own segment requests go to
@@ -501,6 +502,7 @@ var API = (function () {
      * it, and diag.js scrubs it like the rest. */
     var buvidKnown = null, buvidWaiting = null;
     var rank352 = false;   /* selftest: the web ranking answers -352 */
+    var dynamic101 = false;   /* selftest: the next 动态 page answers -101 */
 
     function buvid3(done) {
         if (buvidKnown !== null) { done(buvidKnown); return; }
@@ -616,7 +618,9 @@ var API = (function () {
             gateWrites: function (on) { originGated = !!on; },
             rank352: function (on) { rank352 = !!on; },
             /* Off also forgets that the app's view goes first: the gate was made up. */
-            viewGate2: function (on) { viewGate2 = !!on; if (!on) { viewAppUntil = 0; } }
+            viewGate2: function (on) { viewGate2 = !!on; if (!on) { viewAppUntil = 0; } },
+            viewNoCid: function (on) { viewNoCid = !!on; },
+            dynamic101: function (on) { dynamic101 = !!on; }
         },
 
         setCardWidth: function (px) { if (px > 0) { cardWidth = px; } },
@@ -908,6 +912,11 @@ var API = (function () {
         dynamic: function (page, cursor, onOk, onFail) {
             page = page || 1;
             if (page > 1 && !cursor) { onOk([], { cursor: "", more: false }); return; }
+            if (dynamic101) {
+                dynamic101 = false;
+                setTimeout(function () { onFail("code -101 账号未登录（自测）"); }, 0);
+                return;
+            }
             getJson(BASE + "/x/polymer/web-dynamic/v1/feed/all?type=video&page=" + page +
                     (page > 1 ? "&offset=" + encodeURIComponent(cursor) : ""), function (d) {
                 var next = { cursor: String(d.offset || ""), more: d.has_more !== false };
@@ -1524,6 +1533,11 @@ var API = (function () {
          * No fallback on -404: that is a JSON answer about the 稿件, and the
          * dead-video check downstream reads it by that text. */
         view: function (bvid, onOk, onFail) {
+            if (viewNoCid) {
+                viewNoCid = false;
+                var real = onOk;
+                onOk = function (v, via) { v.cid = undefined; v.pages = []; real(v, via + "（自测：去掉了 cid 和分 P）"); };
+            }
             function shape(d) {
                 return {
                     bvid: d.bvid,

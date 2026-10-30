@@ -1613,6 +1613,71 @@ var SelfTest = (function () {
             return null;
         }],
 
+        /* 10-30: view answered code 0 with neither a cid nor a part list (two
+         * cards on an uploader's page, on a signed-in set), and playurl was
+         * asked for cid=undefined — 「拿不到播放地址」. Such a card says it
+         * cannot be watched, plays nothing, and is uploaded. */
+        ["view 答上了却没有 cid：打开一张没 cid 的卡片", 600, function () {
+            var v = (probe.gv && probe.gv.v) || (window.__stItems || [])[1];
+            if (!v) { return "推荐里没有能拿来打开的卡片"; }
+            if (!visible("shell")) { return "不在首页（上一步没退出播放）"; }
+            document.getElementById("toast").className = "hidden";
+            probe.nc = { said: [], was: Diag.incident };
+            Diag.incident = function (r) { probe.nc.said.push(r); probe.nc.was(r); };
+            API._selftest.viewNoCid(true);
+            window.__stOpenNoCid(v);
+            return null;
+        }],
+        ["没开播放器，提示「现在看不了」，算一次出事", 300, function () {
+            var t = document.getElementById("toast");
+            var text = t && t.className !== "hidden" ? t.textContent : "";
+            if (!text) { return WAIT; }
+            Diag.incident = probe.nc.was;
+            if (!/看不了/.test(text)) { return "提示的是「" + text + "」"; }
+            if (!visible("shell")) { return "提示了，可是首页被盖着（播放器起来了，或者打开中的那层没收）"; }
+            return /没有 cid/.test(probe.nc.said.join(" / ")) ? null
+                : "没算出事（上传的原因：" + (probe.nc.said.join(" / ") || "没有") + "）";
+        }, 30000, function () {
+            Diag.incident = probe.nc.was;
+            API._selftest.viewNoCid(false);
+            return "30 秒了还没有提示";
+        }],
+
+        /* 10-30: a set whose key bilibili had stopped accepting opened 动态,
+         * got -101, and put 「加载失败：code -101 账号未登录」 on the screen as
+         * an incident. A dead key is told to scan in again, not uploaded. */
+        ["登录失效：打开动态，B 站回 -101", 300, function () {
+            probe.rk = null;
+            if (!Auth.isLoggedIn() || !Auth.accessKey()) { post("跳过：这台电视没有带 access_key 的账号"); return null; }
+            probe.rk = { said: [], was: Diag.incident };
+            Diag.incident = function (r) { probe.rk.said.push(r); probe.rk.was(r); };
+            window.__stRefuseKey(true);
+            API._selftest.dynamic101(true);
+            window.__stLoadFeed("dynamic");
+            return null;
+        }],
+        ["屏幕上说「登录已失效」，不算出事", 300, function () {
+            if (!probe.rk) { return null; }
+            var text = (document.getElementById("screen") || {}).textContent || "";
+            if (/加载中/.test(text)) { return WAIT; }
+            Diag.incident = probe.rk.was;
+            window.__stRefuseKey(false);
+            if (!/登录已失效/.test(text)) { return "屏幕上是「" + text.slice(0, 40) + "」"; }
+            return probe.rk.said.length ? "当出事传了：" + probe.rk.said.join(" / ") : null;
+        }, 15000, function () {
+            Diag.incident = probe.rk.was;
+            window.__stRefuseKey(false);
+            API._selftest.dynamic101(false);
+            return "15 秒了动态还在加载";
+        }],
+        ["回到推荐", 300, function () {
+            if (probe.rk) { window.__stLoadFeed("rcmd"); }
+            return null;
+        }],
+        ["推荐画好了", 300, function () {
+            return count('#feed-grid .card[data-i="2"]') ? null : WAIT;
+        }, 20000, function () { return "20 秒了推荐还没画出三张卡片"; }],
+
         /* 10-27 (a set on no account): the durl failed before any picture, the
          * viewer pressed right twice on the black screen, and the failure was
          * taken for one mid-play — 「播放中出错，从 0:20 用 DASH 原地重启」
