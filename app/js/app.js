@@ -3333,6 +3333,7 @@
         button.onselect = function () {
             Settings.set("autoplayNext", !autoNextEnabled());
             paint();
+            if (optionsOpen) { paintAutoplayControl(); }
             report("settings", "自动播放下一个=" + (autoNextEnabled() ? "开" : "关"));
         };
         var subtitleButton = el("btn-subtitles");
@@ -5801,6 +5802,18 @@
         if (chip) { Nav.focus(chip); }
     }
 
+    function paintAutoplayControl() {
+        el("panel-autoplay").textContent = "自动连播 " + (autoNextEnabled() ? "开" : "关");
+    }
+
+    function bindAutoplayControl() {
+        paintAutoplayControl();
+        el("panel-autoplay").onselect = function () {
+            Settings.set("autoplayNext", !autoNextEnabled());
+            paintAutoplayControl();
+        };
+    }
+
     /* 播放速度 (2026-09-28). A row of chips like the parts, the current one
      * marked; choosing one keeps the panel open, since the viewer may want to
      * try the next one up. Sticky for the app run (Player.setRate). */
@@ -5831,6 +5844,7 @@
         var ot = backTimer("打开面板");
         cancelScrub();
         optionsOpen = true;
+        bindAutoplayControl();
         el("playerui").className = "hidden";
         document.body.className += " options-open";
         el("options").className = "scroll rows";   /* nav.js reads both words: the scroller, up/down by row */

@@ -11,6 +11,7 @@ APP="$ROOT/app"
 # control. Never leave it on in a build meant for watching.
 SELFTEST=false
 [ "$1" = "--selftest" ] && SELFTEST=true
+[ "$1" = "--autoplay" ] && SELFTEST='"autoplay"'
 # --dmperf: the danmaku frame-time run instead (selftest.js, 2026-10-18) — the
 # ways of drawing rotated on one dense video, rAF intervals per window.
 [ "$1" = "--dmperf" ] && SELFTEST='"dmperf"'

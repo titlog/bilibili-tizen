@@ -190,6 +190,8 @@ the row below and likes too; holding OK on a card still works); and a
 suit how big the TV is and how far the sofa). These come from
 [PR #2](https://github.com/titlog/bilibili-tizen/pull/2).
 
+Press Down during playback to open the panel, then select the autoplay toggle. The panel and Settings share the same preference, which persists across app restarts. With autoplay off, the next-video chooser waits for confirmation at the end.
+
 **Does not**:
 - **Casting from the phone.** A cast receiver has to listen on a port; a Tizen
   web widget cannot, regardless of how official it is. The substitute is

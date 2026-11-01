@@ -54,6 +54,7 @@ node tools/collect.mjs | tee /tmp/bili.log   # 终端 1，一直开着（收集�
 zsh tools/deploy.sh             # 终端 2：检查、签名、安装、启动（约 15 秒）
 zsh tools/deploy.sh --selftest  # 同上，构建自己走一遍全流程并上报（约 4 分钟，会自己放视频）
 zsh tools/deploy.sh --tokenswap # 只测「播放中 web 令牌被拒 → 换强令牌」和「排头失手、下一台 403」（约 1 分钟，给 CDN 两个坏请求）
+zsh tools/deploy.sh --autoplay  # 自动连播快捷入口与片尾行为，使用真实媒体
 zsh tools/deploy.sh --dmperf    # 弹幕帧耗时
 zsh tools/deploy.sh --diag      # 诊断日志上传：设置里手动传一次、造一次出事自动传（先开 node tools/diag-local.mjs）
 node tools/diag-logs.mjs        # 读别人电视传上来的诊断日志（--device 编号 / <id>）
@@ -68,7 +69,7 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
   `BILI_PROFILE="<名字>"`。→ `docs/部署与发布.md`
 - `deploy.sh` 把开发机地址写进 `config.js` 的 `REPORT_TO`、按需写 `SELFTEST`，打完包、任何退出都改回去 ——
   **地址和 `SELFTEST=true` 都不能进提交**。换了网络要重新部署，否则电视往旧地址报。
-- **测试构建不能留在电视上**：`--selftest` / `--tokenswap` / `--dmperf` / `--diag` 跑完马上 `zsh tools/deploy.sh` 装回正常构建。
+- **测试构建不能留在电视上**：`--autoplay` / `--selftest` / `--tokenswap` / `--dmperf` / `--diag` 跑完马上 `zsh tools/deploy.sh` 装回正常构建。
 - 应用编号 `BiliTvApp0.Bilibili`；签名档 / 证书目录叫 `BiliSpike` 是证书的名字，和编号无关。
 - 分发证书大约 **2027-08 过期**，重签：`node tools/samsung-cert.mjs`。这一代电视必须用三星签发的
   分发证书，Tizen 自带的一律 `Invalid certificate chain`。证书、密码都在仓库外。→ `docs/部署与发布.md`
@@ -112,6 +113,10 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
 - 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 163 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
   **能靠按键复现的 bug，就给它加一步。** 等网络的步骤返回 `WAIT` 轮询，不写死等待；每次放的视频是推荐流里随手拿的，
   一步失败先看是不是只对那一部片子成立。
+
+## 播放控制
+
+播放中按下键打开面板，可开关自动连播。面板与设置页共用同一偏好，应用重启后保留。关闭后，片尾停留在下一条选择页，等待确认播放。
 
 ## 约定
 
