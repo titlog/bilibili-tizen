@@ -2549,8 +2549,75 @@ var SelfTest = (function () {
         }]
     ];
 
+    var control = {};
+    /* Walk from the panel's initial focus using only D-pad events. */
+    function controlReach(target) {
+        for (var i = 0; i < 24; i++) {
+            var current = Nav.current();
+            if (current === target) { return null; }
+            if (!current || !target || target.offsetParent === null) { return "找不到可见焦点"; }
+            var a = current.getBoundingClientRect(), b = target.getBoundingClientRect();
+            var direction = b.top >= a.bottom ? KEY.DOWN : b.bottom <= a.top ? KEY.UP :
+                b.left > a.left ? KEY.RIGHT : KEY.LEFT;
+            key(direction);
+            if (Nav.current() === current) { return "方向键无法从当前焦点到达入口"; }
+        }
+        return "方向键路径超过 24 步";
+    }
+    function controlSelect(selector) {
+        var why = controlReach(document.querySelector(selector));
+        if (!why) { key(KEY.ENTER); }
+        return why;
+    }
+    var controlSteps = [
+        ["保存字幕偏好并取得真实样本", 100, function () {
+            control.enabled = Settings.get("showSubtitles", false); control.language = Settings.subtitleLanguage();
+            API.view("BV1zZ4y1S75L", function (d) { control.detail = d; }, function (why) { control.error = why; });
+            return null;
+        }],
+        ["打开字幕样本", 500, function () {
+            if (control.error) { return control.error; }
+            if (!control.detail) { return WAIT; }
+            window.__stOpenNoCid(control.detail); return null;
+        }, 30000, "字幕样本不可用"],
+        ["媒体开始推进后打开面板", 1000, function () {
+            if (visible("player-loading")) { return WAIT; }
+            var position = Player.position();
+            if (control.firstPosition === undefined) { control.firstPosition = position; return WAIT; }
+            if (position < control.firstPosition + 750) { return WAIT; }
+            key(KEY.DOWN); return null;
+        }, 35000, "字幕样本没有实际播放"],
+        ["方向键到达字幕入口", 300, function () { return controlSelect("#panel-subtitles"); }],
+        ["选择真实字幕轨", 300, function () {
+            var tracks = document.querySelectorAll("#playback-choices .opt");
+            for (var i = 0; i < tracks.length; i++) {
+                if (/^\d+$/.test(tracks[i].getAttribute("data-playback-choice"))) { return controlReach(tracks[i]) || (key(KEY.ENTER), null); }
+            }
+            return WAIT;
+        }, 20000, "样本没有字幕轨，字幕未验证"],
+        ["实际字幕内容出现", 1000, function () {
+            var text = document.getElementById("subtitle-text").textContent;
+            if (!text || !visible("subtitle-text")) { return WAIT; }
+            post("媒体位置 " + Player.position() + " 字幕 " + text); return null;
+        }, 30000, "没有显示字幕内容"],
+        ["关闭后立即清除字幕", 300, function () {
+            var why = controlSelect('#playback-choices [data-playback-choice="off"]');
+            return why || (document.getElementById("subtitle-text").textContent ? "关闭后仍有字幕" : null);
+        }],
+        ["返回层级和焦点", 300, function () {
+            key(KEY.RETURN);
+            if (!visible("options") || !Nav.current() || Nav.current().id !== "panel-subtitles") { return "返回没有回到字幕入口"; }
+            key(KEY.RETURN); return visible("options") ? "面板未关闭" : null;
+        }],
+        ["恢复原字幕偏好", 100, function () {
+            Settings.set("showSubtitles", control.enabled); Settings.set("subtitleLanguage", control.language); return null;
+        }]
+    ];
+
     function run() {
         var i = 0, failures = 0;
+        if (SELFTEST === "subtitles") { steps = controlSteps; window.__stNoHistory = true; }
+        post("运行标识 " + (window.__stRunId || "未标记"));
         if (SELFTEST === "dmperf") { steps = dmperfSteps; }
         if (SELFTEST === "tokenswap") { steps = swapSteps; }
         if (SELFTEST === "diag") { steps = diagSteps; }
