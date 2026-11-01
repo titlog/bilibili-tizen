@@ -2549,8 +2549,176 @@ var SelfTest = (function () {
         }]
     ];
 
+    var control = {};
+    /* Walk from the panel's initial focus using only D-pad events. */
+    function controlReach(target) {
+        for (var i = 0; i < 24; i++) {
+            var current = Nav.current();
+            if (current === target) { return null; }
+            if (!current || !target || target.offsetParent === null) { return "找不到可见焦点"; }
+            var a = current.getBoundingClientRect(), b = target.getBoundingClientRect();
+            var direction = b.top >= a.bottom ? KEY.DOWN : b.bottom <= a.top ? KEY.UP :
+                b.left > a.left ? KEY.RIGHT : KEY.LEFT;
+            key(direction);
+            if (Nav.current() === current) { return "方向键无法从当前焦点到达入口"; }
+        }
+        return "方向键路径超过 24 步";
+    }
+    function controlSelect(selector) {
+        var why = controlReach(document.querySelector(selector));
+        if (!why) { key(KEY.ENTER); }
+        return why;
+    }
+    var controlSteps = [
+        ["保存原画质偏好", 100, function () {
+            control.saved = Settings.qualityPreference(); control.cap = Settings.qnCap();
+            Settings.set("maxQn", 80); Settings.set("preferredQn", 0);
+            API.view(SELFTEST === "controls-followup" ? "BV17x411w7KC" : "BV1xX66YcEML", function (d) {
+                control.detail = d;
+            }, function (why) { control.error = why; });
+            return null;
+        }],
+        ["打开真实点播样本", 300, function () {
+            if (control.error) { return control.error; }
+            if (!control.detail) { return WAIT; }
+            if (SELFTEST === "controls-followup") {
+                window.__stOpenControlPart(control.detail, control.detail.pages[0].cid, true);
+            } else { window.__stOpenNoCid(control.detail); }
+            return null;
+        }, 30000, "没有取得点播样本"],
+        ["媒体时钟实际推进", 1000, function () {
+            if (visible("player-loading")) { return WAIT; }
+            var position = Player.position();
+            if (control.firstPosition === undefined) { control.firstPosition = position; return WAIT; }
+            if (position < control.firstPosition + 750) { return WAIT; }
+            if (SELFTEST === "controls-followup" && Player.mode() !== "avplay") { return "没有使用原生播放器"; }
+            control.at = Player.position(); key(KEY.DOWN); return null;
+        }, 35000, "真实媒体未推进"],
+        ["从面板初始焦点走到画质入口", 300, function () {
+            post("初始焦点 " + (Nav.current() && Nav.current().id));
+            return controlSelect("#panel-quality");
+        }],
+        ["选择实际提供的较低档", 300, function () {
+            var chips = document.querySelectorAll("#playback-choices .opt"), st = window.__stPlaybackControls();
+            for (var i = chips.length - 1; i >= 0; i--) {
+                var value = Number(chips[i].getAttribute("data-playback-choice"));
+                if (value && value !== st.actual) {
+                    control.target = value;
+                    if (SELFTEST === "controls-followup") { window.__stNativeControlChange(); }
+                    return controlSelect('#playback-choices [data-playback-choice="' + value + '"]');
+                }
+            }
+            if (SELFTEST === "controls-followup") {
+                control.target = st.actual; window.__stNativeControlChange();
+                return controlSelect('#playback-choices [data-playback-choice="0"]');
+            }
+            return "此样本没有另一可用档，切档未验证";
+        }],
+        ["核对实际轨道和时间推进", 1000, function () {
+            var st = window.__stPlaybackControls();
+            if (!control.target || !st || st.busy || st.actual !== control.target || Player.position() < control.at + 500) { return WAIT; }
+            post("实际档位 " + st.actual + " 路径 " + st.route + " 位置 " + Player.position());
+            return null;
+        }, 30000, "没有按目标档位继续播放"],
+        ["返回恢复入口焦点并暂停", 300, function () {
+            key(KEY.RETURN);
+            if (!visible("options") || !Nav.current() || Nav.current().id !== "panel-quality") { return "返回层级或焦点错误"; }
+            key(10252); control.pausedAt = Player.position();
+            if (!Player.userPaused()) { return "没有暂停"; }
+            key(KEY.ENTER);
+            if (SELFTEST === "controls-followup") { window.__stNativeControlChange(); }
+            return controlSelect('#playback-choices [data-playback-choice="0"]');
+        }],
+        ["核对自动模式与暂停保位", 1000, function () {
+            var st = window.__stPlaybackControls();
+            if (!st || st.busy) { return WAIT; }
+            return st.preferred === 0 && Player.userPaused() && Math.abs(Player.position() - control.pausedAt) <= 1000 ? null : "自动模式或保位失败";
+        }, 30000, "切回自动未结束"],
+        ["原生失败回滚准备", 300, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            key(KEY.RETURN); key(KEY.RETURN); key(10252); key(KEY.DOWN);
+            return controlSelect("#panel-quality");
+        }],
+        ["开始一个真实原生打开失败", 300, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            control.beforeFailure = Player.position();
+            window.__stNativeControlChange(); window.__stProgFailOnce(REPORT_TO.replace(/\/report$/, "/hang?ms=4500"));
+            return controlSelect('#playback-choices [data-playback-choice="0"]');
+        }],
+        ["加载目标流期间按暂停", 100, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            var st = window.__stPlaybackControls();
+            if (!st || !st.transition) { return WAIT; }
+            key(19); return Player.userPaused() ? null : "加载期间没有接受暂停";
+        }, 20000, "没有进入原生切换事务"],
+        ["失败后原流恢复并保持新暂停指令", 500, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            var st = window.__stPlaybackControls();
+            if (!st || st.busy || !st.qualityReady) { return WAIT; }
+            return Player.userPaused() && Math.abs(Player.position() - control.beforeFailure) < 5000 ? null : "失败回滚覆盖了新暂停指令或丢失位置";
+        }, 30000, "失败后没有恢复原流"],
+        ["暂停中再次准备真实打开失败", 300, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            window.__stNativeControlChange(); window.__stProgFailOnce(REPORT_TO.replace(/\/report$/, "/hang?ms=4500"));
+            return controlSelect('#playback-choices [data-playback-choice="0"]');
+        }],
+        ["加载目标流期间按播放", 100, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            var st = window.__stPlaybackControls();
+            if (!st || !st.transition) { return WAIT; }
+            key(415); control.beforeResume = Player.position(); return !Player.userPaused() ? null : "加载期间没有接受播放";
+        }, 20000, "没有进入第二次原生切换事务"],
+        ["失败后保留播放指令且实际推进", 1000, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            var st = window.__stPlaybackControls();
+            if (!st || st.busy || !st.qualityReady || Player.position() < control.beforeResume + 1000) { return WAIT; }
+            return !Player.userPaused() ? null : "失败回滚覆盖了播放指令";
+        }, 30000, "回滚后媒体没有继续推进"],
+        ["临近片尾延迟真实切档响应", 300, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            control.originalProgressive = API.playurlProgressive; control.originalRelated = API.related; control.originalView = API.view;
+            API.playurlProgressive = function (b, c, q, ok, fail) {
+                control.originalProgressive(b, c, q, function (r) { setTimeout(function () { ok(r); control.replyReturned = true; }, 6500); }, fail);
+            };
+            API.view = function (b, ok, fail) {
+                control.originalView(b, function (r) { setTimeout(function () { ok(r); }, 12000); }, fail);
+            };
+            API.related = function (b, ok, fail) {
+                control.originalRelated(b, function (r) { setTimeout(function () { ok(r); }, 12000); }, fail);
+            };
+            control.savedAutoplay = Settings.get("autoplayNext", true); Settings.set("autoplayNext", false);
+            window.__stNativeControlChange();
+            var why = controlSelect('#playback-choices [data-playback-choice="0"]');
+            Player.seekTo(Math.max(0, Player.durationMs() - 1500)); return why;
+        }],
+        ["旧视频结束并收到迟到响应后不重启", 1000, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            if (!control.replyReturned || Player.mode() !== null) { return WAIT; }
+            control.stoppedAt = new Date().getTime(); return null;
+        }, 20000, "片尾切档重新打开了旧流"],
+        ["迟到响应后保持结束状态", 2500, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            return Player.mode() === null ? null : "旧视频结束后重新启动";
+        }],
+        ["恢复临时 API 和连播设置", 100, function () {
+            if (SELFTEST !== "controls-followup") { return null; }
+            API.playurlProgressive = control.originalProgressive; API.related = control.originalRelated; API.view = control.originalView;
+            Settings.set("autoplayNext", control.savedAutoplay); return null;
+        }],
+        ["恢复偏好与播放", 300, function () {
+            Settings.set("preferredQn", control.saved); Settings.set("maxQn", control.cap);
+            if (SELFTEST !== "controls-followup") { key(KEY.RETURN); key(KEY.RETURN); key(10252); }
+            return null;
+        }]
+    ];
+
     function run() {
         var i = 0, failures = 0;
+        if (SELFTEST === "controls" || SELFTEST === "controls-followup") {
+            steps = SELFTEST === "controls" ? controlSteps.slice(0, 8).concat(controlSteps.slice(-1)) : controlSteps;
+            window.__stNoHistory = true;
+        }
+        post("运行标识 " + (window.__stRunId || "未标记"));
         if (SELFTEST === "dmperf") { steps = dmperfSteps; }
         if (SELFTEST === "tokenswap") { steps = swapSteps; }
         if (SELFTEST === "diag") { steps = diagSteps; }

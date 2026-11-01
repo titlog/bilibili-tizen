@@ -206,6 +206,16 @@ var Mpd = (function () {
         },
         family: family,
 
+        tiers: function (dash, maxId) {
+            var keep = chosen, ids = [];
+            var reps = chooseVideos((dash || {}).video, maxId);
+            chosen = keep;
+            for (var i = 0; i < reps.length; i++) {
+                if (ids.indexOf(Number(reps[i].id)) < 0) { ids.push(Number(reps[i].id)); }
+            }
+            return ids.sort(function (a, b) { return b - a; });
+        },
+
         peek: function (dash, maxId) {
             if (!dash) { return { video: null, audio: null }; }
             var keep = chosen;

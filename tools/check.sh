@@ -22,6 +22,7 @@ node --no-warnings -e 'require("node:sqlite")' >/dev/null 2>&1 || {
   echo "  tools 的依赖没装：npm install --prefix tools"; exit 1; }
 for f in "$APP"/js/*.js; do node --check "$f" >/dev/null || { echo "  syntax error in $f"; exit 1; }; done
 node "$ROOT/tools/lint.mjs" || exit 1
+node "$ROOT/tools/deploy-config-verify.mjs" || { echo "  deployment config cleanup regressed"; exit 1; }
 # The account layer fails silently on the device — history filed under the wrong
 # person, a cookie riding along from the previous account — so it is verified
 # against a fake localStorage here, where a wrong answer is an assertion.
@@ -39,6 +40,7 @@ node "$ROOT/tools/compat-api-verify.mjs" || { echo "  video actions or library A
 node "$ROOT/tools/gated-verify.mjs" || { echo "  the ways round bilibili's gates regressed (ranking -352, writes refused for their Origin)"; exit 1; }
 node "$ROOT/tools/nav-verify.mjs" || { echo "  remote navigation regressed"; exit 1; }
 node "$ROOT/tools/episode-nav-verify.mjs" || { echo "  episode shortcuts regressed"; exit 1; }
+node "$ROOT/tools/quality-controls-verify.mjs" || exit 1
 # Tizen 5.5 has no flex gap. A new gap without its fallback looks fine on any
 # set made since, and cramped on the ones this check exists for.
 node "$ROOT/tools/legacy-css-verify.mjs" || exit 1

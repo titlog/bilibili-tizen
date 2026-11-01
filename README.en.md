@@ -190,6 +190,8 @@ the row below and likes too; holding OK on a card still works); and a
 suit how big the TV is and how far the sofa). These come from
 [PR #2](https://github.com/titlog/bilibili-tizen/pull/2).
 
+Press Down during playback to choose a quality or return to Auto. The preference persists across videos and app restarts, within the global quality cap. If unavailable, the player uses the nearest lower tier, or the lowest available tier, and displays the actual result without replacing the preference. Switching preserves position, speed and the latest pause or play command; failures restore the original stream.
+
 **Does not**:
 - **Casting from the phone.** A cast receiver has to listen on a port; a Tizen
   web widget cannot, regardless of how official it is. The substitute is

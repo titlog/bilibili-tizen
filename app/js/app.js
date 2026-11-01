@@ -10,6 +10,7 @@
     var screenEl, statusEl, toastEl;
     var state = { screen: "rcmd", query: "", results: null };
     var playing = null;
+    var playbackChoice = "";
     var actionView = null;
     var interactionCache = {};
 
@@ -2565,9 +2566,27 @@
     window.__stOpenNoCid = function (v) {
         playVideo({ bvid: v.bvid, title: v.title, pic: v.pic, author: v.author, duration: v.duration, play: v.play });
     };
+    /* Device-only route coverage: the API responses and media remain real. */
+    var stNativeStart = false, stNativeChange = false;
+    window.__stOpenControlPart = function (detail, cid, nativeStart) {
+        if (typeof SELFTEST === "undefined" || SELFTEST !== "controls-followup") { return; }
+        stNativeStart = nativeStart === "dash" ? "dash" : !!nativeStart;
+        play(detail, cid);
+    };
+    window.__stNativeControlChange = function () {
+        if (typeof SELFTEST !== "undefined" && SELFTEST === "controls-followup" && playing && playing.route === "progressive") {
+            stNativeChange = true;
+        }
+    };
     /* As if the start-up check had found this set's key dead. */
     window.__stRefuseKey = function (on) { refusedKey = on ? (Auth.accessKey() || "") : ""; };
     window.__stDanmaku = function (level) { setDanmakuLevel(level); };
+    window.__stPlaybackControls = function () {
+        return playing ? { busy: !!playing.qualityBusy, transition: !!playing.controlTransition, preferred: Settings.qualityPreference(),
+            bvid: playing.detail.bvid, cid: playing.cid, route: playing.route,
+            mode: Player.mode(), position: Player.position(), qualityReady: playing.qualityReady,
+            nativeSize: playing.nativeSize || "", actual: Player.currentQuality() || playing.quality } : null;
+    };
 
     /* The next video opens on progressive, at a url that fails before any
      * picture — the black screen 10-27 pressed right on. A refused durl cannot
@@ -3122,6 +3141,10 @@
 
     function subtitlesEnabled() {
         return Settings.get("showSubtitles", false) === true;
+    }
+
+    function progressiveQn() {
+        return Math.min(Settings.qualityPreference() || Settings.qnCap(), Settings.qnCap());
     }
 
     /* 弹幕 (2026-10-18; danmaku.js does the fetching and drawing). One
@@ -3995,7 +4018,7 @@
     function prefetchKey(bvid, cid) {
         /* Per account: playurl's tiers and player/v2's position both depend on
          * whose access_key signed the request. */
-        return bvid + ":" + cid + "@" + Accounts.activeId();
+        return bvid + ":" + cid + "@" + Accounts.activeId() + ":" + Settings.qnCap() + ":" + progressiveQn();
     }
 
     /* One request whose answer may be wanted before or after it arrives. */
@@ -4205,7 +4228,7 @@
          * the strong-token mint right there, inside the countdown. */
         var e = { at: now, aid: v.aid || 0, bvid: v.bvid, cid: v.cid, eager: !!eager };
         e.dash = prefetchSlot(function (ok, fail) { API.playurlDash(bvid, cid, Settings.qnCap(), ok, fail); });
-        e.prog = prefetchSlot(function (ok, fail) { API.playurlProgressive(bvid, cid, Settings.qnCap(), ok, fail); });
+        e.prog = prefetchSlot(function (ok, fail) { API.playurlProgressive(bvid, cid, progressiveQn(), ok, fail); });
         e.resume = prefetchSlot(function (ok, fail) { API.playerV2(bvid, cid, ok, fail); });
         prefetched[key] = e;
         /* A video whose lesson says the web token is refused would only 403
@@ -5045,16 +5068,18 @@
         el("live-ui").className = "hidden";
     }
 
-    function startProgressive(r) {
+    function startProgressive(r, options) {
         /* Which route is actually carrying this video. `downgrade()` only means
          * anything coming off progressive, and there was nothing to ask. */
         playing.route = "progressive";
+        playing.qualityReady = false;
+        playing.nativeSize = "";
         playing.quality = r.quality;
         playing.accept = r.accept || [];
         playing.urls = r.urls || [r.url];
         playing.urlIdx = 0;
-        setQualityBadge(QUALITY_NAMES[r.quality] || ("QN " + r.quality));
-        Player.playProgressive(playing.urls[0], playing.startMs || 0);
+        setQualityBadge("");
+        Player.playProgressive(playing.urls[0], playing.startMs || 0, options);
     }
 
     /* The part label can only be drawn once the page list has arrived. */
@@ -5801,6 +5826,210 @@
         if (chip) { Nav.focus(chip); }
     }
 
+    function qualityName(qn) { return QUALITY_NAMES[qn] || "自动"; }
+    function qualityOptionName(qn) { return qualityName(qn).replace("P", "p"); }
+    function currentQualityOptionName() {
+        if (!playing || playing.qualityReady === false) { return ""; }
+        var actual = playing && (Player.currentQuality() || playing.quality);
+        var size = playing && playing.nativeSize, sides = size ? size.split("×") : [];
+        var pixels = sides.length === 2 ? Math.min(Number(sides[0]), Number(sides[1])) : 0;
+        return pixels ? pixels + "p" : actual ? qualityOptionName(actual) : "";
+    }
+    function automaticQualityName() {
+        var actual = currentQualityOptionName();
+        return "自动" + (actual ? "(" + actual + ")" : "");
+    }
+    function actualQualityName(qn) {
+        /* Legacy durls may label an original 288p file as QN 80. Keep the
+         * service tier, but show the decoder's real dimensions as the result. */
+        return playing && playing.nativeSize ? playing.nativeSize + "（" + qualityName(qn) + "档）" : qualityName(qn);
+    }
+
+    function controlQualityIds() {
+        if (!playing) { return []; }
+        var ids = Player.qualityChoices(playing.dashReady);
+        var nativeIds = (playing.nativeQualities || []).slice();
+        if (playing.route === "progressive") { nativeIds.push(playing.quality); }
+        nativeIds.forEach(function (q) {
+            if (q && q <= Settings.qnCap() && ids.indexOf(q) < 0) { ids.push(q); }
+        });
+        return ids.sort(function (a, b) { return b - a; });
+    }
+
+
+    function finishQualityChange(qn, why) {
+        if (!playing) { return; }
+        clearTimeout(playing.qualityTimer);
+        playing.qualityBusy = false;
+        playing.controlTransition = null;
+        if (why) { troubleOrLogin(why, "画质未切换：" + why); }
+        else {
+            Settings.set("preferredQn", qn);
+            report("controls", "画质偏好=" + qn + " 实际=" + (Player.currentQuality() || playing.quality || 0));
+        }
+        paintPlaybackControls();
+    }
+
+    function restoreQualityChange(why) {
+        if (!playing) { return; }
+        var before = playing.controlTransition;
+        if (!before) { finishQualityChange(0, why); return; }
+        var at = before.at;
+        playing.route = before.route;
+        playing.nativeSize = before.nativeSize || "";
+        playing.qualityReady = false;
+        playing.dashReady = before.dash;
+        playing.quality = before.quality;
+        playing.urls = before.urls;
+        playing.urlIdx = before.urlIdx;
+        playing.startMs = at;
+        finishQualityChange(0, why);
+        var options = { paused: Player.userPaused(), quality: Settings.qualityPreference() };
+        if (before.route === "dash") { Player.playDash(before.dash, at, options); }
+        else { Player.playProgressive(before.urls[before.urlIdx || 0], at, options); }
+        setQualityBadge("");
+    }
+
+    function cancelQualityChange() {
+        if (!playing) { return; }
+        clearTimeout(playing.qualityTimer);
+        playing.qualityRevision = (playing.qualityRevision || 0) + 1;
+        playing.qualityBusy = false;
+        playing.controlTransition = null;
+    }
+
+    function changeQuality(qn) {
+        var session = playing;
+        if (!session || !session.route || session.qualityReady === false || session.qualityBusy) { return; }
+        var revision = (session.qualityRevision || 0) + 1;
+        var nativeOnly = stNativeChange && typeof SELFTEST !== "undefined" && SELFTEST === "controls-followup";
+        stNativeChange = false;
+        session.qualityRevision = revision;
+        session.qualityBusy = true;
+        paintPlaybackControls();
+        var discarded = false;
+        function current() {
+            var valid = playing === session && session.qualityRevision === revision && session.qualityBusy;
+            if (!valid && !discarded) {
+                discarded = true;
+                report("controls", "忽略过期画质切换结果");
+            }
+            return valid;
+        }
+        function complete(why) {
+            if (current()) { finishQualityChange(qn, why); }
+        }
+        if (!nativeOnly && Player.selectQuality(qn, complete)) { return; }
+        if (session.route === "progressive" && qn && qn === session.quality) {
+            complete(""); return;
+        }
+        /* Prepare both candidates while the old stream keeps playing. An API
+         * failure must not tear down a working native decoder. */
+        var dash = null, prog = null, dashWhy = "", progWhy = "", remaining = 2;
+        session.qualityTimer = setTimeout(function () {
+            if (current()) {
+                restoreQualityChange("等待视频流超时");
+            }
+        }, 35000);
+        function prepared() {
+            if (--remaining || !current()) { return; }
+            if (!dash && !prog) {
+                complete(loginNeeded(dashWhy) ? dashWhy : loginNeeded(progWhy) ? progWhy :
+                    dashWhy || progWhy || "取不到可用视频流");
+                return;
+            }
+            var ids = dash ? Mpd.tiers(dash, Settings.qnCap()) : [];
+            var candidates = ids.slice();
+            if (prog && prog.quality <= Settings.qnCap()) { candidates.push(prog.quality); }
+            var target = Settings.resolveQuality(candidates, qn);
+            var useDash = ids.indexOf(target) >= 0;
+            if (!target) { complete("没有上限内的可用画质"); return; }
+            if (nativeOnly && stProgFailUrl && prog) {
+                prog.urls = [stProgFailUrl]; prog.url = stProgFailUrl; stProgFailUrl = "";
+                report("controls", "自测：目标渐进式流注入一次真实打开失败");
+            }
+            session.controlTransition = { route: session.route, dash: session.dashReady,
+                quality: session.quality, nativeSize: session.nativeSize, urls: session.urls, urlIdx: session.urlIdx,
+                at: Player.hasPosition() ? Player.position() : lastKnownPosition,
+                paused: Player.userPaused(), requested: qn };
+            session.startMs = session.controlTransition.at;
+            var options = { paused: session.controlTransition.paused, quality: qn };
+            if (useDash) { playDash(dash, target, options); }
+            else { startProgressive(prog, options); }
+        }
+        if (nativeOnly) {
+            report("controls", "自测：仅用真实渐进式候选验证原生换流");
+            prepared();
+        } else {
+            API.playurlDash(session.detail.bvid, session.cid, Settings.qnCap(), function (d) {
+                dash = d; prepared();
+            }, function (why) { dashWhy = why; prepared(); });
+        }
+        API.playurlProgressive(session.detail.bvid, session.cid, qn || Settings.qnCap(), function (p) {
+            prog = p; prepared();
+        }, function (why) { progWhy = why; prepared(); });
+    }
+
+    function closePlaybackChoices(focus) {
+        if (!playbackChoice) { return false; }
+        var back = "panel-quality";
+        playbackChoice = "";
+        el("playback-choices").className = "opt-row hidden";
+        el("playback-choices").innerHTML = "";
+        if (focus) { Nav.focus(el(back)); }
+        return true;
+    }
+
+    function paintPlaybackControls() {
+        if (!playing || !optionsOpen) { return; }
+        /* The saved preference can be absent from this video. Label the
+         * current result without replacing that cross-video preference. */
+        var label = Settings.qualityPreference() ? currentQualityOptionName() || "正在获取…" : automaticQualityName();
+        el("panel-quality").textContent = "画质 " + label;
+        var status = el("playback-control-status");
+        status.textContent = playing.qualityBusy ? "正在切换画质…" : "";
+        status.className = "act-hint" + (status.textContent ? "" : " hidden");
+        if (playbackChoice) { paintPlaybackChoices(false); }
+    }
+
+    function paintPlaybackChoices(focus) {
+        if (!playing || !playbackChoice) { return; }
+        var box = el("playback-choices"), entries = [], current = "", i;
+        var ring = Nav.current(), keep = ring && box.contains(ring) ? ring.getAttribute("data-playback-choice") : null;
+        if (playbackChoice === "quality") {
+            entries.push({ value: "0", label: automaticQualityName() });
+            var ids = controlQualityIds();
+            for (i = 0; i < ids.length; i++) { entries.push({ value: String(ids[i]), label: qualityOptionName(ids[i]) }); }
+            var preferred = Settings.qualityPreference();
+            current = !preferred ? "0" : playing.qualityReady === false ? "" :
+                String(Player.currentQuality() || playing.quality || Settings.resolveQuality(ids, preferred));
+        }
+        var html = "";
+        for (i = 0; i < entries.length; i++) {
+            html += '<div class="opt focusable' + (entries[i].value === current ? " current" : "") +
+                '" role="button" data-playback-choice="' + entries[i].value + '">' + esc(entries[i].label) + "</div>";
+        }
+        box.innerHTML = html;
+        box.className = "opt-row";
+        var nodes = box.querySelectorAll(".opt");
+        for (i = 0; i < nodes.length; i++) {
+            nodes[i].onselect = function () {
+                var value = this.getAttribute("data-playback-choice");
+                changeQuality(Number(value));
+            };
+        }
+        var wanted = keep !== null ? keep : current;
+        var target = box.querySelector('[data-playback-choice="' + wanted + '"]') || nodes[0];
+        if ((focus || keep !== null) && target) { Nav.focus(target); }
+    }
+
+    function bindPlaybackControls() {
+        el("panel-quality").onselect = function () {
+            playbackChoice = "quality"; paintPlaybackChoices(true);
+        };
+        paintPlaybackControls();
+    }
+
     /* 播放速度 (2026-09-28). A row of chips like the parts, the current one
      * marked; choosing one keeps the panel open, since the viewer may want to
      * try the next one up. Sticky for the app run (Player.setRate). */
@@ -5831,6 +6060,8 @@
         var ot = backTimer("打开面板");
         cancelScrub();
         optionsOpen = true;
+        closePlaybackChoices(false);
+        bindPlaybackControls();
         el("playerui").className = "hidden";
         document.body.className += " options-open";
         el("options").className = "scroll rows";   /* nav.js reads both words: the scroller, up/down by row */
@@ -5938,6 +6169,7 @@
 
     function closeOptions() {
         if (!optionsOpen) { return; }
+        closePlaybackChoices(false);
         optionsOpen = false;
         if (pa) { pa.more = ""; }
         paintActMore();
@@ -5987,6 +6219,7 @@
         closeOptions();
         cancelScrub();
         var was = playing;
+        cancelQualityChange();
         Player.stop();
         playing = null;
         if (!was) { showPlayerUi(false); return; }
@@ -6330,11 +6563,14 @@
             reportProgress(Math.floor(lastKnownPosition / 1000), true,
                            Math.floor(lastKnownDuration / 1000));
         }
+        if (playing) { clearTimeout(playing.qualityTimer); }
         Player.stop();
         clearSubtitles();
         clearDanmaku();
         viewerPaused = false;
-        playing = { detail: detail, cid: cid };
+        playing = { detail: detail, cid: cid, qualityReady: false };
+        playing.stNativeStart = stNativeStart;
+        stNativeStart = stNativeChange = false;
         pa = null;   /* each playback reads its own like / coin / folder state */
         var nowPress = new Date().getTime();
         /* A card without a cid asks view() first, so the press can be a few
@@ -6579,6 +6815,14 @@
              * with a qn=64 file sitting untried in this very response. */
             if (prog) { playing.progReady = prog; }
 
+            if (playing.stNativeStart && typeof SELFTEST !== "undefined" && SELFTEST === "controls-followup") {
+                var wantedRoute = playing.stNativeStart;
+                playing.stNativeStart = false;
+                if (wantedRoute === "dash" && dash) { playDash(dash, dashQn); return; }
+                if (wantedRoute !== "dash" && prog) { startProgressive(prog); return; }
+                report("controls", "自测指定播放形式没有可用流，保留真实路由结果");
+            }
+
             /* Whatever the -404 was, it is over — a 审核中 video that came back
              * belongs in 继续观看 again, and nothing else has to know. */
             if (dash || prog) { Resume.markAlive(detail.bvid); }
@@ -6790,7 +7034,7 @@
             });
 
             ask(!fresh && pre && pre.prog, function (ok, fail) {
-                API.playurlProgressive(detail.bvid, cid, Settings.qnCap(), ok, fail);
+                API.playurlProgressive(detail.bvid, cid, progressiveQn(), ok, fail);
             }, function (r) {
                 if (playing !== session) { return; }
                 report("player", "progressive gave qn=" + r.quality +
@@ -6860,8 +7104,10 @@
 
     /* Hand a DASH response to the player and label it with the representation
      * the player itself picked, so the badge cannot disagree with the picture. */
-    function playDash(dash, qn) {
+    function playDash(dash, qn, options) {
         playing.route = "dash";
+        playing.qualityReady = false;
+        playing.nativeSize = "";
         /* The latest response in hand, as an invariant of this wrapper rather
          * than a courtesy of decide() — the in-place replay reaches for it. */
         playing.dashReady = dash;
@@ -6875,8 +7121,8 @@
          * try (marked on the object) does not get another on a handback. */
         if (!dash.strong && !dash.strongTried) { playing.triedStrong = false; }
         playing.quality = qn;
-        setQualityBadge(QUALITY_NAMES[qn] || ("QN " + qn));
-        Player.playDash(dash, playing.startMs || 0);
+        setQualityBadge("");
+        Player.playDash(dash, playing.startMs || 0, options);
     }
 
     /* Every progressive mirror refused. Retrying progressive at a lower quality
@@ -7295,6 +7541,7 @@
         backStack = [];
         bt.mark("关面板");
         var mode = Player.mode();
+        if (playing) { clearTimeout(playing.qualityTimer); }
         Player.stop();
         bt.mark("拆播放器");
         playing = null;
@@ -7412,12 +7659,23 @@
                     Math.min(100, (buf / data.duration) * 100) + "%";
             }
         } else if (kind === "quality") {
+            if (playing) {
+                if (data.id === 0) { playing.qualityReady = false; }
+                if (data.id !== undefined) { playing.quality = Number(data.id) || 0; playing.nativeSize = ""; }
+                else if (data.width > 0 && data.height > 0) { playing.nativeSize = data.width + "×" + data.height; }
+            }
             /* Adaptation is routine now that the player picks the tier itself,
              * and it moves *up* as often as down. The badge follows it; there is
              * no toast, because the one that used to be here was inherited from
              * a hand-rolled step-down and announced "原画质取不到" every time the
              * picture got better. */
-            setQualityBadge(QUALITY_NAMES[data.id] || ("QN " + data.id));
+            setQualityBadge(data.id === 0 ? "" : actualQualityName(playing ? playing.quality : data.id));
+            paintPlaybackControls();
+        } else if (kind === "ready") {
+            if (playing) { playing.qualityReady = true; paintPlaybackControls(); }
+            if (playing && playing.controlTransition && Player.userPaused()) {
+                finishQualityChange(playing.controlTransition.requested, "");
+            }
         } else if (kind === "tokenSwap") {
             /* B: the web token was refused mid-play and the player kept going
              * on its buffer (`data` is how many seconds of it). Mint the strong
@@ -7482,6 +7740,14 @@
             el("loading-status").textContent = data;
             el("player-loading").className = "";
         } else if (kind === "playing") {
+            if (playing) { playing.qualityReady = true; paintPlaybackControls(); }
+            if (playing && playing.route === "progressive") {
+                playing.nativeQualities = playing.nativeQualities || [];
+                if (playing.nativeQualities.indexOf(playing.quality) < 0) { playing.nativeQualities.push(playing.quality); }
+            }
+            if (playing && playing.controlTransition) {
+                finishQualityChange(playing.controlTransition.requested, "");
+            }
             el("player-loading").className = "hidden";
             el("loading-status").textContent = "";
             /* Where the seconds before a picture actually went. Without this,
@@ -7560,6 +7826,7 @@
         } else if (kind === "log") {
             report("player", data);
         } else if (kind === "error") {
+            if (playing && playing.controlTransition) { restoreQualityChange(String(data)); return; }
             /* One failure can cascade into a burst as queued work unwinds; only
              * the first is worth reporting or acting on. */
             if (!playing || playing.failed) { return; }
@@ -7913,6 +8180,8 @@
                  * the exit this was meant to be. */
                 playing.downgraded = true;
                 playing.startMs = ffAt;   /* progress restarts here */
+                playing.qualityReady = false;
+                playing.nativeSize = "";
                 playing.route = "progressive";
                 playing.quality = playing.progReady.quality;
                 playing.urls = playing.progReady.urls;
@@ -8025,7 +8294,13 @@
         }
         if (pendingNext) { return handleNextKeys(k); }
         if (optionsOpen) {
-            if (k === Nav.KEY.RETURN) { if (!closeActMore(false)) { closeOptions(); } return true; }
+            if (k === Nav.KEY.RETURN) {
+                if (!closePlaybackChoices(true) && !closeActMore(false)) { closeOptions(); }
+                return true;
+            }
+            if (k === Nav.KEY.PLAY_PAUSE) { setPaused(!Player.userPaused()); return true; }
+            if (k === Nav.KEY.PLAY) { if (Player.userPaused()) { setPaused(false); } return true; }
+            if (k === Nav.KEY.PAUSE) { if (!Player.userPaused()) { setPaused(true); } return true; }
             /* Up from the first row leaves the panel, mirroring the down key
              * that opened it — otherwise return is the only way out and there
              * is nothing on screen that says so. */

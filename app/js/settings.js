@@ -8,6 +8,7 @@ var Settings = (function () {
         if (data) { return data; }
         try { data = JSON.parse(localStorage.getItem(KEY) || "{}"); }
         catch (e) { data = {}; }
+        if (!data || typeof data !== "object" || Array.isArray(data)) { data = {}; }
         return data;
     }
 
@@ -16,12 +17,28 @@ var Settings = (function () {
      * 所以默认值只在大会员身上起作用，其他人和以前一模一样。8K / HDR / 杜比视界不在选项里：这台电视 4K、
      * 那几档要别的 fnval 位和色彩处理，没验证过。 */
     var QN_STEPS = [120, 112, 80, 64, 32];
+    var PLAY_QNS = [16, 32, 64, 74, 80, 112, 116, 120];
+
 
     return {
         qnSteps: function () { return QN_STEPS.slice(); },
         qnCap: function () {
             var q = Number(this.get("maxQn", 120));
             return QN_STEPS.indexOf(q) >= 0 ? q : 120;
+        },
+        qualityPreference: function () {
+            var q = Number(this.get("preferredQn", 0));
+            return PLAY_QNS.indexOf(q) >= 0 ? q : 0;
+        },
+        /* Missing tiers change this video's result, never the saved preference. */
+        resolveQuality: function (available, preference) {
+            var q = preference === undefined ? this.qualityPreference() : preference;
+            var ids = available.filter(function (id) { return id <= Settings.qnCap(); })
+                .sort(function (a, b) { return a - b; });
+            if (!ids.length) { return 0; }
+            if (!q) { return ids[ids.length - 1]; }
+            for (var i = ids.length - 1; i >= 0; i--) { if (ids[i] <= q) { return ids[i]; } }
+            return ids[0];
         },
         get: function (k, fallback) {
             var v = load()[k];
