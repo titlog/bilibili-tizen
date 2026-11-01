@@ -10,6 +10,7 @@
     var screenEl, statusEl, toastEl;
     var state = { screen: "rcmd", query: "", results: null };
     var playing = null;
+    var playbackChoice = "";
     var actionView = null;
     var interactionCache = {};
 
@@ -925,6 +926,7 @@
         if (!actReady(s, "coins", "投币")) { return; }
         if (coinLimit() - s.coins <= 0) { toast("这个视频已经投过 " + s.coins + " 枚了"); return; }
         if (s.more === "coin") { closeActMore(true); return; }
+        closePlaybackChoices(false);
         s.more = "coin";
         s.opener = "panel-coin";
         paintActMore();
@@ -962,6 +964,7 @@
         if (!s.folders.length) { toast("这个账号还没有收藏夹"); return; }
         if (s.folders.length === 1) { toggleFolder(0); return; }
         if (s.more === "fav") { closeActMore(true); return; }
+        closePlaybackChoices(false);
         s.more = "fav";
         s.opener = "panel-fav";
         paintActMore();
@@ -3453,21 +3456,52 @@
         el("subtitle-overlay").className = value ? "" : "hidden";
     }
 
+    function fetchSubtitleTracks(session) {
+        if (playing !== session || session.subtitleListPending) { return; }
+        var revision = (session.subtitleListRevision || 0) + 1;
+        session.subtitleListRevision = revision;
+        session.subtitleListPending = true;
+        session.subtitleState = "loading";
+        paintPlaybackControls();
+        /* The list belongs to the video, not to a choice of subtitle body.
+         * Keep it when the switch changes; apply the latest choice on return. */
+        function current() {
+            return playing === session && session.subtitleListRevision === revision;
+        }
+        API.playerV2(session.detail.bvid, session.cid, function (r) {
+            if (!current()) { return; }
+            session.subtitleListPending = false;
+            session.subtitleTracks = r.subtitles || [];
+            session.subtitleStarted = false;
+            session.subtitleState = "";
+            startSubtitles();
+            paintPlaybackControls();
+        }, function (why) {
+            if (!current()) { return; }
+            session.subtitleListPending = false;
+            session.subtitleState = "failed";
+            paintPlaybackControls();
+            report("subtitle", "再问字幕轨失败：" + why);
+        });
+    }
+
     function startSubtitles() {
         if (!playing || !playing.timed || !subtitlesEnabled() ||
                 playing.subtitleStarted || !playing.subtitleTracks) { return; }
-        var session = playing, tracks = session.subtitleTracks, choice = null;
-        /* Prefer human Chinese, then AI Chinese, then the first other language. */
-        for (var i = 0; i < tracks.length; i++) {
-            if (!tracks[i] || !tracks[i].subtitle_url) { continue; }
-            var lang = String(tracks[i].lan || "").toLowerCase();
-            var score = /^zh/.test(lang) ? (tracks[i].ai_type ? 2 : 3) : 1;
-            if (!choice || score > choice.score) {
-                choice = { url: tracks[i].subtitle_url, score: score,
-                    label: tracks[i].lan_doc || lang };
+        var session = playing, tracks = session.subtitleTracks;
+        var choice = session.subtitleSelected || Settings.chooseSubtitle(tracks);
+        var revision = (session.subtitleGeneration || 0) + 1, discarded = false;
+        session.subtitleGeneration = revision;
+        function current() {
+            var valid = playing === session && session.subtitleGeneration === revision && subtitlesEnabled();
+            if (!valid && !discarded) {
+                discarded = true;
+                report("subtitle", "忽略过期字幕响应（已关闭、换轨或换视频）");
             }
+            return valid;
         }
         session.subtitleStarted = true;
+        session.subtitleState = "loading";
         if (!choice) {
             /* Tracks listed, none with an address: player/v2 does this now and
              * then, and the same request seconds later has them — 10-18 the
@@ -3478,33 +3512,36 @@
                 session.subtitleRetried = true;
                 report("subtitle", "字幕轨 " + tracks.length + " 条都没给地址，两秒后再问一次");
                 setTimeout(function () {
-                    if (playing !== session || !session.detail) { return; }
-                    API.playerV2(session.detail.bvid, session.cid, function (r) {
-                        if (playing !== session) { return; }
-                        session.subtitleTracks = r.subtitles || [];
-                        session.subtitleStarted = false;
-                        startSubtitles();
-                    }, function (why) {
-                        if (playing === session) { report("subtitle", "再问字幕轨失败：" + why); }
-                    });
+                    if (!current() || !session.detail) { return; }
+                    fetchSubtitleTracks(session);
                 }, 2000);
             } else if (tracks.length) {
+                session.subtitleState = "failed";
                 report("subtitle", "再问一次还是没有地址，这次没有字幕");
             } else {
+                session.subtitleState = "empty";
                 /* 10-24: the selftest's own player/v2 listed a track for a video
                  * and its playback showed none, with not one subtitle line. One
                  * line a video, and only with subtitles switched on. */
                 report("subtitle", "player/v2 没给字幕轨");
             }
+            paintPlaybackControls();
             return;
         }
-        API.subtitle(choice.url, function (cues) {
-            if (playing !== session) { return; }
+        paintPlaybackControls();
+        API.subtitle(choice.subtitle_url, function (cues) {
+            if (!current()) { return; }
             session.subtitleCues = cues;
-            report("subtitle", "已加载 " + choice.label + "，" + cues.length + " 条");
+            session.subtitleLoaded = choice;
+            session.subtitleState = cues.length ? "ready" : "empty";
+            report("subtitle", "已加载 " + (choice.lan_doc || choice.lan) + "，" + cues.length + " 条");
             paintSubtitleAt(lastKnownPosition);
+            paintPlaybackControls();
         }, function (why) {
-            if (playing === session) { report("subtitle", "字幕取不到：" + why); }
+            if (!current()) { return; }
+            session.subtitleState = "failed";
+            paintPlaybackControls();
+            report("subtitle", "字幕取不到：" + why);
         });
     }
 
@@ -3592,7 +3629,7 @@
         }
         paintSubtitles();
         subtitleButton.onselect = function () {
-            Settings.set("showSubtitles", !subtitlesEnabled());
+            setSubtitleChoice(!subtitlesEnabled(), null, false);
             paintSubtitles();
             report("settings", "显示字幕=" + (subtitlesEnabled() ? "开" : "关"));
         };
@@ -6165,6 +6202,105 @@
         if (chip) { Nav.focus(chip); }
     }
 
+    function setSubtitleChoice(enabled, track, automatic) {
+        Settings.set("showSubtitles", !!enabled);
+        if (automatic) { Settings.set("subtitleLanguage", ""); }
+        else if (track) { Settings.set("subtitleLanguage", Settings.subtitleLanguageOf(track)); }
+        clearSubtitles();
+        if (playing) {
+            var retryTracks = playing.subtitleState === "failed" &&
+                (!playing.subtitleTracks || !playing.subtitleTracks.length);
+            playing.subtitleGeneration = (playing.subtitleGeneration || 0) + 1;
+            playing.subtitleStarted = false;
+            playing.subtitleRetried = false;
+            playing.subtitleSelected = track;
+            playing.subtitleLoaded = null;
+            playing.subtitleCues = [];
+            /* Turning captions off must not forget that the track list failed.
+             * Re-enabling can then retry instead of waiting for a nonexistent request. */
+            playing.subtitleState = retryTracks ? "failed" : "";
+            if (enabled) {
+                if (retryTracks) { fetchSubtitleTracks(playing); }
+                else { startSubtitles(); }
+            }
+        }
+        paintPlaybackControls();
+    }
+
+    function closePlaybackChoices(focus) {
+        if (!playbackChoice) { return false; }
+        var back = "panel-subtitles";
+        playbackChoice = "";
+        el("playback-choices").className = "opt-row hidden";
+        el("playback-choices").innerHTML = "";
+        if (focus) { Nav.focus(el(back)); }
+        return true;
+    }
+
+    function paintPlaybackControls() {
+        if (!playing || !optionsOpen) { return; }
+        var sub = playing.subtitleState, loaded = playing.subtitleLoaded;
+        var subLabel = !subtitlesEnabled() ? "关" : sub === "failed" ? "加载失败，可重试" :
+            sub === "empty" ? "无可用字幕" : loaded ? (loaded.lan_doc || loaded.lan) : "正在获取…";
+        el("panel-subtitles").textContent = "字幕 " + subLabel;
+        var preferredLanguage = Settings.subtitleLanguage();
+        var status = el("playback-control-status");
+        status.textContent = loaded && preferredLanguage && Settings.subtitleLanguageOf(loaded) !== preferredLanguage
+                ? "没有偏好语言，已使用当前可用字幕" : "";
+        status.className = "act-hint" + (status.textContent ? "" : " hidden");
+        if (playbackChoice) { paintPlaybackChoices(false); }
+    }
+
+    function paintPlaybackChoices(focus) {
+        if (!playing || !playbackChoice) { return; }
+        var box = el("playback-choices"), entries = [], current = "", i;
+        var ring = Nav.current(), keep = ring && box.contains(ring) ? ring.getAttribute("data-playback-choice") : null;
+        entries = [{ value: "off", label: "关闭" }, { value: "auto", label: "自动选择" }];
+        var tracks = playing.subtitleTracks || [];
+        for (i = 0; i < tracks.length; i++) {
+            if (!tracks[i] || !tracks[i].subtitle_url) { continue; }
+            entries.push({ value: String(i), label: (tracks[i].lan_doc || tracks[i].lan || "字幕") +
+                (tracks[i].ai_type || /^ai-/.test(tracks[i].lan || "") ? "（AI）" : "") });
+            if (subtitlesEnabled() && playing.subtitleLoaded === tracks[i]) { current = String(i); }
+        }
+        if (!subtitlesEnabled()) { current = "off"; }
+        else if (!Settings.subtitleLanguage()) { current = "auto"; }
+        var html = "";
+        for (i = 0; i < entries.length; i++) {
+            html += '<div class="opt focusable' + (entries[i].value === current ? " current" : "") +
+                '" role="button" data-playback-choice="' + entries[i].value + '">' + esc(entries[i].label) + "</div>";
+        }
+        box.innerHTML = html;
+        box.className = "opt-row";
+        var nodes = box.querySelectorAll(".opt");
+        for (i = 0; i < nodes.length; i++) {
+            nodes[i].onselect = function () {
+                var value = this.getAttribute("data-playback-choice");
+                var track = value === "off" || value === "auto" ? null : playing.subtitleTracks[Number(value)];
+                setSubtitleChoice(value !== "off", track, value === "auto");
+            };
+        }
+        var wanted = keep !== null ? keep : current;
+        var target = box.querySelector('[data-playback-choice="' + wanted + '"]') || nodes[0];
+        if ((focus || keep !== null) && target) { Nav.focus(target); }
+    }
+
+    function bindPlaybackControls() {
+        el("panel-subtitles").onselect = function () {
+            closeActMore(true);
+            playbackChoice = "subtitles";
+            if (playing.subtitleState === "failed") {
+                var session = playing;
+                session.subtitleStarted = false; session.subtitleRetried = false;
+                if (!session.subtitleTracks || !session.subtitleTracks.length) {
+                    fetchSubtitleTracks(session);
+                } else { startSubtitles(); }
+            }
+            paintPlaybackChoices(true);
+        };
+        paintPlaybackControls();
+    }
+
     /* 播放速度 (2026-09-28). A row of chips like the parts, the current one
      * marked; choosing one keeps the panel open, since the viewer may want to
      * try the next one up. Sticky for the app run (Player.setRate). */
@@ -6195,6 +6331,8 @@
         var ot = backTimer("打开面板");
         cancelScrub();
         optionsOpen = true;
+        closePlaybackChoices(false);
+        bindPlaybackControls();
         el("playerui").className = "hidden";
         document.body.className += " options-open";
         el("options").className = "scroll rows";   /* nav.js reads both words: the scroller, up/down by row */
@@ -6302,6 +6440,7 @@
 
     function closeOptions() {
         if (!optionsOpen) { return; }
+        closePlaybackChoices(false);
         optionsOpen = false;
         if (pa) { pa.more = ""; }
         paintActMore();
@@ -7189,6 +7328,7 @@
             /* Resume's 1.2s deadline must not discard a later subtitle list. */
             session.subtitleTracks = r.subtitles || [];
             startSubtitles();
+            paintPlaybackControls();
             if (got.resume !== undefined) { return; }
             got.resume = r;
             decide();
@@ -7198,6 +7338,8 @@
             /* Where the subtitle list comes from, too: without this line a
              * missing subtitle left nothing in the log (10-24 selftest). */
             if (subtitlesEnabled()) { report("subtitle", "player/v2 没问到（" + why + "），这次没有字幕"); }
+            session.subtitleState = "failed";
+            paintPlaybackControls();
             if (got.resume !== undefined) { return; }
             got.resume = null;
             decide();
@@ -8389,7 +8531,7 @@
         }
         if (pendingNext) { return handleNextKeys(k); }
         if (optionsOpen) {
-            if (k === Nav.KEY.RETURN) { if (!closeActMore(false)) { closeOptions(); } return true; }
+            if (k === Nav.KEY.RETURN) { if (!closePlaybackChoices(true) && !closeActMore(false)) { closeOptions(); } return true; }
             /* Up from the first row leaves the panel, mirroring the down key
              * that opened it — otherwise return is the only way out and there
              * is nothing on screen that says so. */

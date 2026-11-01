@@ -255,7 +255,8 @@ body.density-5 .card-info-date { display: block; width: 100%; margin: 2px 0 0; f
 }
 
 #panel-actions { margin: 22px 0 6px; }
-#panel-actions .btn, #opt-episode-controls .btn { font-size: 24px; padding: 10px 24px; }
+#panel-actions .btn, #opt-episode-controls .btn,
+#opt-playback-controls .btn { font-size: 24px; padding: 10px 24px; }
 /* Done: liked, coined, in a folder — lit the way the web page lights its icons. */
 #panel-actions .btn.act.on { color: #ff6699; border-color: rgba(255,102,153,0.55);
     background: rgba(255,102,153,0.12); }
@@ -269,7 +270,7 @@ body.density-5 .card-info-date { display: block; width: 100%; margin: 2px 0 0; f
 /* Speed, at the end of the button row (2026-10-20). */
 .speed-row { display: flex; align-items: center; gap: 12px; margin-left: 8px; }
 .speed-chips { display: flex; gap: 10px; }
-#panel-actions .opt { font-size: 24px; padding: 8px 18px; }
+#panel-actions .opt, #playback-choices .opt { font-size: 24px; padding: 8px 18px; }
 
 #video-actions {
     position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 40;
@@ -635,6 +636,9 @@ body.density-5 .library-item { width: 344px; }
     background: linear-gradient(to top, rgba(0,0,0,0.97) 30%, rgba(0,0,0,0.55));
 }
 #options::-webkit-scrollbar { display: none; }
+/* Keep captions visible above the panel while selecting a language. */
+.options-open #subtitle-overlay { height: 46%; padding-bottom: 34px; }
+.options-open #subtitle-text { font-size: 31px; }
 
 /* The same bottom sheet as video playback, with room choices instead of
    video-only actions. Keep the choices light: the stream is still playing. */
@@ -735,6 +739,12 @@ body.density-5 .library-item { width: 344px; }
 .opt-group { margin-bottom: 32px; }
 .opt-label { font-size: 24px; color: #8b959e; margin-bottom: 16px; letter-spacing: 2px; }
 .opt-row { display: flex; flex-wrap: wrap; gap: 16px; }
+#opt-playback-controls .actions { flex-wrap: wrap; }
+#opt-playback-controls .btn { max-width: 560px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* Equal heights keep wrapped labels in one geometric navigation row. */
+#playback-choices { margin-top: 16px; }
+#playback-choices .opt { overflow-wrap: break-word; word-wrap: break-word; }
+#playback-control-status { margin-top: 12px; }
 /* Sized to its own text rather than to a column, so the row degrades on its
    own: bare numbers pack five or six to a line the way they always did, and
    named parts take the width they need up to a limit and then ellipsis. One
