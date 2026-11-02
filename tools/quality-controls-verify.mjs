@@ -228,6 +228,8 @@ context.Player={on:f=>eventHandler=f,qualityChoices:d=>d?Mpd.tiers(d,120):[],cur
 let appSource=source('app/js/app.js');
 appSource=appSource.replace('    window.onload = function () {',`    window.__controlsTest={
       session: function(s){playing=s;optionsOpen=true;toastEl=el('toast');return s;},
+      start: function(d){playing=null;optionsOpen=false;screenEl=el('screen');statusEl=el('status');toastEl=el('toast');
+        nextupGrid={clear:function(){}};play(d,d.cid);return playing;},
       quality:changeQuality,
       paint:paintPlaybackControls, rollback:restoreQualityChange, ids:controlQualityIds,
       bind:bindPlaybackControls, closeChoices:closePlaybackChoices,
@@ -381,5 +383,34 @@ await check('paused DASH tail switches leave a fetchable segment and preserve sp
   realPlayer.setRate(1);realPlayer.stop();engine.getVariantTracks=getTracks;engine.selectVariantTrack=select;
   video.duration=NaN;video.currentTime=0;
  }
+});
+await check('startup resolves saved quality across both routes, caps and fresh settings instances',()=>{
+ Object.assign(context.Player,{startTiming(){},mark(){},strongHint:()=>0,pickDashVideo:realPlayer.pickDashVideo});
+ context.Resume={positionMs:()=>0,markAlive(){}};
+ context.Accounts={activeId:()=> 'test'};
+ context.Danmaku={area:()=> 'top',areaClass:()=> 'hidden'};
+ let resumeReply,serial=0;context.API.playerV2=(b,c,ok)=>{resumeReply=ok;};
+ try{
+  for(const [preference,tiers,prog,cap,route,actual] of [
+   [80,[120,64],80,120,'prog',80],[80,[120,80,64],80,120,'dash',80],
+   [80,[120,64],32,120,'dash',64],[80,[120],64,120,'prog',64],
+   [16,[80],32,120,'prog',32],[0,[120,64],80,120,'dash',120],
+   [80,[120,64],80,64,'dash',64],[80,[],80,120,'prog',80],
+   [80,[64],null,120,'dash',64],[64,[120,64],80,120,'dash',64]]){
+   for(const nativeFirst of [false,true]){
+    Settings.set('preferredQn',preference);Settings.set('maxQn',cap);calls=[];
+    const fresh=vm.createContext({localStorage:storage});vm.runInContext(source('app/js/settings.js'),fresh);
+    context.Settings=fresh.Settings;
+    const s=app.start({bvid:'BVSTART'+(++serial),cid:serial,title:'startup',duration:'2:00'});
+    const d=()=>tiers.length?dashReply.ok({...dash,video:tiers.map(rep)}):dashReply.fail('unavailable');
+    const p=()=>prog?progReply.ok({quality:prog,urls:['native-'+prog]}):progReply.fail('unavailable');
+    if(nativeFirst){p();d();}else{d();p();}
+    assert.equal(calls.filter(c=>c[0]==='dash'||c[0]==='prog').length,0,'wait for resume before starting');
+    resumeReply({cid:serial,positionMs:42000,subtitles:[]});
+    assert.equal(calls.at(-1)[0],route);assert.equal(s.quality,actual);assert.equal(calls.at(-1)[2],42000);
+    assert.equal(fresh.Settings.qualityPreference(),preference);
+   }
+  }
+ }finally{context.Settings=Settings;}
 });
 console.log(`${count}/${count} playback control scenarios passed (controlled media, not device acceptance).`);

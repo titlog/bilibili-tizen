@@ -6895,11 +6895,13 @@
 
             var fromLesson = !!got.strong;
             var dash = got.strong || got.dash, prog = got.prog;
-            var dashQn = 0;
-            if (dash) {
-                var best = Player.pickDashVideo(dash);
-                dashQn = (best && best.id) || 0;
-            }
+            /* Choose the preferred available tier across both responses before
+             * picking a renderer, as an in-play quality change does. */
+            var dashIds = dash ? Mpd.tiers(dash, Settings.qnCap()) : [];
+            var candidates = dashIds.slice();
+            if (prog) { candidates.push(prog.quality); }
+            var target = Settings.resolveQuality(candidates);
+            var dashQn = Settings.resolveQuality(dashIds);
             Player.mark("playurl");
 
             /* Kept on the session even when progressive wins the routing: this
@@ -6959,10 +6961,10 @@
                 }
                 report("player", "自测：这个视频没有渐进式，照常走");
             }
-            if (dash && (!prog || dashQn >= prog.quality)) {
-                playDash(dash, dashQn); return;
+            if (dash && dashIds.indexOf(target) >= 0) {
+                playDash(dash, target); return;
             }
-            if (prog) { startProgressive(prog); return; }
+            if (prog && prog.quality === target) { startProgressive(prog); return; }
             /* Both forms refused, and the reasons are the whole diagnosis:
              * 「HTTP 403」「timeout」「network error」 and bilibili's own code
              * message are four different faults that this toast used to render
