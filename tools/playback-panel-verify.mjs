@@ -1,4 +1,4 @@
-/* The staged playback controls share one choice row. Exercise the production
+/* The playback controls share one choice row. Exercise the production
  * open/close path and rendered choice callbacks with interleaved responses;
  * this controlled DOM does not claim to validate TV geometry or decoding. */
 import assert from 'node:assert/strict';
@@ -7,8 +7,7 @@ import vm from 'node:vm';
 
 const source = file => fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
 const html = source('app/index.html'), appSource = source('app/js/app.js');
-const withAutoplay = !process.argv.includes('--without-autoplay');
-const entries = ['panel-quality', 'panel-subtitles'].concat(withAutoplay ? ['panel-autoplay'] : []);
+const entries = ['panel-quality', 'panel-subtitles', 'panel-autoplay'];
 let count = 0;
 function check(label, run) { run(); count++; console.log('✓ ' + label); }
 
@@ -22,14 +21,14 @@ check('one shared control row above episode shortcuts, with unique IDs and helpe
   assert.ok(row, 'missing shared actions row');
   assert.deepEqual([...row[1].matchAll(/\bid="([^"]+)"/g)].map(match => match[1]), entries);
   const helpers = ['closePlaybackChoices', 'paintPlaybackControls', 'paintPlaybackChoices', 'bindPlaybackControls'];
-  if (withAutoplay) helpers.push('paintAutoplayControl', 'bindAutoplayControl');
+  helpers.push('paintAutoplayControl', 'bindAutoplayControl');
   for (const name of helpers) {
     assert.equal([...appSource.matchAll(new RegExp('^    function ' + name + '\\(', 'gm'))].length, 1, name);
   }
 });
 
 function harness() {
-  const stored = new Map(), nodes = new Map(), timers = new Map();
+  const stored = new Map(), nodes = new Map(), timers = new Map(), intervals = new Map();
   const qualityRequests = [], subtitleRequests = [];
   let focus = null, timerId = 0, actual = 80, keyHandler;
   function node(id) {
@@ -66,14 +65,18 @@ function harness() {
       querySelector: selector => /^#[\w-]+$/.test(selector) ? node(selector.slice(1)) : null,
       body: node('body'), addEventListener() {}},
     setTimeout: (f, ms) => { const id = ++timerId; timers.set(id, {f, ms}); return id; },
-    clearTimeout: id => timers.delete(id), setInterval: () => ++timerId, clearInterval() {},
+    clearTimeout: id => timers.delete(id),
+    setInterval: (f, ms) => { const id = ++timerId; intervals.set(id, {f, ms}); return id; },
+    clearInterval: id => intervals.delete(id),
     Diag: {plain: value => value, record() {}, incident() {}},
     Auth: {isLoggedIn: () => false, accessKey: () => ''},
     Nav: {onBack() {}, onKey: f => { keyHandler = f; }, current: () => focus, focus: target => { focus = target; },
       KEY: {RETURN: 10009, UP: 38, DOWN: 40, ENTER: 13, PLAY_PAUSE: 10252, PLAY: 415, PAUSE: 19}},
-    Player: {on() {}, mode: () => 'shaka', currentQuality: () => actual, qualityChoices: () => [80, 64, 32],
+    Player: {on() {}, stop() {}, mode: () => 'shaka', currentQuality: () => actual, qualityChoices: () => [80, 64, 32],
       selectQuality: (qn, done) => { qualityRequests.push({qn, done}); return true; }},
-    API: {videoActionReady: () => true, subtitle: (url, ok, fail) => subtitleRequests.push({url, ok, fail})}
+    EpisodeNav: {adjacent: () => null},
+    API: {videoActionReady: () => true, view: (b, ok) => ok({bvid: b, cid: 2, title: 'next'}),
+      subtitle: (url, ok, fail) => subtitleRequests.push({url, ok, fail})}
   });
   context.window = context;
   context.addEventListener = () => {};
@@ -87,8 +90,10 @@ function harness() {
     paintDesc = paintPanelActions = loadPanelActions = loadFollow = paintParts =
         paintSeason = paintEpisodeControls = paintSpeed = function () {};
     panelGrid = { reset: function () {}, clear: function () {} };
+    nextupGrid = { reset: function () {} }; prefetchCard = function () {};
     window.__panelTest = {
         open: function (session) { playing = session; optionsOpen = false; toastEl = el("toast"); openOptions(); },
+        autoplay: bindAutoplayControl, end: beginAutoNext,
         actions: function () {
             Auth.isLoggedIn = function () { return true; };
             var state = panelActState();
@@ -104,7 +109,6 @@ function harness() {
   Settings.set('preferredQn', 80);
   Settings.set('showSubtitles', false);
   Settings.set('subtitleLanguage', 'en');
-  Settings.set('autoplayNext', true);
   const tracks = [{lan: 'en', lan_doc: 'English', subtitle_url: 'english'},
     {lan: 'zh-CN', lan_doc: '中文', subtitle_url: 'chinese'}];
   const session = {detail: {bvid: 'BVTEST'}, cid: 1, timed: true, route: 'dash',
@@ -117,7 +121,7 @@ function harness() {
     focus = target;
     target.onselect();
   }
-  return {node, Settings, session, context, storage, qualityRequests, subtitleRequests, select,
+  return {node, Settings, session, context, storage, qualityRequests, subtitleRequests, select, intervals,
     choice: () => context.__panelTest.choice(),
     values: () => box.children.map(child => child.getAttribute('data-playback-choice')),
     focused: () => focus,
@@ -133,7 +137,8 @@ check('opening the production panel binds all controls and keeps their preferenc
   assert.equal(h.node('options').className, 'scroll rows');
   assert.equal(h.node('panel-quality').textContent, '画质 1080p');
   assert.equal(h.node('panel-subtitles').textContent, '字幕 关');
-  if (withAutoplay) assert.equal(h.node('panel-autoplay').textContent, '自动连播 开');
+  assert.equal(h.Settings.get('autoplayNext', true), true);
+  assert.equal(h.node('panel-autoplay').textContent, '自动连播 开');
   h.enter('panel-quality');
   assert.deepEqual(h.values(), ['0', '80', '64', '32']);
   h.select('0'); h.finishQuality(0);
@@ -146,13 +151,14 @@ check('opening the production panel binds all controls and keeps their preferenc
   assert.equal(h.subtitleRequests.at(-1).url, 'english');
   h.subtitleRequests.at(-1).ok([{from: 0, to: 10, text: 'English caption'}]);
   assert.equal(h.node('subtitle-text').textContent, 'English caption');
-  if (withAutoplay) h.enter('panel-autoplay');
+  h.enter('panel-autoplay');
+  assert.equal(h.node('panel-autoplay').textContent, '自动连播 关');
   const fresh = vm.createContext({localStorage: h.storage});
   vm.runInContext(source('app/js/settings.js'), fresh);
   assert.equal(fresh.Settings.qualityPreference(), 0);
   assert.equal(fresh.Settings.get('showSubtitles'), true);
   assert.equal(fresh.Settings.subtitleLanguage(), 'en');
-  assert.equal(fresh.Settings.get('autoplayNext'), !withAutoplay);
+  assert.equal(fresh.Settings.get('autoplayNext'), false);
 });
 
 check('a late subtitle response keeps quality choices and focus while rendering captions', () => {
@@ -185,14 +191,13 @@ check('a late quality result keeps subtitle choices, focus and the selected lang
   assert.equal(h.node('subtitle-text').textContent, '切档之后的字幕');
 });
 
-check(withAutoplay ? 'autoplay leaves either open menu intact and Back restores the right entry before closing'
-  : 'Back restores each entry before closing the two-control panel', () => {
+check('autoplay leaves either open menu intact and Back restores the right entry before closing', () => {
   for (const entry of ['panel-quality', 'panel-subtitles']) {
     const h = harness();
     h.enter(entry);
     const before = h.values(), choice = h.choice();
-    if (withAutoplay) h.enter('panel-autoplay');
-    assert.equal(h.Settings.get('autoplayNext'), !withAutoplay);
+    h.enter('panel-autoplay');
+    assert.equal(h.Settings.get('autoplayNext'), false);
     assert.equal(h.Settings.qualityPreference(), 80);
     assert.equal(h.Settings.subtitleLanguage(), 'en');
     assert.equal(h.Settings.get('showSubtitles'), false);
@@ -229,4 +234,43 @@ check('playback and action choices are exclusive and Return restores the latest 
   }
 });
 
-console.log(`${count}/${count} combined playback panel scenarios passed (${withAutoplay ? 'three controls' : 'two controls'}; controlled DOM, not device acceptance).`);
+check('rebinding autoplay reflects changes made through the shared settings preference', () => {
+  const h = harness();
+  for (const enabled of [false, true]) {
+    h.Settings.set('autoplayNext', enabled); h.context.__panelTest.autoplay();
+    assert.equal(h.node('panel-autoplay').textContent, '自动连播 ' + (enabled ? '开' : '关'));
+  }
+});
+
+check('the production end-of-video chooser starts a countdown only when autoplay is enabled', () => {
+  for (const enabled of [false, true]) {
+    const h = harness(); h.Settings.set('autoplayNext', enabled);
+    h.session.detail.related = [{bvid: 'NEXT'}]; h.context.__panelTest.end();
+    assert.equal(h.node('nextup').className, 'scroll');
+    assert.equal(h.intervals.size, enabled ? 1 : 0);
+    if (!enabled) assert.match(h.node('nextup-hint').textContent, /自动播放已关闭/);
+    else assert.equal([...h.intervals.values()][0].ms, 1000);
+  }
+});
+
+check('device autoplay steps toggle once and restore both initial preferences', () => {
+  const deviceSource = source('app/js/selftest.js').replace('    function run() {',
+    '    window.__autoplayDeviceSteps = autoplayControlSteps;\n    function run() {');
+  for (const initial of [false, true]) {
+    const h = harness(); h.Settings.set('autoplayNext', initial);
+    vm.runInContext(deviceSource, h.context);
+    const steps = h.context.__autoplayDeviceSteps; assert.equal(steps.length, 8);
+    steps[0][2](); assert.equal(h.Settings.get('autoplayNext'), true);
+    h.context.__panelTest.autoplay(); h.context.Nav.focus(h.node('panel-autoplay'));
+    let presses = 0;
+    h.context.document.createEvent = () => ({initEvent(kind) { this.kind = kind; }});
+    h.context.document.dispatchEvent = e => {
+      if (e.kind === 'keyup' && e.keyCode === 13) { presses++; h.node('panel-autoplay').onselect(); }
+    };
+    assert.equal(steps[3][2](), null); assert.equal(presses, 1);
+    assert.equal(h.Settings.get('autoplayNext'), false);
+    steps.at(-1)[2](); assert.equal(h.Settings.get('autoplayNext'), initial);
+  }
+});
+
+console.log(`${count}/${count} combined playback panel scenarios passed (three controls; controlled DOM, not device acceptance).`);

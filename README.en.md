@@ -194,6 +194,8 @@ Press Down during playback to choose a quality or return to Auto. The preference
 
 Press Down during playback to turn subtitles on or off, select a track, or return to automatic selection. The language preference persists across videos and app restarts. Human subtitles take priority within the same language; unavailable languages fall back without replacing the preference. Press Back once to collapse the choices and again to close the panel.
 
+The same panel includes an autoplay toggle. The panel and Settings share the same preference, which persists across app restarts. With autoplay off, the next-video chooser waits for confirmation at the end.
+
 **Does not**:
 - **Casting from the phone.** A cast receiver has to listen on a port; a Tizen
   web widget cannot, regardless of how official it is. The substitute is

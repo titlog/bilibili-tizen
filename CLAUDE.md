@@ -57,6 +57,7 @@ zsh tools/deploy.sh --tokenswap # 只测「播放中 web 令牌被拒 → 换强
 zsh tools/deploy.sh --subtitles  # 字幕开关、语言选择与即时清除，使用真实媒体
 zsh tools/deploy.sh --controls  # 画质切换与播放状态恢复，使用真实媒体
 zsh tools/deploy.sh --controls-followup  # 原生切档、保位与换视频状态复验
+zsh tools/deploy.sh --autoplay  # 自动连播快捷入口与片尾行为，使用真实媒体
 zsh tools/deploy.sh --dmperf    # 弹幕帧耗时
 zsh tools/deploy.sh --diag      # 诊断日志上传：设置里手动传一次、造一次出事自动传（先开 node tools/diag-local.mjs）
 node tools/diag-logs.mjs        # 读别人电视传上来的诊断日志（--device 编号 / <id>）
@@ -71,7 +72,7 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
   `BILI_PROFILE="<名字>"`。→ `docs/部署与发布.md`
 - `deploy.sh` 把开发机地址写进 `config.js` 的 `REPORT_TO`、按需写 `SELFTEST`，打完包、任何退出都改回去 ——
   **地址和 `SELFTEST=true` 都不能进提交**。换了网络要重新部署，否则电视往旧地址报。
-- **测试构建不能留在电视上**：`--subtitles` / `--controls` / `--controls-followup` / `--selftest` / `--tokenswap` / `--dmperf` / `--diag` 跑完马上 `zsh tools/deploy.sh` 装回正常构建。
+- **测试构建不能留在电视上**：`--subtitles` / `--controls` / `--controls-followup` / `--autoplay` / `--selftest` / `--tokenswap` / `--dmperf` / `--diag` 跑完马上 `zsh tools/deploy.sh` 装回正常构建。
 - 应用编号 `BiliTvApp0.Bilibili`；签名档 / 证书目录叫 `BiliSpike` 是证书的名字，和编号无关。
 - 分发证书大约 **2027-08 过期**，重签：`node tools/samsung-cert.mjs`。这一代电视必须用三星签发的
   分发证书，Tizen 自带的一律 `Invalid certificate chain`。证书、密码都在仓库外。→ `docs/部署与发布.md`
@@ -118,11 +119,12 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
 
 ## 播放控制
 
-播放中按下键打开面板，可选择画质、即时开关字幕或选择字幕轨道。
+播放中按下键打开面板，可选择画质、即时开关字幕、选择字幕轨道或开关自动连播。
 画质偏好跨视频和应用重启保留，并受设置页的画质上限限制。缺档时选择最接近的较低档；没有更低档时使用最低可用档，入口显示实际结果，保存的偏好不变。选择“自动”恢复自动选档。
 切档保留进度、暂停状态和倍速。失败回滚保留最新的暂停或播放指令。
 字幕语言偏好跨视频和应用重启保留。同语言优先人工字幕；没有匹配语言时沿用自动规则，保留偏好。按返回键先收起选项，再按一次关闭面板。
 画质／字幕选项与投币／收藏选项互斥展开，返回键收起当前选项并聚焦对应入口。
+自动连播与设置页共用同一偏好，应用重启后保留。关闭后，片尾停留在下一条选择页，等待确认播放。
 
 ## 约定
 

@@ -14,6 +14,7 @@ SELFTEST=false
 [ "$1" = "--subtitles" ] && SELFTEST='"subtitles"'
 [ "$1" = "--controls" ] && SELFTEST='"controls"'
 [ "$1" = "--controls-followup" ] && SELFTEST='"controls-followup"'
+[ "$1" = "--autoplay" ] && SELFTEST='"autoplay"'
 # --dmperf: the danmaku frame-time run instead (selftest.js, 2026-10-18) — the
 # ways of drawing rotated on one dense video, rAF intervals per window.
 [ "$1" = "--dmperf" ] && SELFTEST='"dmperf"'

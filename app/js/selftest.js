@@ -2746,8 +2746,48 @@ var SelfTest = (function () {
         }]
     ];
 
+    var autoplayControlSteps = [
+        ["保存连播偏好", 100, function () {
+            control.saved = Settings.get("autoplayNext", true);
+            Settings.set("autoplayNext", true);
+            API.view("BV1xX66YcEML", function (d) { control.detail = d; }, function (why) { control.error = why; });
+            return null;
+        }],
+        ["打开真实视频", 500, function () {
+            if (control.error) { return control.error; }
+            if (!control.detail) { return WAIT; }
+            window.__stOpenNoCid(control.detail); return null;
+        }, 30000, "没有取得样本"],
+        ["媒体实际推进", 1000, function () {
+            if (visible("player-loading")) { return WAIT; }
+            var position = Player.position();
+            if (control.firstPosition === undefined) { control.firstPosition = position; return WAIT; }
+            if (position < control.firstPosition + 750) { return WAIT; }
+            key(KEY.DOWN); return null;
+        }, 35000, "媒体没有推进"],
+        ["方向键到达连播入口并关闭", 300, function () {
+            var why = controlReach(document.getElementById("panel-autoplay"));
+            if (why) { return why; }
+            if (!Settings.get("autoplayNext", true)) { return "连播测试起点不是开启"; }
+            key(KEY.ENTER);
+            return Settings.get("autoplayNext", true) ? "没有关闭连播" : null;
+        }],
+        ["真实播放到片尾", 1000, function () {
+            key(KEY.RETURN); Player.seekTo(Math.max(0, Player.durationMs() - 3000)); return null;
+        }],
+        ["片尾等待用户选择", 1000, function () {
+            if (!visible("nextup")) { return WAIT; }
+            control.endedAt = new Date().getTime(); return null;
+        }, 20000, "没有进入下一条选择页"],
+        ["关闭连播不启动下一条", 9000, function () {
+            return visible("nextup") ? null : "等待时自动离开选择页";
+        }],
+        ["恢复原连播偏好", 100, function () { Settings.set("autoplayNext", control.saved); return null; }]
+    ];
+
     function run() {
         var i = 0, failures = 0;
+        if (SELFTEST === "autoplay") { steps = autoplayControlSteps; window.__stNoHistory = true; }
         if (SELFTEST === "subtitles") { steps = subtitleControlSteps; window.__stNoHistory = true; }
         if (SELFTEST === "controls" || SELFTEST === "controls-followup") {
             steps = SELFTEST === "controls" ? qualityControlSteps.slice(0, 8).concat(qualityControlSteps.slice(-1)) : qualityControlSteps;
