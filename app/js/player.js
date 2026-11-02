@@ -1310,9 +1310,14 @@ var Player = (function () {
         });
         player.addEventListener("error", function (e) {
             var err = e && e.detail;
-            /* Rolling the video track back does not restart a failed shared
-             * audio stream. Keep the original error on the recovery path. */
-            if (qualitySwitch) { finishQualitySwitch("切换时视频流加载失败：" + describeShakaError(err)); }
+            var recoverable = err && err.severity !== 2 &&
+                (err.category === 1 || err.category === 3);
+            /* Startup can still become ready after a recoverable retry. An
+             * in-play selection rolls back, but the original error must also
+             * reach recovery: rolling video back cannot repair shared audio. */
+            if (qualitySwitch && !(qualitySwitch.loading && recoverable)) {
+                finishQualitySwitch("切换时视频流加载失败：" + describeShakaError(err));
+            }
             /* 直播 has none of the on-demand machinery below — no manifest of
              * ours, no files to drop. A recoverable error is Shaka retrying;
              * a critical one goes to app.js, which fetches a fresh address. */
@@ -1422,8 +1427,7 @@ var Player = (function () {
              * and did recover, by dropping a tier — but a fault with no way to
              * announce itself is the shape of every expensive bug in this
              * codebase. */
-            if (err && err.severity !== 2 &&
-                    (err.category === 1 || err.category === 3)) {
+            if (recoverable) {
                 /* A 403 Shaka labels RECOVERABLE is not worth its retry when
                  * the manifest is a web one: the retry feeds the 403 error
                  * page into the demuxer, the element reports error 3, and a

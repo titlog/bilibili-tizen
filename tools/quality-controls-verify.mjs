@@ -124,6 +124,29 @@ await check('quality rollback preserves the original audio error recovery',async
   assert.equal(retries,1);assert.match(done,/1002/);assert.equal(calls.at(-1).t,active);
  }
 });
+await check('saved manual startup survives recoverable network and media errors',async()=>{
+ for(const qn of [32,80])for(const paused of [false,true])for(const category of [1,3]){
+  Settings.set('preferredQn',qn);await beginDash(qn,{paused});let retries=0;
+  engine.retryStreaming=()=>{retries++;};
+  sdkListeners.get('error')({detail:{category,code:category===1?1002:3015,severity:1,data:[]}});
+  await tick();assert.equal(retries,1);assert.equal(hasEvent('error'),false);assert.equal(hasEvent('ready'),false);
+  sdkListeners.get('segmentappended')({contentType:'audio'});await tick();assert.equal(hasEvent('ready'),false);
+  active.active=qn===80;low.active=qn===32;sdkListeners.get('segmentappended')({contentType:'video'});
+  await playerTest.settled();assert.equal(events.filter(e=>e.kind==='ready').length,1);
+  assert.equal(hasEvent('error'),false);assert.equal(realPlayer.currentQuality(),qn);
+  assert.equal(realPlayer.userPaused(),paused);assert.equal(video.paused,paused);
+  video.currentTime=42;mediaListeners.get('timeupdate')();assert.equal(realPlayer.position(),42000);
+  assert.equal(Settings.qualityPreference(),qn);
+ }
+ Settings.set('preferredQn',0);
+});
+await check('critical startup errors still reject manual quality readiness',async()=>{
+ await beginDash(32);let retries=0;engine.retryStreaming=()=>{retries++;};
+ sdkListeners.get('error')({detail:{category:1,code:1002,severity:2,data:[]}});
+ await playerTest.settled();assert.equal(retries,1);assert.equal(hasEvent('error'),true);
+ low.active=true;active.active=false;sdkListeners.get('segmentappended')({contentType:'video'});
+ await tick();assert.equal(hasEvent('ready'),false);
+});
 for(const qn of [32,80])await check(`manual DASH ${qn} waits for this load's video data`,async()=>{
  await beginDash(qn);assert.equal(hasEvent('ready'),false);
  sdkListeners.get('segmentappended')({contentType:'audio'});await tick();assert.equal(hasEvent('ready'),false);
