@@ -5376,9 +5376,12 @@
          * player instead it was dropped: the TV selftest of 2026-10-18 pressed
          * a 3:30 jump one second into a strong-token rescue, and the picture
          * came back at 0:46, where the rescue had begun. */
+        /* The native route may queue this seek during preparation without a
+         * time event. Seed the next scrub from the latest requested target;
+         * Player still confirms the actual position before publishing ready. */
+        lastKnownPosition = target;
         if (playing && !Player.mode()) {
             playing.startMs = target;
-            lastKnownPosition = target;
             report("player", "拖动落在重建当中，重建改从 " + fmt(target) + " 起");
             return;
         }
@@ -6964,7 +6967,10 @@
             if (dash && dashIds.indexOf(target) >= 0) {
                 playDash(dash, target); return;
             }
-            if (prog && prog.quality === target) { startProgressive(prog); return; }
+            /* The cap was sent in the request. Legacy original files can
+             * still be labelled QN 80 at 288p; keep a usable durl as the last
+             * route when no DASH tier fits, without relabelling its quality. */
+            if (prog) { startProgressive(prog); return; }
             /* Both forms refused, and the reasons are the whole diagnosis:
              * 「HTTP 403」「timeout」「network error」 and bilibili's own code
              * message are four different faults that this toast used to render

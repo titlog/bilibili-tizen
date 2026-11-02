@@ -253,6 +253,8 @@ appSource=appSource.replace('    window.onload = function () {',`    window.__co
       session: function(s){playing=s;optionsOpen=true;toastEl=el('toast');return s;},
       start: function(d){playing=null;optionsOpen=false;screenEl=el('screen');statusEl=el('status');toastEl=el('toast');
         nextupGrid={clear:function(){}};play(d,d.cid);return playing;},
+      scrub: function(dir){moveScrub(dir);commitScrub();},
+      seedPosition: function(ms){lastKnownPosition=ms;lastKnownDuration=90000;},
       quality:changeQuality,
       paint:paintPlaybackControls, rollback:restoreQualityChange, ids:controlQualityIds,
       bind:bindPlaybackControls, closeChoices:closePlaybackChoices,
@@ -268,7 +270,7 @@ const session=(extra={})=>{
 };
 let dashReply,progReply;
 context.API.playurlDash=(b,c,q,ok,fail)=>dashReply={ok,fail};
-context.API.playurlProgressive=(b,c,q,ok,fail)=>progReply={ok,fail};
+context.API.playurlProgressive=(b,c,q,ok,fail)=>progReply={ok,fail,qn:q};
 function prepareQuality(qn,d=dash,p=null){
  app.quality(qn);d?dashReply.ok(d):dashReply.fail('no dash');p?progReply.ok(p):progReply.fail('no prog');
 }
@@ -412,6 +414,7 @@ await check('startup resolves saved quality across both routes, caps and fresh s
  context.Resume={positionMs:()=>0,markAlive(){}};
  context.Accounts={activeId:()=> 'test'};
  context.Danmaku={area:()=> 'top',areaClass:()=> 'hidden'};
+ context.API.gone=()=>assert.fail('startup rejected a usable progressive response');
  let resumeReply,serial=0;context.API.playerV2=(b,c,ok)=>{resumeReply=ok;};
  try{
   for(const [preference,tiers,prog,cap,route,actual] of [
@@ -419,7 +422,10 @@ await check('startup resolves saved quality across both routes, caps and fresh s
    [80,[120,64],32,120,'dash',64],[80,[120],64,120,'prog',64],
    [16,[80],32,120,'prog',32],[0,[120,64],80,120,'dash',120],
    [80,[120,64],80,64,'dash',64],[80,[],80,120,'prog',80],
-   [80,[64],null,120,'dash',64],[64,[120,64],80,120,'dash',64]]){
+   [80,[64],null,120,'dash',64],[64,[120,64],80,120,'dash',64],
+   [0,[],80,32,'prog',80],[32,[],80,32,'prog',80],[80,[],80,32,'prog',80],
+   [0,[],80,64,'prog',80],[32,[],80,64,'prog',80],[80,[],80,64,'prog',80],
+   [80,[120],80,32,'prog',80]]){
    for(const nativeFirst of [false,true]){
     Settings.set('preferredQn',preference);Settings.set('maxQn',cap);calls=[];
     const fresh=vm.createContext({localStorage:storage});vm.runInContext(source('app/js/settings.js'),fresh);
@@ -429,11 +435,33 @@ await check('startup resolves saved quality across both routes, caps and fresh s
     const p=()=>prog?progReply.ok({quality:prog,urls:['native-'+prog]}):progReply.fail('unavailable');
     if(nativeFirst){p();d();}else{d();p();}
     assert.equal(calls.filter(c=>c[0]==='dash'||c[0]==='prog').length,0,'wait for resume before starting');
+    assert.equal(progReply.qn,Math.min(preference||cap,cap));
     resumeReply({cid:serial,positionMs:42000,subtitles:[]});
     assert.equal(calls.at(-1)[0],route);assert.equal(s.quality,actual);assert.equal(calls.at(-1)[2],42000);
     assert.equal(fresh.Settings.qualityPreference(),preference);
    }
   }
  }finally{context.Settings=Settings;}
+});
+await check('native preparation keeps consecutive scrub commits without reporting readiness',()=>{
+ const stub=context.Player;context.Player=realPlayer;
+ try{
+  for(const paused of [false,true])for(const [from,directions,targets] of [
+   [42000,[1,1],[52000,62000]],[42000,[1,-1],[52000,42000]],
+   [10000,[-1,1],[0,10000]],[78000,[1,1],[88000,88000]]]){
+   session({shots:null});app.seedPosition(from);events=[];nativeCalls=[];nativeTime=from;
+   realPlayer.playProgressive('scrub-native',from,{paused,quality:32});
+   const oldPrepare=prepareNative,oldListener=nativeListener;
+   for(let i=0;i<directions.length;i++){
+    app.scrub(directions[i]);
+    assert.equal(nativeCalls.filter(c=>c[0]==='PREBUFFER_MODE').at(-1)[1],String(targets[i]));
+    assert.equal(realPlayer.hasPosition(),false);assert.equal(hasEvent('ready'),false);assert.equal(hasEvent('time'),false);
+   }
+   oldPrepare();oldListener.oncurrentplaytime(from);assert.equal(events.length,0);
+   const target=targets.at(-1);nativeTime=target;prepareNative();
+   assert.equal(hasEvent('ready'),true);assert.equal(realPlayer.position(),target);assert.equal(realPlayer.userPaused(),paused);
+   realPlayer.stop();
+  }
+ }finally{realPlayer.stop();context.Player=stub;}
 });
 console.log(`${count}/${count} playback control scenarios passed (controlled media, not device acceptance).`);
