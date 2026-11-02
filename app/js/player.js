@@ -59,6 +59,14 @@ var Player = (function () {
         }); } catch (e) { return []; }
     }
 
+    function qualityBufferMargin() {
+        var v = el("html5-video"), remaining = v.duration - v.currentTime;
+        var margin = 4 * Math.max(1, playRate);
+        /* Leave data to replace near the VOD end. Retaining the whole tail
+         * gives Shaka no target segment to append while playback is paused. */
+        return isFinite(remaining) && remaining > 0 ? Math.min(margin, remaining / 2) : margin;
+    }
+
     function applyQuality(preference, clearBuffer, safeMargin) {
         var tracks = qualityTracks(), active = currentVideoTrack(shakaPlayer);
         if (!tracks.length) { return false; }
@@ -74,7 +82,7 @@ var Player = (function () {
              * same four seconds of playback at 2x; a fixed margin can starve
              * video and force the audio clock through buffering's 0 -> 2. */
             shakaPlayer.selectVariantTrack(choice, !!clearBuffer,
-                safeMargin === undefined ? 4 * Math.max(1, playRate) : safeMargin);
+                safeMargin === undefined ? qualityBufferMargin() : safeMargin);
         }
         return true;
     }
@@ -88,7 +96,7 @@ var Player = (function () {
             qualityRequest = pending.before;
             try {
                 shakaPlayer.configure({ abr: { enabled: !pending.before } });
-                if (pending.track) { shakaPlayer.selectVariantTrack(pending.track, true, 4 * Math.max(1, playRate)); }
+                if (pending.track) { shakaPlayer.selectVariantTrack(pending.track, true, qualityBufferMargin()); }
             } catch (e) { log("恢复原画质失败：" + e.message); }
         }
         pending.done(why || "");

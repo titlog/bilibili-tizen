@@ -5955,7 +5955,10 @@
         function complete(why) {
             if (current()) { finishQualityChange(qn, why); }
         }
-        if (!nativeOnly && Player.selectQuality(qn, complete)) { return; }
+        /* A tier proven on the native route may be absent from this DASH
+         * manifest. Ask both routes before accepting a lower DASH tier. */
+        var inPlace = !qn || Player.qualityChoices().indexOf(qn) >= 0;
+        if (!nativeOnly && inPlace && Player.selectQuality(qn, complete)) { return; }
         if (session.route === "progressive" && qn && qn === session.quality) {
             complete(""); return;
         }

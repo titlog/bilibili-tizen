@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import {createRequire} from 'node:module';
 const root = new URL('../', import.meta.url);
 const source = file => fs.readFileSync(new URL(file, root), 'utf8');
 const stored = new Map(), timers = new Map(), nodes = new Map();
@@ -330,5 +331,55 @@ await check('new video and newer selection invalidate earlier stream responses',
  app.rollback('timeout');app.quality(32);const nextD=dashReply,nextP=progReply;
  d.ok(dash);p.fail('old');assert.equal(calls.length,0);nextD.ok(dash);nextP.fail('none');
  assert.equal(calls.length,1);assert.equal(calls[0][3].quality,32);eventHandler('ready',{});assert.equal(s.qualityBusy,false);
+});
+await check('native-only tiers are fetched before accepting a DASH fallback',()=>{
+ const controllerPlayer=context.Player;
+ realPlayer.stop();const onlyLow={...low,active:true},onlyDash={...dash,video:[rep(32)]};
+ playerTest.set({...engine,getVariantTracks:()=>[onlyLow]});
+ context.Player={...controllerPlayer,qualityChoices:realPlayer.qualityChoices,
+   currentQuality:realPlayer.currentQuality,selectQuality:realPlayer.selectQuality};
+ try{
+  for(const nativeAvailable of [true,false]){
+   Settings.set('preferredQn',32);
+   const s=session({route:'dash',quality:32,qualityReady:true,dashReady:onlyDash,nativeQualities:[80]});
+   assert.deepEqual(Array.from(app.ids()),[80,32]);dashReply=progReply=null;
+   app.quality(32);assert.equal(dashReply,null);assert.equal(progReply,null);
+   app.quality(80);assert.ok(dashReply);assert.ok(progReply);
+   assert.equal(Settings.qualityPreference(),32);dashReply.ok(onlyDash);
+   if(nativeAvailable)progReply.ok({quality:80,urls:['native-80']});else progReply.fail('unavailable');
+   assert.equal(calls.at(-1)[0],nativeAvailable?'prog':'dash');
+   assert.equal(s.quality,nativeAvailable?80:32);
+   eventHandler('ready',{});assert.equal(s.qualityBusy,false);assert.equal(Settings.qualityPreference(),80);
+  }
+ }finally{context.Player=controllerPlayer;realPlayer.stop();}
+});
+await check('paused DASH tail switches leave a fetchable segment and preserve speed and pause',()=>{
+ const {media:{SegmentIndex}}=createRequire(import.meta.url)('../app/vendor/shaka-player.compiled.js');
+ const getTracks=engine.getVariantTracks,select=engine.selectVariantTrack;
+ const index=SegmentIndex.forSingleSegment(0,120,['https://example.invalid/video']);
+ let retained;
+ engine.getVariantTracks=()=>[active,low];
+ engine.selectVariantTrack=(track,clear,margin)=>{
+  retained=margin;active.active=track.id===active.id;low.active=track.id===low.id;
+ };
+ try{
+  for(const rate of [1,2])for(const at of [118,119.9]){
+   active.active=true;low.active=false;Settings.set('preferredQn',0);playerTest.set(engine);
+   Object.assign(video,{currentTime:at,duration:120,paused:true});realPlayer.pause();realPlayer.setRate(rate);
+   let done=null;const before=starts;
+   assert.equal(realPlayer.selectQuality(32,why=>done=why),true);
+   assert.ok(retained>0&&retained<120-at,'retain less than the remaining media');
+   // Shaka refills from the retained buffer end. Keeping the entire tail
+   // makes its real SegmentIndex return no next segment.
+   assert.ok(index.getIteratorForTime(at+retained));assert.equal(index.getIteratorForTime(120),null);
+   assert.equal(done,null);sdkListeners.get('segmentappended')({contentType:'audio'});assert.equal(done,null);
+   sdkListeners.get('segmentappended')({contentType:'video'});assert.equal(done,'');
+   assert.equal(realPlayer.currentQuality(),32);assert.equal(realPlayer.userPaused(),true);
+   assert.equal(realPlayer.rate(),rate);assert.equal(starts,before);
+  }
+ }finally{
+  realPlayer.setRate(1);realPlayer.stop();engine.getVariantTracks=getTracks;engine.selectVariantTrack=select;
+  video.duration=NaN;video.currentTime=0;
+ }
 });
 console.log(`${count}/${count} playback control scenarios passed (controlled media, not device acceptance).`);
