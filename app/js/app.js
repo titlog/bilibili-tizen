@@ -5380,6 +5380,8 @@
          * time event. Seed the next scrub from the latest requested target;
          * Player still confirms the actual position before publishing ready. */
         lastKnownPosition = target;
+        /* A failed quality load must keep this accepted seek on the old stream. */
+        if (playing && playing.controlTransition) { playing.controlTransition.at = target; }
         if (playing && !Player.mode()) {
             playing.startMs = target;
             report("player", "拖动落在重建当中，重建改从 " + fmt(target) + " 起");
@@ -5982,10 +5984,12 @@
             }
             var ids = dash ? Mpd.tiers(dash, Settings.qnCap()) : [];
             var candidates = ids.slice();
-            if (prog && prog.quality <= Settings.qnCap()) { candidates.push(prog.quality); }
+            if (prog) { candidates.push(prog.quality); }
             var target = Settings.resolveQuality(candidates, qn);
             var useDash = ids.indexOf(target) >= 0;
-            if (!target) { complete("没有上限内的可用画质"); return; }
+            /* Match startup's legacy-original fallback when its service tier
+             * exceeds the requested cap but no DASH tier can be used. */
+            if (!target && !prog) { complete("没有上限内的可用画质"); return; }
             if (nativeOnly && stProgFailUrl && prog) {
                 prog.urls = [stProgFailUrl]; prog.url = stProgFailUrl; stProgFailUrl = "";
                 report("controls", "自测：目标渐进式流注入一次真实打开失败");
@@ -6007,7 +6011,7 @@
                 dash = d; prepared();
             }, function (why) { dashWhy = why; prepared(); });
         }
-        API.playurlProgressive(session.detail.bvid, session.cid, qn || Settings.qnCap(), function (p) {
+        API.playurlProgressive(session.detail.bvid, session.cid, Math.min(qn || Settings.qnCap(), Settings.qnCap()), function (p) {
             prog = p; prepared();
         }, function (why) { progWhy = why; prepared(); });
     }

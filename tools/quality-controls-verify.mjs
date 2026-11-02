@@ -342,6 +342,19 @@ await check('actual DASH and native candidates determine quality and automatic m
  s=session({dashReady:null,quality:16,nativeQualities:[80,16]});assert.deepEqual(Array.from(app.ids()),[80,16]);
  Settings.set('maxQn',32);assert.deepEqual(Array.from(app.ids()),[16]);Settings.set('maxQn',120);
 });
+await check('Auto and manual changes retain legacy native fallback below its service label',()=>{
+ for(const cap of [32,64])for(const qn of [0,cap,80])for(const withDash of [false,true]){
+  Settings.set('maxQn',cap);Settings.set('preferredQn',80);
+  const s=session({quality:16,dashReady:null,nativeSize:'512×288'});
+  prepareQuality(qn,withDash?{...dash,video:[rep(120)]}:null,{quality:80,urls:['legacy']});
+  assert.equal(progReply.qn,cap);assert.equal(calls.at(-1)?.[0],'prog');assert.equal(calls.at(-1)[1],'legacy');
+  assert.equal(s.quality,80);assert.equal(s.qualityBusy,true);assert.equal(Settings.qualityPreference(),80);
+  eventHandler('quality',{width:512,height:288});eventHandler('ready',{});
+  assert.equal(Settings.qualityPreference(),qn);assert.equal(s.qualityBusy,false);
+  assert.equal(node('panel-quality').textContent,qn?'画质 288p':'画质 自动(288p)');
+ }
+ Settings.set('maxQn',120);
+});
 await check('failed preparation keeps the stream; login refusals do not upload incidents',()=>{
  for(const login of [false,true]){
   const s=session(),before=incidents.length;app.quality(64);dashReply.fail('no dash');
@@ -463,5 +476,32 @@ await check('native preparation keeps consecutive scrub commits without reportin
    realPlayer.stop();
   }
  }finally{realPlayer.stop();context.Player=stub;}
+});
+await check('quality rollback retains newer scrub targets through native errors and timeouts',()=>{
+ const stub=context.Player;context.Player=realPlayer;
+ realPlayer.on((kind,data)=>{events.push({kind,data});if(kind==='error')eventHandler(kind,data);});
+ try{
+  for(const paused of [false,true])for(const failure of ['error','native-timeout','quality-timeout'])
+   for(const [from,directions,target] of [[42000,[1],52000],[42000,[1,1],62000],[10000,[-1],0],[42000,[],42000]]){
+    Settings.set('maxQn',120);Settings.set('preferredQn',80);
+    const s=session({shots:null,dashReady:null});app.seedPosition(from);nativeTime=from;
+    realPlayer.playProgressive('old',from,{paused});prepareNative();
+    prepareQuality(32,null,{quality:32,urls:['target']});
+    for(const dir of directions)app.scrub(dir);
+    app.pause(!paused);
+    const oldPrepare=prepareNative,oldListener=nativeListener;events=[];
+    if(failure==='error')nativeListener.onerror('target failed');
+    else fireTimer(failure==='native-timeout'?25000:35000);
+    assert.equal(s.startMs,target);assert.equal(s.quality,80);assert.equal(s.qualityBusy,false);
+    assert.equal(Settings.qualityPreference(),80);assert.equal(s.controlTransition,null);
+    assert.equal(nativeCalls.filter(c=>c[0]==='PREBUFFER_MODE').at(-1)[1],String(target));
+    assert.equal(realPlayer.hasPosition(),false);assert.equal(hasEvent('ready'),false);
+    oldPrepare();oldListener.oncurrentplaytime(from);oldListener.onerror('late');
+    assert.equal(hasEvent('ready'),false);
+    nativeTime=target;prepareNative();assert.equal(realPlayer.position(),target);
+    assert.equal(realPlayer.userPaused(),!paused);assert.equal(hasEvent('ready'),true);
+    realPlayer.stop();
+   }
+ }finally{realPlayer.stop();context.Player=stub;realPlayer.on((kind,data)=>events.push({kind,data}));}
 });
 console.log(`${count}/${count} playback control scenarios passed (controlled media, not device acceptance).`);
