@@ -4356,6 +4356,7 @@
      * rebuild on it from where the viewer is — a second or two of spinner,
      * against 10-20 16:37's partial swap, which ended in a minute of stalls. */
     function rebuildOnStrong(sess, sd, aid, why) {
+        prepareStreamRecovery();
         var atMs = Player.hasPosition() ? Player.position() : (lastKnownPosition || sess.startMs || 0);
         sess.triedStrong = true;
         if (sess.dashReady) { sess.dashReady.strongTried = true; }
@@ -5939,6 +5940,15 @@
         playing.controlTransition = null;
     }
 
+    function prepareStreamRecovery() {
+        /* Recovery owns the stream until ready, including while it refetches.
+         * Pending manual replies and their timeout must no longer load it. */
+        cancelQualityChange();
+        playing.qualityReady = false;
+        viewerPaused = Player.userPaused();
+        paintPlaybackControls();
+    }
+
     function changeQuality(qn) {
         var session = playing;
         if (!session || !session.route || session.qualityReady === false || session.qualityBusy) { return; }
@@ -7249,7 +7259,8 @@
         if (!dash.strong && !dash.strongTried) { playing.triedStrong = false; }
         playing.quality = qn;
         setQualityBadge("");
-        Player.playDash(dash, playing.startMs || 0, options);
+        Player.playDash(dash, playing.startMs || 0,
+            options || { paused: viewerPaused, quality: Settings.qualityPreference() });
     }
 
     /* Every progressive mirror refused. Retrying progressive at a lower quality
@@ -7957,6 +7968,7 @@
             /* One failure can cascade into a burst as queued work unwinds; only
              * the first is worth reporting or acting on. */
             if (!playing || playing.failed) { return; }
+            prepareStreamRecovery();
             playing.failed = true;
             el("player-loading").className = "hidden";
             report("player", data);

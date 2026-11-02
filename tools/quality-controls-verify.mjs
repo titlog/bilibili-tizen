@@ -504,4 +504,33 @@ await check('quality rollback retains newer scrub targets through native errors 
    }
  }finally{realPlayer.stop();context.Player=stub;realPlayer.on((kind,data)=>events.push({kind,data}));}
 });
+await check('stream recovery cancels pending quality replies and blocks selection until ready',()=>{
+ const stub=context.Player;let paused=false;
+ context.Player={...stub,startTiming(){},pickDashVideo:realPlayer.pickDashVideo,durationMs:()=>90000,mode:()=>null,
+  userPaused:()=>paused,pause:()=>{paused=true;},resume:()=>{paused=false;},stop:()=>{paused=false;calls.push(['stop']);}};
+ try{
+  for(const initial of [false,true])for(const lateFailure of [false,true])for(const afterReady of [false,true]){
+   Settings.set('maxQn',120);Settings.set('preferredQn',32);paused=initial;
+   const s=session({route:'dash',quality:32,shots:null,dashReady:{...dash,video:[rep(32)]}});app.seedPosition(42000);
+   app.pause(initial);app.quality(80);const manualD=dashReply,manualP=progReply;
+   const manualTimer=Array.from(timers.values()).filter(t=>t.ms===35000).at(-1).f;
+   eventHandler('error','清单已过期');const recovery=dashReply;
+   const late=()=>{
+    if(lateFailure){manualD.fail('old dash failure');manualP.fail('old native failure');}
+    else{manualD.ok({...dash,video:[rep(32)]});manualP.ok({quality:80,urls:['late-native']});}
+    manualTimer();
+   };
+   if(!afterReady)late();assert.equal(s.qualityBusy,false);assert.equal(s.qualityReady,false);
+   assert.deepEqual(calls.map(c=>c[0]),['stop']);assert.equal(Settings.qualityPreference(),32);
+   app.quality(80);assert.equal(dashReply,recovery);assert.equal(progReply,manualP);
+   app.pause(!initial);app.scrub(1);recovery.ok({...dash,video:[rep(32)]});
+   assert.equal(calls.at(-1)[0],'dash');assert.equal(calls.at(-1)[2],52000);
+   assert.equal(calls.at(-1)[3].paused,!initial);assert.equal(calls.at(-1)[3].quality,32);
+   assert.equal(s.qualityReady,false);eventHandler('ready',{});assert.equal(s.qualityReady,true);
+   app.quality(80);assert.notEqual(dashReply,recovery);
+   if(afterReady)late();assert.equal(s.qualityBusy,true);assert.deepEqual(calls.map(c=>c[0]),['stop','dash']);
+   dashReply.fail('no dash');progReply.fail('no native');assert.equal(s.qualityBusy,false);
+  }
+ }finally{context.Player=stub;}
+});
 console.log(`${count}/${count} playback control scenarios passed (controlled media, not device acceptance).`);
