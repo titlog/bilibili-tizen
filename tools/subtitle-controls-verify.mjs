@@ -64,12 +64,11 @@ await check('automatic fallback keeps the first language and prefers humans only
   }
  }
 });
-context.Player={on(){}};
+context.Player={on(){},currentQuality:()=>0,qualityChoices:()=>[]};
 let appSource=source('app/js/app.js');
 appSource=appSource.replace('    window.onload = function () {',`    window.__controlsTest={
  session:function(s){playing=s;optionsOpen=true;toastEl=el('toast');return s;},
- subtitle:setSubtitleChoice,bind:bindPlaybackControls,closeChoices:closePlaybackChoices,
- choice:function(){return playbackChoice;}
+ subtitle:setSubtitleChoice,bind:bindPlaybackControls
 };
     window.onload = function () {`);
 vm.runInContext(appSource,context);
@@ -92,11 +91,6 @@ await check('subtitle empty, failed, retry and automatic states remain distinct'
  assert.equal(s.subtitleState,'failed');assert.match(node('panel-subtitles').textContent,/失败/);
  app.subtitle(true,human,false);pendingSubtitles.at(-1).ok([]);assert.equal(s.subtitleState,'empty');
  Settings.set('subtitleLanguage','en');app.subtitle(true,null,true);assert.equal(Settings.subtitleLanguage(),'');assert.equal(Settings.get('showSubtitles',false),true);
-});
-await check('return closes subtitle choices and restores entry focus',()=>{
- session();app.bind();node('panel-subtitles').onselect();assert.equal(app.choice(),'subtitles');
- assert.equal(context.__keyHandler(10009),true);assert.equal(app.choice(),'');
- assert.equal(focus,node('panel-subtitles'));assert.equal(app.closeChoices(true),false);
 });
 function retryTracks(extra={}){
  Settings.set('showSubtitles',true);

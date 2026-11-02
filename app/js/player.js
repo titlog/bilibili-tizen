@@ -39,10 +39,86 @@ var Player = (function () {
      * element's start-up noise and which are real. This just carries that
      * verdict — and an app-issued seek is a position by definition. */
     var haveTime = false;
+    var avRestore = null;   /* pending native preparation/position restore */
+    var avRate = 1;
+    var avMuted = false, avStill = false; /* output cleanup can fail across close/open */
     var mseGeneration = 0;   /* invalidates a load that a newer one superseded */
     var liveSeen = "";       /* the variants Shaka parsed out of the live playlist being loaded */
     var avGeneration = 0;    /* same, for the avplay singleton's listener */
     var shakaPlayer = null;  /* the live DASH player, kept across videos */
+    var qualityRequest = 0;
+    var qualitySwitch = null;
+    var lastAppendedQn = 0; /* video data confirmed since this DASH load began */
+
+    function trackQn(track) { return Number(track && (track.originalVideoId || track.id)) || 0; }
+
+    function qualityTracks() {
+        if (mode !== "mse" || !shakaPlayer || loadPending) { return []; }
+        try { return shakaPlayer.getVariantTracks().filter(function (t) {
+            return trackQn(t) > 0 && trackQn(t) <= Settings.qnCap();
+        }); } catch (e) { return []; }
+    }
+
+    function applyQuality(preference, clearBuffer, safeMargin) {
+        var tracks = qualityTracks(), active = currentVideoTrack(shakaPlayer);
+        if (!tracks.length) { return false; }
+        var qn = Settings.resolveQuality(tracks.map(trackQn), preference), choice = null;
+        for (var i = 0; i < tracks.length; i++) {
+            if (trackQn(tracks[i]) !== qn) { continue; }
+            if (!choice || (active && tracks[i].audioId === active.audioId)) { choice = tracks[i]; }
+            if (active && tracks[i].audioId === active.audioId) { break; }
+        }
+        shakaPlayer.configure({ abr: { enabled: !preference } });
+        if (preference && choice) {
+            /* Shaka measures the retained buffer in media seconds. Keep the
+             * same four seconds of playback at 2x; a fixed margin can starve
+             * video and force the audio clock through buffering's 0 -> 2. */
+            shakaPlayer.selectVariantTrack(choice, !!clearBuffer,
+                safeMargin === undefined ? 4 * Math.max(1, playRate) : safeMargin);
+        }
+        return true;
+    }
+
+    function finishQualitySwitch(why) {
+        var pending = qualitySwitch;
+        if (!pending) { return; }
+        qualitySwitch = null;
+        clearTimeout(pending.timer);
+        if (why) {
+            qualityRequest = pending.before;
+            try {
+                shakaPlayer.configure({ abr: { enabled: !pending.before } });
+                if (pending.track) { shakaPlayer.selectVariantTrack(pending.track, true, 4 * Math.max(1, playRate)); }
+            } catch (e) { log("恢复原画质失败：" + e.message); }
+        }
+        pending.done(why || "");
+    }
+    function abandonQualitySwitch() {
+        var pending = qualitySwitch;
+        if (!pending) { return; }
+        clearTimeout(pending.timer);
+        qualitySwitch = null;
+        /* A loading selection owns shakaOp; release it when a new video wins. */
+        if (pending.loading) { pending.done("load cancelled"); }
+    }
+
+    function selectQuality(qn, done, loading) {
+        if (qualitySwitch || !qualityTracks().length) { return false; }
+        var before = qualityRequest, active = currentVideoTrack(shakaPlayer);
+        var target = Settings.resolveQuality(qualityTracks().map(trackQn), qn);
+        qualityRequest = qn;
+        if (!qn || (trackQn(active) === target && (!loading || lastAppendedQn === target))) {
+            try { applyQuality(qn, false); done(""); }
+            catch (e) { qualityRequest = before; done(e.message); }
+            return true;
+        }
+        qualitySwitch = { before: before, track: active, target: target, done: done, timer: null };
+        qualitySwitch.timer = setTimeout(function () { finishQualitySwitch("切换画质超时"); }, 20000);
+        try { applyQuality(qn, true); }
+        catch (e2) { finishQualitySwitch(e2.message); }
+        return true;
+    }
+
     /* load() and unload() both take time and both own the media element while
      * they run, so they are queued rather than raced. */
     var shakaOp = Promise.resolve();
@@ -581,6 +657,9 @@ var Player = (function () {
      * playbackRate written behind its back reverts at the first stall. */
     function applyRate() {
         if (mode === "mse" && shakaPlayer) {
+            /* trickPlay() itself calls play() on a paused element. Save the
+             * requested rate while held, including after a quality rebuild. */
+            if (userPaused) { return true; }
             try {
                 if (playRate === 1) { shakaPlayer.cancelTrickPlay(); }
                 else { shakaPlayer.trickPlay(playRate, false); }
@@ -590,7 +669,10 @@ var Player = (function () {
         if (mode === "avplay") {
             /* AVPlay takes whole numbers only. */
             if (playRate !== Math.round(playRate)) { return false; }
-            try { webapis.avplay.setSpeed(playRate); return true; }
+            /* Native HTTP trick-play repositions even while paused. Keep the
+             * requested speed, but do not move the held frame to apply it. */
+            if (userPaused || avRestore || avRate === playRate) { return true; }
+            try { webapis.avplay.setSpeed(playRate); avRate = playRate; return true; }
             catch (e2) { log("AVPlay 倍速设不上（" + e2.message + "）"); return false; }
         }
         return false;
@@ -631,13 +713,39 @@ var Player = (function () {
 
     /* Bound once. Attaching these inside playMse left one live set of handlers
      * per video played, so by the fifth clip every tick fired five times. */
+    function notifyMsePlaying() {
+        var v = el("html5-video");
+        if (mode !== "mse" || loadPending || v.paused || v.readyState < 2) { return; }
+        stopStallWatch();
+        mark("playing");
+        emit("playing", { duration: duration });
+        /* Fifteen seconds in: past the start burst, so the count is of
+         * steady-state segment traffic rather than of the manifest and two
+         * init segments. Once per video — `playing` fires again after every
+         * seek, and this answer does not change within a session. */
+        if (!transportTold) {
+            transportTold = true;
+            var gen = mseGeneration;
+            setTimeout(function () {
+                if (mode !== "mse" || gen !== mseGeneration || loadPending) { return; }
+                tellTransport("播放中");
+                /* The healthy-time shape probe used to fire here, once per
+                 * app run. Its question was settled 08-16 (the queueing is
+                 * contention with the player, not a property of the link —
+                 * CLAUDE.md 传输形状), so it was eight CDN requests per
+                 * launch buying an answer already written down. The stalled
+                 * one stays: that is the half still worth sampling. */
+            }, 15000);
+        }
+    }
+
     var mediaBound = false;
     function bindMediaElement() {
         if (mediaBound) { return; }
         mediaBound = true;
         var v = el("html5-video");
         v.addEventListener("timeupdate", function () {
-            if (mode !== "mse") { return; }
+            if (mode !== "mse" || loadPending) { return; }
             /* A load with a start position ticks t=0 before the initial seek
              * lands, and a failing rebuild ticks it on every attempt. Letting
              * that tick through wrote 0 into lastTime, lastKnownPosition and
@@ -691,7 +799,7 @@ var Player = (function () {
         /* Fires after currentTime has already moved, so `lastTickSec` is still
          * the position it moved away from. */
         v.addEventListener("seeking", function () {
-            if (mode !== "mse") { return; }
+            if (mode !== "mse" || loadPending) { return; }
             /* Matched by time OR by target. Time alone mislabelled at least one
              * seek: when the main thread is busy rebuffering, the gap between
              * the keypress and the element's `seeking` event can exceed any
@@ -745,31 +853,9 @@ var Player = (function () {
                                   : "播放器自己") +
                 extra + " 时长=" + (v.duration || 0).toFixed(1) + "s");
         });
-        v.addEventListener("playing", function () {
-            if (mode !== "mse") { return; }
-            stopStallWatch();
-            mark("playing");
-            emit("playing", { duration: duration });
-            /* Fifteen seconds in: past the start burst, so the count is of
-             * steady-state segment traffic rather than of the manifest and two
-             * init segments. Once per video — `playing` fires again after every
-             * seek, and this answer does not change within a session. */
-            if (!transportTold) {
-                transportTold = true;
-                setTimeout(function () {
-                    if (mode !== "mse") { return; }
-                    tellTransport("播放中");
-                    /* The healthy-time shape probe used to fire here, once per
-                     * app run. Its question was settled 08-16 (the queueing is
-                     * contention with the player, not a property of the link —
-                     * CLAUDE.md 传输形状), so it was eight CDN requests per
-                     * launch buying an answer already written down. The stalled
-                     * one stays: that is the half still worth sampling. */
-                }, 15000);
-            }
-        });
+        v.addEventListener("playing", notifyMsePlaying);
         v.addEventListener("waiting", function () {
-            if (mode !== "mse") { return; }
+            if (mode !== "mse" || loadPending) { return; }
             emit("buffering", true);
 
             /* Throttled only on the way in: a stall flaps, and one opening line
@@ -781,12 +867,12 @@ var Player = (function () {
             startStallWatch();
         });
         v.addEventListener("canplay", function () {
-            if (mode !== "mse") { return; }
+            if (mode !== "mse" || loadPending) { return; }
             emit("buffering", false);
             stopStallWatch();
         });
         v.addEventListener("ended", function () {
-            if (mode === "mse") { emit("ended"); }
+            if (mode === "mse" && !loadPending && v.ended) { emit("ended"); }
         });
         v.addEventListener("error", function () {
             if (mode !== "mse") { return; }
@@ -847,6 +933,10 @@ var Player = (function () {
 
     /* late: called as Player.stop (the viewer leaving), not as the start of a new session. */
     function reset(late) {
+        if (avRestore) { avRestore.cancel(); }
+        /* A stop invalidates the callback; it must not restore a previous video. */
+        abandonQualitySwitch();
+        qualityRequest = Settings.qualityPreference();
         mseGeneration++;
         avGeneration++;
         loadPending = false;
@@ -933,17 +1023,70 @@ var Player = (function () {
      * before it resumes. Left at its default, HLS-fMP4 原画 sat 6–9.5 s
      * buffering after prepare on this set (10-22), and the stall watchdog read
      * one 10 s start as a dead stream. */
-    function playAvplay(url, startMs, opts) {
+    function playAvplay(url, startMs, opts, legacy) {
         mode = "avplay";
+        if (avRestore) { avRestore.cancel(); }
         var gen = ++avGeneration;
+        var vod = !opts || !opts.live;
+        startMs = Math.max(0, Number(startMs) || 0);
         ensureObject();
         try { webapis.avplay.close(); } catch (e) {}
-        try { webapis.avplay.open(url); }
+        try { webapis.avplay.open(url); avRate = 1; }
         catch (e) { emit("error", "open failed: " + e.message); return; }
+        try {
+            if (avStill) { webapis.avplay.setVideoStillMode("false"); avStill = false; }
+            if (avMuted) { webapis.avplay.enableAudioStream(); avMuted = false; }
+        } catch (outputError) { emit("error", "native output reset failed: " + outputError.message); return; }
 
         try { webapis.avplay.setDisplayMethod("PLAYER_DISPLAY_MODE_LETTER_BOX"); } catch (e) {}
         webapis.avplay.setDisplayRect(viewport.x, viewport.y, viewport.w, viewport.h);
         try { webapis.avplay.setStreamingProperty("USER_AGENT", USER_AGENT); } catch (e) {}
+        /* PREBUFFER starts at the preceding keyframe. Decode the short gap
+         * silently before publishing ready; seekTo's success callback on this
+         * set reports the requested time before snapping to the next keyframe. */
+        legacy = vod && (legacy || typeof webapis.avplay.disableAudioStream !== "function" ||
+            typeof webapis.avplay.enableAudioStream !== "function" || typeof webapis.avplay.setVideoStillMode !== "function");
+        var preroll = vod && !legacy && startMs > 0, quiet = vod && !legacy && (preroll || userPaused);
+        var muted = false, still = false, timer = null, done = false, cancelled = false;
+        var started = new Date().getTime();
+        function live() { return !cancelled && gen === avGeneration && mode === "avplay"; }
+        function release() {
+            clearTimeout(timer);
+            var why = "";
+            if (still) { try { webapis.avplay.setVideoStillMode("false"); avStill = false; } catch (e) { why = e.message; } still = false; }
+            if (muted) { try { webapis.avplay.enableAudioStream(); avMuted = false; } catch (e2) { why = e2.message; } muted = false; }
+            if (avRestore === pending) { avRestore = null; }
+            return why;
+        }
+        function cancel() {
+            done = true; cancelled = true;
+            try { webapis.avplay.pause(); } catch (e) {}
+            var why = release();
+            if (why) { log("恢复原生输出失败：" + why); }
+        }
+        function fail(why) {
+            if (!live() || done) { return; }
+            cancel();
+            emit("error", "position restore failed: " + why);
+        }
+        var pending = { target: startMs, cancel: cancel, seek: function (ms2) { playAvplay(url, ms2, opts, legacy); } };
+        avRestore = pending;
+        haveTime = false;
+        if (vod && !legacy) {
+            try {
+                if (quiet) { webapis.avplay.disableAudioStream(); muted = true; avMuted = true; }
+                webapis.avplay.setStreamingProperty("PREBUFFER_MODE", String(startMs));
+                if (quiet) {
+                    webapis.avplay.setVideoStillMode("true"); still = true; avStill = true;
+                }
+            } catch (positionError) {
+                /* Older firmware may expose these methods but reject them.
+                 * Keep its existing seek route, and validate the settled clock. */
+                cancel();
+                log("原生预解码不可用，改用定位回调：" + positionError.name);
+                playAvplay(url, startMs, opts, true); return;
+            }
+        }
         if (opts && opts.bufferSec) {
             try {
                 webapis.avplay.setBufferingParam("PLAYER_BUFFER_FOR_PLAY", "PLAYER_BUFFER_SIZE_IN_SECOND", opts.bufferSec);
@@ -967,32 +1110,98 @@ var Player = (function () {
          * detach it, so a torn-down session's onerror or onstreamcompleted lands
          * in whatever is playing now — ending or erroring a video that is
          * perfectly fine. The spike learned this; the client had forgotten it. */
-        function live() { return gen === avGeneration && mode === "avplay"; }
-
         webapis.avplay.setListener({
             onbufferingstart: function () { if (live()) { emit("buffering", true); } },
             onbufferingcomplete: function () { if (live()) { emit("buffering", false); } },
             oncurrentplaytime: function (ms2) {
-                if (!live()) { return; }
+                if (!live() || avRestore === pending) { return; }
                 lastTime = ms2;
+                haveTime = true;
                 emit("time", { position: ms2, duration: duration });
             },
-            onstreamcompleted: function () { if (live()) { emit("ended"); } },
-            onerror: function (err) { if (live()) { emit("error", String(err)); } }
+            onstreamcompleted: function () {
+                if (!live()) { return; }
+                if (avRestore === pending) { fail("stream ended before target"); }
+                else { emit("ended"); }
+            },
+            onerror: function (err) {
+                if (!live()) { return; }
+                if (avRestore === pending) { fail(String(err)); }
+                else { emit("error", String(err)); }
+            }
         });
 
-        webapis.avplay.prepareAsync(function () {
-            if (!live()) { return; }
+        timer = setTimeout(function () { fail("preparation timed out"); }, 25000);
+        try { webapis.avplay.prepareAsync(function () {
+            if (!live() || done) { return; }
+            clearTimeout(timer);
+            started = new Date().getTime();
             try { duration = webapis.avplay.getDuration(); } catch (e) { duration = 0; }
-            if (startMs) { try { webapis.avplay.seekTo(startMs); } catch (e) {} }
-            if (!userPaused) { webapis.avplay.play(); }
-            if (playRate !== 1) { applyRate(); }
-            if (opts && opts.live) { log("AVPlay 的流：" + avplayStreams()); }
-            mark("playing");
-            emit("playing", { duration: duration });
-        }, function (err) {
-            if (live()) { emit("error", "prepare failed: " + err); }
-        });
+            function ready() {
+                if (!live() || done) { return; }
+                try {
+                    /* pause() is invalid in READY: enter PLAYING first. */
+                    if (userPaused) { webapis.avplay.pause(); }
+                    lastTime = webapis.avplay.getCurrentTime();
+                } catch (stateError) { fail(stateError.message); return; }
+                if (vod && (userPaused || legacy && opts && opts.quality !== undefined) &&
+                        Math.abs(lastTime - startMs) > (startMs ? 1500 : 250)) {
+                    fail("settled position " + lastTime + " differs from " + startMs); return;
+                }
+                var outputError = release();
+                if (outputError) { fail(outputError); return; }
+                done = true;
+                haveTime = true;
+                if (vod && (startMs || userPaused)) {
+                    log("原生保位 target=" + startMs + " actual=" + lastTime + " paused=" + userPaused + " legacy=" + !!legacy);
+                }
+                emit("time", { position: lastTime, duration: duration });
+                if (!opts || !opts.live) {
+                    try {
+                        var streams = webapis.avplay.getCurrentStreamInfo() || [];
+                        for (var i = 0; i < streams.length; i++) {
+                            if (streams[i].type !== "VIDEO") { continue; }
+                            var size = JSON.parse(streams[i].extra_info || "{}");
+                            emit("quality", { width: Number(size.Width || size.width), height: Number(size.Height || size.height) });
+                            break;
+                        }
+                    } catch (sizeError) {}
+                }
+                if (playRate !== 1) { applyRate(); }
+                emit("ready", { duration: duration });
+                if (opts && opts.live) { log("AVPlay 的流：" + avplayStreams()); }
+                mark("playing");
+                emit("playing", { duration: duration });
+            }
+            try { webapis.avplay.play(); }
+            catch (playError) { fail(playError.message); return; }
+            if (legacy) {
+                timer = setTimeout(function () { fail("seek timed out"); }, 20000);
+                try {
+                    if (userPaused) { webapis.avplay.pause(); }
+                    webapis.avplay.seekTo(startMs, function () {
+                        if (!live() || done) { return; }
+                        /* The callback precedes keyframe settling on this set. */
+                        clearTimeout(timer); timer = setTimeout(ready, 200);
+                    }, function (err) { fail("seek failed: " + err); });
+                } catch (seekError) { fail(seekError.message); }
+                return;
+            }
+            function advance() {
+                if (!live() || done) { return; }
+                try {
+                    var at = webapis.avplay.getCurrentTime();
+                    if (preroll && at < startMs) {
+                        if (new Date().getTime() - started > 20000) { fail("timed out before target"); return; }
+                        timer = setTimeout(advance, 50); return;
+                    }
+                    if (vod && at - startMs > (startMs ? 1500 : 250)) { fail("overshot target: " + at); return; }
+                    ready();
+                } catch (clockError) { fail(clockError.message); }
+            }
+            advance();
+        }, function (err) { fail("prepare failed: " + err); }); }
+        catch (prepareError) { fail(prepareError.message); }
     }
 
     /* What AVPlay found in a live stream, once prepared: on AVPlay a clock
@@ -1093,6 +1302,9 @@ var Player = (function () {
         });
         player.addEventListener("error", function (e) {
             var err = e && e.detail;
+            /* Rolling the video track back does not restart a failed shared
+             * audio stream. Keep the original error on the recovery path. */
+            if (qualitySwitch) { finishQualitySwitch("切换时视频流加载失败：" + describeShakaError(err)); }
             /* 直播 has none of the on-demand machinery below — no manifest of
              * ours, no files to drop. A recoverable error is Shaka retrying;
              * a critical one goes to app.js, which fetches a fresh address. */
@@ -1254,12 +1466,21 @@ var Player = (function () {
             emit("error", "shaka error " + describeShakaError(err));
         });
 
-        player.addEventListener("adaptation", function () {
+        function changedQuality() {
+            /* The reused instance can still notify while its old VOD unloads. */
+            if ((mode !== "mse" && mode !== "live") || (mode === "mse" && loadPending)) { return; }
             var t = currentVideoTrack(player);
             if (!t) { return; }
             log("画质切到 " + t.width + "x" + t.height +
                 " (" + Math.round((t.videoBandwidth || t.bandwidth) / 1000) + " kbps)");
             emit("quality", { id: t.originalVideoId || t.id, width: t.width, height: t.height });
+        }
+        player.addEventListener("adaptation", changedQuality);
+        player.addEventListener("variantchanged", changedQuality);
+        player.addEventListener("segmentappended", function (e) {
+            if (mode !== "mse" || e.contentType !== "video") { return; }
+            lastAppendedQn = trackQn(currentVideoTrack(player));
+            if (qualitySwitch && lastAppendedQn === qualitySwitch.target) { finishQualitySwitch(""); }
         });
 
         /* What Shaka actually asked for, and what actually came back. Days of
@@ -2418,7 +2639,12 @@ var Player = (function () {
         if (!isRetry && dash && !dash.strong && !dash.strongTried) { strongEmitted = false; }
         mode = "mse";
         var gen = ++mseGeneration;
+        if (qualitySwitch) {
+            if (qualitySwitch.loading) { abandonQualitySwitch(); }
+            else { finishQualitySwitch("播放器重建，画质切换未完成"); }
+        }
         loadPending = true;
+        emit("quality", { id: 0 });
         pendingSeekMs = -1;
         var retriedLoad = !!isRetry;
 
@@ -2548,7 +2774,8 @@ var Player = (function () {
             emit("error", "这台设备的浏览器内核不支持 DASH 播放");
             return;
         }
-        player.configure({ streaming: { bufferingGoal: bufGoal, bufferBehind: bufBehind } });
+        player.configure({ abr: { enabled: !qualityRequest },
+            streaming: { bufferingGoal: bufGoal, bufferBehind: bufBehind } });
         if (bufGoal !== 72) {
             log("最高一档 " + (topBw / 1000000).toFixed(1) + " Mbit/s，前方缓冲压到 " + bufGoal + " 秒、身后留 " + bufBehind + " 秒");
         }
@@ -2565,7 +2792,7 @@ var Player = (function () {
          * anyway left the flag saying paused under a playing video: the
          * watchdog off for the rest of it, the banner never hiding, and the
          * first 确认 "resuming" something already playing. */
-        v.autoplay = !userPaused;
+        v.autoplay = !userPaused && !qualityRequest;
 
         mark("manifest");
         var url = URL.createObjectURL(new Blob([manifest], { type: "application/dash+xml" }));
@@ -2581,11 +2808,33 @@ var Player = (function () {
              * filter. Every rebuild rung would otherwise leave its debris in
              * 在飞 and the next stall would read as a hung connection. */
             resetSegTraffic();
+            lastAppendedQn = 0;
             return player.load(url, startAt);
         }).then(function () {
             try { URL.revokeObjectURL(url); } catch (e) {}
             if (gen !== mseGeneration) { return; }
             mark("loaded");
+            loadPending = false;
+            if (!qualityRequest) { applyQuality(0, false); return; }
+            /* A fresh load may have buffered a different initial tier. Use the
+             * same target-video-data confirmation as an in-place selection. */
+            return new Promise(function (resolve, reject) {
+                var accepted = selectQuality(qualityRequest, function (why) {
+                    if (!why) { resolve(); return; }
+                    var err = new Error(why);
+                    err.qualitySelection = true;
+                    if (why === "load cancelled") { err.code = 7000; }
+                    reject(err);
+                }, true);
+                if (!accepted) { reject(new Error("加载后没有可选画质")); }
+                if (qualitySwitch) {
+                    qualitySwitch.loading = true;
+                    log("手动画质等待本次视频数据 qn=" + qualitySwitch.target);
+                }
+                loadPending = true;
+            });
+        }).then(function () {
+            if (gen !== mseGeneration) { return; }
             loadPending = false;
             if (pendingSeekMs >= 0) {
                 var ps = pendingSeekMs;
@@ -2600,17 +2849,22 @@ var Player = (function () {
             var t = currentVideoTrack(player);
             if (t) { emit("quality", { id: t.originalVideoId || t.id, width: t.width, height: t.height }); }
             if (playRate !== 1) { applyRate(); }   /* each load starts Shaka's rate at 1 */
+            emit("ready", { duration: duration });
             if (userPaused) { return; }
             startPlaying(v, function (e) {
                 if (gen !== mseGeneration) { return; }
                 if (/interrupted|aborted/i.test(e.message || "")) { return; }
                 emit("error", "play(): " + e.message);
             });
+            /* Autoplay can emit playing before load() resolves. Publish it
+             * only once this load owns a playable, unpaused element. */
+            notifyMsePlaying();
         })["catch"](function (e) {
             try { URL.revokeObjectURL(url); } catch (e2) {}
             if (gen !== mseGeneration) { return; }
             /* 7000 is LOAD_INTERRUPTED, which is a newer load winning. */
             if (e && e.code === 7000) { return; }
+            if (e && e.qualitySelection) { emit("error", "画质尚未就绪：" + e.message); return; }
 
             /* A refusal from a host we only just blacklisted is worth one
              * immediate rebuild — preferGoodHosts changes the lead. Keyed on
@@ -2785,6 +3039,7 @@ var Player = (function () {
             if (!ok) { emit("error", "播放器脚本加载失败"); return; }
             var player = ensureShaka();
             if (!player) { emit("error", "这台设备的浏览器内核不支持这种播放"); return; }
+            player.configure({ abr: { enabled: true } });
             /* A live window is a few seconds wide; the on-demand 72 s goal
              * means nothing here. playDashWithShaka sets its own on every load. */
             player.configure({ streaming: { bufferingGoal: 10, bufferBehind: 10 } });
@@ -2950,6 +3205,11 @@ var Player = (function () {
          * was rebuilding *from* — which is where the viewer is; reset() clears
          * lastDash, so a stopped player still answers 0. */
         position: function () {
+            if (mode === "avplay" && haveTime) {
+                /* A paused READY seek may change the reported position after
+                 * success, without another oncurrentplaytime callback. */
+                try { return webapis.avplay.getCurrentTime(); } catch (e) {}
+            }
             /* Not `lastTime || …` — see haveTime. A zero somebody asked for is
              * a position; a zero nobody has written is not. */
             if (haveTime) { return lastTime; }
@@ -3040,7 +3300,11 @@ var Player = (function () {
             }
         },
 
-        playProgressive: function (url, startMs) { reset(); playAvplay(url, startMs); },
+        playProgressive: function (url, startMs, options) {
+            reset();
+            userPaused = !!(options && options.paused);
+            playAvplay(url, startMs, options);
+        },
         playLive: playLive,
         /* What the MSE live watchdog in app.js reads each second: the playhead,
          * and enough around it to tell a playlist that stopped growing (the
@@ -3062,8 +3326,10 @@ var Player = (function () {
          * cannot decode the live fMP4 (Tizen 3.0, issue #5). The AVPlay
          * listener's events are the same ones app.js already reads for live. */
         playLiveNative: function (url) { reset(); mark("manifest"); playAvplay(url, 0, { bufferSec: 3, live: true }); },
-        playDash: function (dash, startMs) {
+        playDash: function (dash, startMs, options) {
             reset();
+            userPaused = !!(options && options.paused);
+            if (options && options.quality !== undefined) { qualityRequest = options.quality; }
             /* Half a second goes missing between `playurl` and `manifest` and
              * has done since before Shaka. `reset()` is the only thing in
              * there besides building the manifest, and it calls into AVPlay —
@@ -3073,9 +3339,20 @@ var Player = (function () {
             playDashWithShaka(dash, startMs);
         },
 
+        qualityChoices: function (dash) {
+            var ids = qualityTracks().map(trackQn);
+            if (!ids.length && dash) { ids = Mpd.tiers(dash, Settings.qnCap()); }
+            return ids.filter(function (id, i) { return ids.indexOf(id) === i; })
+                .sort(function (a, b) { return b - a; });
+        },
+        currentQuality: function () { return mode === "mse" && !loadPending ? trackQn(currentVideoTrack(shakaPlayer)) : 0; },
+        /* Same-family changes keep the decoder and playhead. Commit the preference
+         * only after new video data is appended, rather than on a button press. */
+        selectQuality: selectQuality,
+
         pause: function () {
             userPaused = true;
-            if (mode === "avplay") { try { webapis.avplay.pause(); } catch (e) {} }
+            if (mode === "avplay" && !avRestore) { try { webapis.avplay.pause(); } catch (e) {} }
             else if (mode === "mse" || mode === "live") { el("html5-video").pause(); }
         },
         resume: function () {
@@ -3083,8 +3360,13 @@ var Player = (function () {
             watchdogSeen = -1;
             watchdogPos = -1;
             watchdogAt = new Date().getTime();
-            if (mode === "avplay") { try { webapis.avplay.play(); } catch (e) {} }
-            else if (mode === "mse" || mode === "live") { el("html5-video").play(); }
+            if (mode === "avplay" && !avRestore) {
+                try { webapis.avplay.play(); applyRate(); } catch (e) {}
+            }
+            else if (mode === "mse" || mode === "live") {
+                el("html5-video").play();
+                if (mode === "mse") { applyRate(); }
+            }
         },
         /* What the viewer pressed, as opposed to what the element reports — the
          * element is paused for the whole of a load, and code that hides chrome
@@ -3099,7 +3381,9 @@ var Player = (function () {
         setRate: function (r) {
             var before = playRate;
             playRate = r;
-            if (!applyRate()) { playRate = before; return false; }
+            if (mode === "avplay" && avRestore) {
+                if (r !== 1 && r !== 2) { playRate = before; return false; }
+            } else if (!applyRate()) { playRate = before; return false; }
             log("倍速 " + before + "x → " + r + "x");
             return true;
         },
@@ -3122,9 +3406,14 @@ var Player = (function () {
          * which byte a given second lived at; the player fetches what it needs
          * and "seek-refused" no longer happens. */
         seekBy: function (deltaMs) {
-            var target = Math.max(0, lastTime + deltaMs);
+            var from = avRestore ? avRestore.target : lastTime;
+            if (mode === "avplay" && haveTime) {
+                try { from = webapis.avplay.getCurrentTime(); } catch (e0) {}
+            }
+            var target = Math.max(0, from + deltaMs);
             if (duration) { target = Math.min(target, duration - 2000); }
             noteAppSeek(target);
+            if (mode === "avplay" && avRestore) { avRestore.seek(target); return; }
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
             else if (mode === "mse" && loadPending) { pendingSeekMs = target; }
             else if (mode === "mse") { el("html5-video").currentTime = target / 1000; }
@@ -3137,6 +3426,7 @@ var Player = (function () {
             var target = Math.max(0, ms);
             if (duration) { target = Math.min(target, duration - 2000); }
             noteAppSeek(target);
+            if (mode === "avplay" && avRestore) { avRestore.seek(target); return; }
             if (mode === "avplay") { try { webapis.avplay.seekTo(target); } catch (e) {} }
             else if (mode === "mse" && loadPending) { pendingSeekMs = target; }
             else if (mode === "mse") { el("html5-video").currentTime = target / 1000; }

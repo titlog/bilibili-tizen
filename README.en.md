@@ -190,6 +190,8 @@ the row below and likes too; holding OK on a card still works); and a
 suit how big the TV is and how far the sofa). These come from
 [PR #2](https://github.com/titlog/bilibili-tizen/pull/2).
 
+Press Down during playback to choose a quality or return to Auto. The preference persists across videos and app restarts, within the global quality cap. If unavailable, the player uses the nearest lower tier, or the lowest available tier, and displays the actual result without replacing the preference. Switching preserves position, speed and the latest pause or play command; failures restore the original stream.
+
 Press Down during playback to turn subtitles on or off, select a track, or return to automatic selection. The language preference persists across videos and app restarts. Human subtitles take priority within the same language; unavailable languages fall back without replacing the preference. Press Back once to collapse the choices and again to close the panel.
 
 **Does not**:

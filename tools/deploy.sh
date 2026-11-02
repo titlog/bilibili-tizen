@@ -12,6 +12,8 @@ APP="$ROOT/app"
 SELFTEST=false
 [ "$1" = "--selftest" ] && SELFTEST=true
 [ "$1" = "--subtitles" ] && SELFTEST='"subtitles"'
+[ "$1" = "--controls" ] && SELFTEST='"controls"'
+[ "$1" = "--controls-followup" ] && SELFTEST='"controls-followup"'
 # --dmperf: the danmaku frame-time run instead (selftest.js, 2026-10-18) — the
 # ways of drawing rotated on one dense video, rAF intervals per window.
 [ "$1" = "--dmperf" ] && SELFTEST='"dmperf"'
@@ -87,7 +89,7 @@ restore_config() {
 import os, re
 p = os.path.join(os.environ["APP"], "js", "config.js")
 src = open(p).read()
-src = re.sub(r'var SELFTEST = (?:[a-z]+|"[a-z]+");', 'var SELFTEST = false;', src)
+src = re.sub(r'var SELFTEST = (?:[a-z]+|"[a-z-]+");', 'var SELFTEST = false;', src)
 src = re.sub(r'var REPORT_TO = "[^"]*";', 'var REPORT_TO = "";', src, count=1)
 src = re.sub(r'var DIAG_TO = "[^"]*";', 'var DIAG_TO = "";', src, count=1)
 open(p, "w").write(src)
@@ -116,7 +118,7 @@ p = os.path.join(os.environ["APP"], "js", "config.js")
 src = open(p).read()
 src = re.sub(r'var REPORT_TO = "[^"]*";',
              'var REPORT_TO = "http://%s:8099/report";' % os.environ["HOST_IP"], src, count=1)
-src = re.sub(r'var SELFTEST = (?:[a-z]+|"[a-z]+");',
+src = re.sub(r'var SELFTEST = (?:[a-z]+|"[a-z-]+");',
              'var SELFTEST = %s;' % os.environ.get("SELFTEST", "false"), src)
 src = re.sub(r'var DIAG_TO = "[^"]*";', 'var DIAG_TO = "%s";' % os.environ["DIAG_TO"], src, count=1)
 open(p, "w").write(src)
