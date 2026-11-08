@@ -49,6 +49,7 @@ var Player = (function () {
     var qualityRequest = 0;
     var qualitySwitch = null;
     var lastAppendedQn = 0; /* video data confirmed since this DASH load began */
+    var videoRespQn = 0;    /* tier of the last video segment response */
 
     function trackQn(track) { return Number(track && (track.originalVideoId || track.id)) || 0; }
 
@@ -106,8 +107,9 @@ var Player = (function () {
         if (!pending) { return; }
         clearTimeout(pending.timer);
         qualitySwitch = null;
-        /* A loading selection owns shakaOp; release it when a new video wins. */
-        if (pending.loading) { pending.done("load cancelled"); }
+        /* A loading selection owns shakaOp; release it when a new video wins.
+         * An in-play one must still answer, or app.js stays busy for good. */
+        pending.done(pending.loading ? "load cancelled" : "播放器重建，画质切换未完成");
     }
 
     function selectQuality(qn, done, loading) {
@@ -121,7 +123,17 @@ var Player = (function () {
             return true;
         }
         qualitySwitch = { before: before, track: active, target: target, done: done, timer: null };
-        qualitySwitch.timer = setTimeout(function () { finishQualitySwitch("切换画质超时"); }, 20000);
+        qualitySwitch.timer = setTimeout(function () {
+            /* At startup the loaded stream is playable; a slow first segment
+             * of the chosen tier is no reason to fail the video. Start on what
+             * is buffered and let the selected tier keep loading. */
+            if (qualitySwitch && qualitySwitch.loading) {
+                log("手动画质 20 秒内没等到 qn=" + qualitySwitch.target + " 的视频数据，先按已缓冲的起播");
+                finishQualitySwitch("");
+                return;
+            }
+            finishQualitySwitch("切换画质超时");
+        }, 20000);
         try { applyQuality(qn, true); }
         catch (e2) { finishQualitySwitch(e2.message); }
         return true;
@@ -1312,10 +1324,14 @@ var Player = (function () {
             var err = e && e.detail;
             var recoverable = err && err.severity !== 2 &&
                 (err.category === 1 || err.category === 3);
-            /* Startup can still become ready after a recoverable retry. An
-             * in-play selection rolls back, but the original error must also
-             * reach recovery: rolling video back cannot repair shared audio. */
-            if (qualitySwitch && !(qualitySwitch.loading && recoverable)) {
+            /* A recoverable error is Shaka retrying, often on the next mirror;
+             * the switch's own timer bounds it. On a critical one an in-play
+             * selection rolls back, but the original error must also reach
+             * recovery: rolling video back cannot repair shared audio. At
+             * startup that recovery is the only one: it retries in place or
+             * rebuilds (which cancels the selection), and the selection's
+             * timer starts playback on what is buffered either way. */
+            if (qualitySwitch && !qualitySwitch.loading && !recoverable) {
                 finishQualitySwitch("切换时视频流加载失败：" + describeShakaError(err));
             }
             /* 直播 has none of the on-demand machinery below — no manifest of
@@ -1491,7 +1507,10 @@ var Player = (function () {
         player.addEventListener("variantchanged", changedQuality);
         player.addEventListener("segmentappended", function (e) {
             if (mode !== "mse" || e.contentType !== "video") { return; }
-            lastAppendedQn = trackQn(currentVideoTrack(player));
+            /* The tier of the response this append came from, not the variant
+             * selected: a segment of the old tier in flight at the switch
+             * appends after selectVariantTrack and would confirm it. */
+            lastAppendedQn = videoRespQn || trackQn(currentVideoTrack(player));
             if (qualitySwitch && lastAppendedQn === qualitySwitch.target) { finishQualitySwitch(""); }
         });
 
@@ -1576,6 +1595,8 @@ var Player = (function () {
             });
             ne.registerResponseFilter(function (type, response) {
                 if (type !== RT.SEGMENT) { return; }
+                var respQn = videoQnOfToken(lastDash && lastDash.dash, fileTokenOf(response.uri));
+                if (respQn) { videoRespQn = respQn; }
                 /* The first segment answered after load() settled is media:
                  * init and index are what load() waits for. Typing it by
                  * AdvancedRequestType lied on its first sample — Shaka files
@@ -2029,6 +2050,15 @@ var Player = (function () {
             if (fileTokenOf(u) === tok) { return true; }
         }
         return false;
+    }
+    /* The tier a video file token belongs to, or 0 (audio, or not ours). */
+    function videoQnOfToken(dash, tok) {
+        var list = (dash && dash.video) || [];
+        for (var i = 0; tok && i < list.length; i++) {
+            var u = (list[i].urls && list[i].urls[0]) || list[i].baseUrl;
+            if (fileTokenOf(u) === tok) { return Number(list[i].id) || 0; }
+        }
+        return 0;
     }
 
     /* Same contract as noteBadHost: returns the newly learned file token, or
@@ -2821,6 +2851,7 @@ var Player = (function () {
              * 在飞 and the next stall would read as a hung connection. */
             resetSegTraffic();
             lastAppendedQn = 0;
+            videoRespQn = 0;
             return player.load(url, startAt);
         }).then(function () {
             try { URL.revokeObjectURL(url); } catch (e) {}

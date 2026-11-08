@@ -121,8 +121,16 @@ await check('quality rollback preserves the original audio error recovery',async
   await beginDash(0,{paused:false});await playerTest.settled();let retries=0,done=null;
   engine.retryStreaming=()=>{retries++;};realPlayer.selectQuality(32,why=>done=why);
   sdkListeners.get('error')({detail:{category:1,code:1002,severity,data:['https://example.invalid/audio']}});
-  assert.equal(retries,1);assert.match(done,/1002/);assert.equal(calls.at(-1).t,active);
+  assert.equal(retries,1);
+  // A recoverable error is Shaka retrying: the switch stays pending (its timer bounds it).
+  if(severity===1){assert.equal(done,null);active.active=false;low.active=true;sdkListeners.get('segmentappended')({contentType:'video'});assert.equal(done,'');}
+  else{assert.match(done,/1002/);assert.equal(calls.at(-1).t,active);}
  }
+});
+await check('a stop during an in-play switch still answers it',async()=>{
+ await beginDash(0,{paused:false});await playerTest.settled();let done=null;
+ realPlayer.selectQuality(32,why=>done=why);assert.equal(done,null);
+ realPlayer.stop();assert.match(String(done),/画质切换未完成/);await playerTest.settled();
 });
 await check('saved manual startup survives recoverable network and media errors',async()=>{
  for(const qn of [32,80])for(const paused of [false,true])for(const category of [1,3]){
@@ -140,12 +148,12 @@ await check('saved manual startup survives recoverable network and media errors'
  }
  Settings.set('preferredQn',0);
 });
-await check('critical startup errors still reject manual quality readiness',async()=>{
+await check('critical startup errors go to recovery alone, and startup completes after it',async()=>{
  await beginDash(32);let retries=0;engine.retryStreaming=()=>{retries++;};
  sdkListeners.get('error')({detail:{category:1,code:1002,severity:2,data:[]}});
- await playerTest.settled();assert.equal(retries,1);assert.equal(hasEvent('error'),true);
+ await tick();assert.equal(retries,1);assert.equal(hasEvent('error'),false);assert.equal(hasEvent('ready'),false);
  low.active=true;active.active=false;sdkListeners.get('segmentappended')({contentType:'video'});
- await tick();assert.equal(hasEvent('ready'),false);
+ await playerTest.settled();assert.equal(events.filter(e=>e.kind==='ready').length,1);
 });
 for(const qn of [32,80])await check(`manual DASH ${qn} waits for this load's video data`,async()=>{
  await beginDash(qn);assert.equal(hasEvent('ready'),false);
@@ -162,9 +170,9 @@ function fireTimer(ms){
  const entry=Array.from(timers).filter(([,t])=>t.ms===ms).at(-1);assert.ok(entry,`timer ${ms} exists`);
  timers.delete(entry[0]);entry[1].f();
 }
-await check('missing target video times out without readiness or saving a preference',async()=>{
+await check('slow target video at startup plays what is buffered, without an error or saving a preference',async()=>{
  await beginDash(32);fireTimer(20000);await playerTest.settled();
- assert.equal(hasEvent('ready'),false);assert.equal(hasEvent('error'),true);assert.equal(Settings.qualityPreference(),0);
+ assert.equal(hasEvent('ready'),true);assert.equal(hasEvent('error'),false);assert.equal(Settings.qualityPreference(),0);
 });
 await check('paused speed changes and rebuild wait for resume',async()=>{
  await beginDash(0);await playerTest.settled();const before=starts;

@@ -5912,24 +5912,36 @@
         paintPlaybackControls();
     }
 
+    /* False when the old stream cannot be restored: the caller's ordinary
+     * recovery then owns the new one, from where the viewer is. */
     function restoreQualityChange(why) {
-        if (!playing) { return; }
+        if (!playing) { return true; }
         var before = playing.controlTransition;
-        if (!before) { finishQualityChange(0, why); return; }
+        if (!before) { finishQualityChange(0, why); return true; }
         var at = before.at;
-        playing.route = before.route;
-        playing.nativeSize = before.nativeSize || "";
-        playing.qualityReady = false;
-        playing.dashReady = before.dash;
-        playing.quality = before.quality;
-        playing.urls = before.urls;
-        playing.urlIdx = before.urlIdx;
         playing.startMs = at;
+        /* Signatures last about two hours; the old manifest may be the one
+         * that expired. A stale restore only 403s on its way to a refetch. */
+        if (before.route === "dash" && dashIsStale(before.dash)) {
+            report("controls", "切档失败，原清单已过期，不回原流，交给常规恢复");
+            finishQualityChange(0, why);
+            return false;
+        }
         finishQualityChange(0, why);
         var options = { paused: Player.userPaused(), quality: Settings.qualityPreference() };
-        if (before.route === "dash") { Player.playDash(before.dash, at, options); }
-        else { Player.playProgressive(before.urls[before.urlIdx || 0], at, options); }
-        setQualityBadge("");
+        /* Through playDash(), which owns dashReady and the strong-token re-arm. */
+        if (before.route === "dash") { playDash(before.dash, before.quality, options); }
+        else {
+            playing.route = before.route;
+            playing.nativeSize = before.nativeSize || "";
+            playing.qualityReady = false;
+            playing.quality = before.quality;
+            playing.urls = before.urls;
+            playing.urlIdx = before.urlIdx;
+            setQualityBadge("");
+            Player.playProgressive(before.urls[before.urlIdx || 0], at, options);
+        }
+        return true;
     }
 
     function cancelQualityChange() {
@@ -6692,7 +6704,7 @@
             reportProgress(Math.floor(lastKnownPosition / 1000), true,
                            Math.floor(lastKnownDuration / 1000));
         }
-        if (playing) { clearTimeout(playing.qualityTimer); }
+        cancelQualityChange();
         Player.stop();
         clearSubtitles();
         clearDanmaku();
@@ -7679,7 +7691,7 @@
         backStack = [];
         bt.mark("关面板");
         var mode = Player.mode();
-        if (playing) { clearTimeout(playing.qualityTimer); }
+        cancelQualityChange();
         Player.stop();
         bt.mark("拆播放器");
         playing = null;
@@ -7964,7 +7976,7 @@
         } else if (kind === "log") {
             report("player", data);
         } else if (kind === "error") {
-            if (playing && playing.controlTransition) { restoreQualityChange(String(data)); return; }
+            if (playing && playing.controlTransition && restoreQualityChange(String(data))) { return; }
             /* One failure can cascade into a burst as queued work unwinds; only
              * the first is worth reporting or acting on. */
             if (!playing || playing.failed) { return; }
