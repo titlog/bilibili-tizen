@@ -27,6 +27,7 @@ node "$ROOT/tools/lint.mjs" || exit 1
 # against a fake localStorage here, where a wrong answer is an assertion.
 node "$ROOT/tools/md5-verify.mjs" >/dev/null || { echo "  md5 is wrong; TV login would be rejected"; exit 1; }
 node "$ROOT/tools/accounts-verify.mjs" || exit 1
+node "$ROOT/tools/history-refresh-verify.mjs" || exit 1
 # An invalid manifest does not throw — the player refuses it and the viewer just
 # sees a spinner. One unescaped ampersand in a stream url is enough to cause it.
 node "$ROOT/tools/mpd-verify.mjs" >/dev/null || { echo "  the DASH manifest is malformed"; exit 1; }
