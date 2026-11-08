@@ -197,7 +197,7 @@
              * back to a tab restores where you were, which is what a
              * television expects — refetching and jumping to the first
              * card loses your place every time you glance elsewhere. */
-            else { loadFeed(s, state.screen !== s); }
+            else { loadFeed(s, state.screen !== s, 0, s === "rcmd"); }
         };
     }
 
@@ -1601,11 +1601,12 @@
      * is nothing settled to check. */
     var historyWaiters = null;
 
-    function fetchServerHistory(onOk, onFail) {
-        /* Only a complete answer is worth reusing: a cached first page would
+    function fetchServerHistory(onOk, onFail, force) {
+        /* A deliberate 推荐 press bypasses the settled cache. Otherwise only
+         * a complete answer is worth reusing: a cached first page would
          * pin the list at 24 entries for the next minute, which is the very
          * shortfall the paging was added for. */
-        if (serverHistory.items && serverHistory.complete &&
+        if (!force && serverHistory.items && serverHistory.complete &&
                 (new Date().getTime() - serverHistory.at) < 60000) {
             onOk(serverHistory.items, serverHistory.items.length, true);
             return;
@@ -2057,24 +2058,20 @@
         fitCardMeta(grid);
     }
 
-    /* Coming back to the home tab is the moment to notice that the phone has
-     * been watching. Nothing polls: a set left on the home screen never asks
-     * again, so an evening's worth of phone viewing was invisible until the app
-     * was restarted. This asks once, on arrival, and only when what is in hand
-     * has gone stale — five minutes, so switching tabs about does not turn into
-     * a request per press, and an idle television still sends nothing at all.
-     *
-     * The repaint keeps the existing rule: only while the cursor is still on the
-     * first card. With it parked deep in the grid the row waits for the next
-     * rebuild — a strip that re-lays itself out under someone who is reading is
-     * worse than a strip that is five minutes old. */
+    /* Automatic arrivals reuse recent history. Selecting 推荐 asks for a fresh
+     * history even if the phone played something only seconds after the last
+     * fetch. In-flight requests are shared, so rapid presses do not multiply
+     * simultaneous page chains. Nothing polls while the television is idle. */
     var HISTORY_STALE_MS = 300000;
 
-    function refreshHistoryIfStale() {
+    function refreshHistoryIfStale(force) {
         if (!Auth.isLoggedIn()) { return; }
-        if (serverHistory.items && serverHistory.complete &&
+        if (!force && serverHistory.items && serverHistory.complete &&
                 (new Date().getTime() - serverHistory.at) < HISTORY_STALE_MS) { return; }
-        fetchServerHistory(function () { maybeRefreshResumeRow(); });
+        fetchServerHistory(function () { maybeRefreshResumeRow(); }, function (why) {
+            report("history", "刷新失败：" + why);
+            if (force && state.screen === "rcmd") { toast("观看记录刷新失败，请稍后再试"); }
+        }, force);
     }
 
     /* How long switching the set on takes to put a home screen up — asked
@@ -2122,11 +2119,11 @@
         });
     }
 
-    function loadFeed(kind, restore, retries) {
+    function loadFeed(kind, restore, retries, forceHistory) {
         state.screen = kind;
         markTab();
         if (restore) { backMark("顶栏"); }
-        if (kind === "rcmd") { refreshHistoryIfStale(); }
+        if (kind === "rcmd") { refreshHistoryIfStale(forceHistory); }
         var req = ++feedRequest;
         newView();
 
@@ -2263,11 +2260,9 @@
     }
 
     /* The history usually lands with the feed and the strip is simply part of
-     * the first paint. When it is slower it may still be added — or corrected,
-     * when the phone watched something this set does not know about — but only
-     * while the viewer has not moved: a row appearing above the cursor after
-     * someone has started reading pushes everything down under their eyes, and
-     * that is worse than no row at all.
+     * the first paint. An existing strip can update in place without moving the
+     * grid. Inserting or removing the whole strip waits until the viewer is on
+     * the first card, so the page does not move under someone reading lower down.
      *
      * "Has not moved" is the cursor still being on the first card of the page,
      * whichever row that is. Repainting from there costs nothing visible: the
@@ -2280,6 +2275,7 @@
         var row = el("resume-row");
         if (!row) { return; }
         var had = Nav.current();
+        var focusedBvid = had && inResumeStrip(had) && had.__video && had.__video.bvid;
         var items = resumeRowItems();
         resumeRowSig = rowSignature(items);
         if (items.length) {
@@ -2290,7 +2286,14 @@
             if (label && label.className === "section") { label.parentNode.removeChild(label); }
         }
         if (had && !document.body.contains(had)) {
-            Nav.reset(items.length ? "#resume-row .card" : "#feed-grid .card");
+            var cards = items.length ? row.querySelectorAll(".card") : [], replacement = null;
+            for (var i = 0; i < cards.length; i++) {
+                if (cards[i].__video && cards[i].__video.bvid === focusedBvid) {
+                    replacement = cards[i]; break;
+                }
+            }
+            if (replacement) { Nav.focus(replacement); }
+            else { Nav.reset(items.length ? "#resume-row .card" : "#feed-grid .card"); }
         }
     }
 
@@ -2298,16 +2301,17 @@
         if (state.screen !== "rcmd") { return; }
         var cache = feedCache.rcmd;
         if (!cache || !cache.items.length) { return; }
-        var items = resumeRowItems();
-        if (!items.length) { return; }
-        if (el("resume-row") && rowSignature(items) === resumeRowSig) { return; }
+        var items = resumeRowItems(), row = el("resume-row");
+        if (!items.length && !row) { return; }
+        if (row && rowSignature(items) === resumeRowSig) { return; }
         var first = screenEl.querySelector(".card");
+        /* Updating an existing strip does not move the grid below it. Only
+         * inserting or removing a strip needs the first-card focus guard. */
+        if (row && items.length) { repaintResumeStrip(); return; }
         if (!first || Nav.current() !== first) { return; }
-        /* A strip already on screen only needs its three cards redrawn — the
-         * whole-grid rebuild re-requested every thumbnail of every loaded page
-         * to change three. Only a strip that does not exist yet needs the
-         * grid rebuilt, to make room above it. */
-        if (el("resume-row")) {
+        /* A disappearing strip needs no grid rebuild; a new one needs a place
+         * above the grid and must be drawn with it. */
+        if (row) {
             repaintResumeStrip();
             Nav.reset(".card");
             return;
