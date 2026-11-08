@@ -2501,6 +2501,8 @@
             pendingWake = true;
             report("lifecycle", "正在看直播，重新连到现在的画面 —— 退出时再补上重刷");
             liveRoom.tries = 0;
+            /* The socket slept with the set; the new picture brings a new one. */
+            stopLiveDanmaku(liveRoom);
             Player.stop();
             startLiveRoom("");
             return;
@@ -3168,11 +3170,38 @@
     /* Where they fly (PR #10, 10-25): a setting of this television, in 设置
      * only, like the level. "upper" is the 756px above the subtitles. */
     var DM_AREA_NAMES = { top: "顶部 1/4", upper: "避开字幕", full: "全屏" };
+    /* How they look (the live panel's sliders, 2026-11-07; shared by every video
+     * and room): transparency in percent, 10–100 in steps of 5 (85 is what was
+     * hard-coded before), size as a multiple of the standard font, 0.6–2 in
+     * steps of 0.1. */
+    var DM_ALPHA = { min: 10, max: 100, step: 5, dflt: 85 };
+    var DM_SIZE = { min: 0.6, max: 2, step: 0.1, dflt: 1 };
+    function slid(spec, v) {
+        v = Number(v);
+        if (!(v >= spec.min && v <= spec.max)) { return spec.dflt; }
+        return Math.round(Math.round((v - spec.min) / spec.step) * spec.step * 100 + spec.min * 100) / 100;
+    }
     var dm = null;            /* the renderer, built on first use */
     var viewerPaused = false; /* what setPaused last asked for; danmaku stop with it */
     function danmakuLevel() {
         var v = Settings.get("danmaku", "normal");
         return DM_NAMES[v] ? v : "normal";
+    }
+    function danmakuAlpha() {
+        return slid(DM_ALPHA, Settings.get("danmakuAlpha", DM_ALPHA.dflt));
+    }
+    function danmakuSize() {
+        return slid(DM_SIZE, Settings.get("danmakuSize", DM_SIZE.dflt));
+    }
+    function setDanmakuAlpha(v) {
+        Settings.set("danmakuAlpha", v);
+        if (dm) { dm.opacity(v / 100); }
+        report("settings", "弹幕透明度=" + v + "%");
+    }
+    function setDanmakuSize(v) {
+        Settings.set("danmakuSize", v);
+        if (dm) { dm.scale(v); }
+        report("settings", "弹幕字号=" + v + "×");
     }
     function danmakuArea() {
         return Danmaku.area(Settings.get("danmakuArea", "upper"));
@@ -3182,13 +3211,15 @@
     }
     function setDanmakuArea(v) {
         Settings.set("danmakuArea", Danmaku.area(v));
-        showDanmaku(!!(playing && playing.danmakuStarted && danmakuLevel() !== "off"));
+        showDanmaku(!!(((playing && playing.danmakuStarted) || (liveRoom && liveRoom.dmConn)) && danmakuLevel() !== "off"));
         report("settings", "弹幕位置=" + DM_AREA_NAMES[danmakuArea()]);
     }
     function danmakuRenderer() {
         if (!dm && typeof Danmaku !== "undefined") {
             dm = Danmaku.renderer(el("danmaku"));
             dm.density(danmakuLevel());
+            dm.scale(danmakuSize());
+            dm.opacity(danmakuAlpha() / 100);
         }
         return dm;
     }
@@ -3215,10 +3246,182 @@
         /* What the panel's on/off switch turns back on to. */
         if (v !== "off") { Settings.set("danmakuOnLevel", v); }
         if (danmakuRenderer()) { dm.density(v); }
-        if (v === "off") { showDanmaku(false); }
+        if (liveRoom) {
+            /* A room's comments are a socket, not a list: off closes it (no
+             * point carrying a stream nobody sees), on opens it again — once
+             * the picture is up; startLiveDanmaku runs then otherwise. */
+            if (v === "off") { stopLiveDanmaku(liveRoom); }
+            else if (liveRoom.timed) { startLiveDanmaku(liveRoom); }
+        }
+        else if (v === "off") { showDanmaku(false); }
         else if (playing && playing.danmakuStarted) { showDanmaku(true); }
         else { startDanmaku(); }
         report("settings", "弹幕=" + DM_NAMES[v]);
+    }
+
+    /* 直播弹幕 (2026-11-07). Until then a room had no comments and nothing
+     * to switch them with: `playing` is null in a room, so startDanmaku and
+     * the panel's switch (both keyed on it) did nothing. The connection
+     * belongs to the room (liveRoom.dmConn, for liveRoom.dmFor): the stream
+     * reconnecting, or stepping down a tier, keeps it; another room or leaving
+     * closes it. Comments are counted in the log, never quoted — they are other
+     * people's words. 左 / 右 switch them (liveKey). */
+    function startLiveDanmaku(room) {
+        var v = room.item, id = v ? String(v.roomid) : "";
+        if (!id || danmakuLevel() === "off" || !danmakuRenderer() || typeof LiveDanmaku === "undefined") { return; }
+        if (room.dmConn && room.dmFor === id) { showDanmaku(true); return; }
+        stopLiveDanmaku(room);
+        room.dmFor = id;
+        var t0 = new Date().getTime();
+        room.dmConn = LiveDanmaku.connect(id, {
+            onItem: function (item) {
+                /* A paused room keeps nothing: what is sent meanwhile is
+                 * old by the time the picture comes back. */
+                if (liveRoom !== room || room.dmFor !== id || Player.userPaused()) { return; }
+                dm.push(item);
+            },
+            onState: function (text) {
+                if (liveRoom === room && room.dmFor === id) {
+                    report("danmaku", "直播弹幕 " + text + "（" + (new Date().getTime() - t0) + "ms）");
+                }
+            }
+        });
+        showDanmaku(true);
+    }
+    function stopLiveDanmaku(room) {
+        if (room.dmConn) {
+            var s = room.dmConn.stats();
+            room.dmConn.close();
+            report("danmaku", "直播弹幕 关了：收到 " + s.comments + " 条" + (s.skipped ? "，读不了 " + s.skipped + " 包" : ""));
+        }
+        room.dmConn = null;
+        room.dmFor = "";
+        clearDanmaku();
+    }
+    /* 弹幕设置 (11-07): 左 / 右 in a room opens a small panel — 数量 (the level,
+     * with 关 at its left end), 透明度 and 字号 as sliders, 画质 (the room's own
+     * tiers) — which liveKey hands every key to
+     * while it is open: 上 / 下 pick a row, 左 / 右 change it, 确认 / 返回
+     * close it (返回 closes the panel, it does not leave the room), and it
+     * closes itself after a few quiet seconds. The sample line wears the
+     * choice, so a quiet room still shows what it will look like. */
+    var dmPanel = { open: false, row: 0, timer: null, qnPending: 0, qnTimer: null };
+    var DM_PANEL_MS = 6000;
+    var QN_APPLY_MS = 1500;   /* each step of 画质 restarts the stream; wait for the last one */
+    var LIVE_QN_NAMES = { 30000: "杜比", 20000: "4K", 10000: "原画", 400: "蓝光", 250: "超清", 150: "高清", 80: "流畅", 25: "流畅" };
+    function liveQnName(q) { return LIVE_QN_NAMES[q] || ("qn" + q); }
+    /* The tiers this room offers, worst first (so 右 is better, like the sliders). */
+    function liveQnList() {
+        var a = liveRoom ? liveRoom.qnAccept || [] : [], out = [];
+        for (var i = 0; i < a.length; i++) { if (out.indexOf(a[i]) < 0) { out.push(a[i]); } }
+        return out.sort(function (x, y) { return x - y; });
+    }
+    /* The choice becomes the stream: remembered as the cap for every room (the
+     * best tier the room has → 0, so a better room still gets its best), and
+     * the room starts again asking for it. */
+    function applyLiveQn() {
+        if (dmPanel.qnTimer) { clearTimeout(dmPanel.qnTimer); dmPanel.qnTimer = null; }
+        var q = dmPanel.qnPending, room = liveRoom;
+        dmPanel.qnPending = 0;
+        if (!room || !q || q === room.qnUsed) { return; }
+        var list = liveQnList();
+        Settings.set("liveQn", list.length && q === list[list.length - 1] ? 0 : q);
+        room.qnAsk = q;
+        room.tries = 0;
+        report("settings", "直播画质=" + liveQnName(q) + "（qn" + q + "，现在是 qn" + room.qnUsed + "），重开这个直播间");
+        Player.stop();
+        startLiveRoom("");
+    }
+    function dmValueText(idx, n, name) {
+        return (idx > 0 ? "◀ " : '<span class="end">◀ </span>') + name + (idx < n - 1 ? " ▶" : '<span class="end"> ▶</span>');
+    }
+    function paintSlider(i, spec, v, text) {
+        var at = Math.round((v - spec.min) / (spec.max - spec.min) * 1000) / 10 + "%";
+        el("live-dm-fill" + i).style.width = at;
+        el("live-dm-thumb" + i).style.left = at;
+        el("live-dm-val" + i).textContent = text;
+    }
+    function paintDmPanel() {
+        var level = danmakuLevel(), alpha = danmakuAlpha(), size = danmakuSize();
+        var rowEls = document.querySelectorAll("#live-dm .live-dm-row");
+        var at = DM_LEVELS.indexOf(level);
+        el("live-dm-val0").innerHTML = dmValueText(at, DM_LEVELS.length, DM_NAMES[level]);
+        paintSlider(1, DM_ALPHA, alpha, alpha + "%");
+        paintSlider(2, DM_SIZE, size, size.toFixed(1) + "×");
+        var qns = liveQnList(), now = dmPanel.qnPending || (liveRoom && liveRoom.qnUsed) || 0;
+        if (qns.length < 2 || qns.indexOf(now) < 0) {
+            el("live-dm-val3").textContent = qns.length === 1 ? "只有 " + liveQnName(qns[0]) : now ? liveQnName(now) : "还没连上";
+        } else {
+            el("live-dm-val3").innerHTML = dmValueText(qns.indexOf(now), qns.length, liveQnName(now)) +
+                (dmPanel.qnPending ? "…" : "");
+        }
+        for (var i = 0; i < rowEls.length; i++) {
+            rowEls[i].className = "live-dm-row" + (i === dmPanel.row ? " on" : "");
+        }
+        var sample = el("live-dm-sample");
+        sample.style.fontSize = Math.round(44 * size) + "px";
+        sample.style.opacity = level === "off" ? 0.25 : alpha / 100;
+    }
+    function armDmPanel() {
+        if (dmPanel.timer) { clearTimeout(dmPanel.timer); }
+        dmPanel.timer = setTimeout(closeDmPanel, DM_PANEL_MS);
+    }
+    function openDmPanel() {
+        dmPanel.open = true;
+        dmPanel.row = 0;
+        paintDmPanel();
+        el("live-dm").className = "";
+        armDmPanel();
+    }
+    /* `discard`: leaving the room, so a 画质 not yet applied is dropped, not applied. */
+    function closeDmPanel(discard) {
+        if (dmPanel.timer) { clearTimeout(dmPanel.timer); dmPanel.timer = null; }
+        dmPanel.open = false;
+        el("live-dm").className = "hidden";
+        if (discard === true) {
+            if (dmPanel.qnTimer) { clearTimeout(dmPanel.qnTimer); dmPanel.qnTimer = null; }
+            dmPanel.qnPending = 0;
+        } else if (dmPanel.qnPending) { applyLiveQn(); }
+    }
+    function dmPanelKey(k) {
+        armDmPanel();
+        switch (k) {
+            case Nav.KEY.UP: dmPanel.row = Math.max(0, dmPanel.row - 1); break;
+            case Nav.KEY.DOWN: dmPanel.row = Math.min(3, dmPanel.row + 1); break;
+            case Nav.KEY.LEFT:
+            case Nav.KEY.RIGHT:
+                var dir = k === Nav.KEY.RIGHT ? 1 : -1;
+                if (dmPanel.row === 0) {
+                    var at = DM_LEVELS.indexOf(danmakuLevel()), to = Math.max(0, Math.min(DM_LEVELS.length - 1, at + dir));
+                    if (to !== at) { setDanmakuLevel(DM_LEVELS[to]); }
+                } else if (dmPanel.row === 1) {
+                    var a = danmakuAlpha(), a2 = slid(DM_ALPHA, Math.max(DM_ALPHA.min, Math.min(DM_ALPHA.max, a + dir * DM_ALPHA.step)));
+                    if (a2 !== a) { setDanmakuAlpha(a2); }
+                } else if (dmPanel.row === 3) {
+                    var qns = liveQnList(), cur = dmPanel.qnPending || (liveRoom && liveRoom.qnUsed) || 0, qi = qns.indexOf(cur);
+                    if (qi >= 0 && qns.length > 1) {
+                        var qt = qns[Math.max(0, Math.min(qns.length - 1, qi + dir))];
+                        if (qt !== cur) {
+                            dmPanel.qnPending = qt;
+                            if (dmPanel.qnTimer) { clearTimeout(dmPanel.qnTimer); }
+                            dmPanel.qnTimer = setTimeout(applyLiveQn, QN_APPLY_MS);
+                        }
+                    }
+                } else {
+                    var z = danmakuSize(), z2 = slid(DM_SIZE, Math.max(DM_SIZE.min, Math.min(DM_SIZE.max, z + dir * DM_SIZE.step)));
+                    if (z2 !== z) { setDanmakuSize(z2); }
+                }
+                break;
+            case Nav.KEY.ENTER:
+            case Nav.KEY.RETURN:
+                closeDmPanel(); return true;
+            case Nav.KEY.EXIT:
+                closeDmPanel(true); return false;
+            default: break;
+        }
+        paintDmPanel();
+        showLiveUi();
+        return true;
     }
 
     function clearSubtitles() {
@@ -4462,10 +4665,12 @@
      * television changes channel. A stream that fails is reconnected with a
      * fresh address (they are signed and expire), the other CDN host first;
      * three failures without a good minute in between and the room is left.
-     * No live danmaku yet: that is a WebSocket of its own, left for later. */
+     * 弹幕 are a WebSocket of their own (livedm.js), opened with the first
+     * picture, switched and tuned from the panel 左 / 右 opens — see
+     * startLiveDanmaku and dmPanel. */
     var liveRoom = null;
     var liveUiTimer = null;
-    var LIVE_HINT = "确认键 暂停/播放 · 上下键 换直播间 · 返回键 退出";
+    var LIVE_HINT = "确认键 暂停/播放 · 上下键 换直播间 · 左右键 弹幕与画质 · 返回键 退出";
     var LIVE_PAUSE_LIMIT = 20000;   /* a live window is seconds wide; longer than this, start at the edge again */
     /* Tizen 3.0 (issue #5, 10-22): on-demand DASH plays through MSE, but every
      * live room failed with the element's decode error (Shaka 3016, data[0]=3)
@@ -4574,6 +4779,9 @@
         var v = room.list[room.index];
         var token = ++room.token;
         room.item = v;
+        /* Another room: its comments are not these. (The same room starting
+         * again — a reconnect, a tier down — keeps its connection.) */
+        if (room.dmFor && room.dmFor !== String(v.roomid)) { stopLiveDanmaku(room); }
         room.qnName = "";
         room.nativeFmt = "";
         room.timed = false;
@@ -4584,7 +4792,7 @@
         /* What either route learned is about this room's streams. */
         if (room.nativeFor !== String(v.roomid)) {
             room.nativeFor = String(v.roomid);
-            room.qnAsk = 0;
+            room.qnAsk = Number(Settings.get("liveQn", 0)) || 0;   /* the panel's 画质: 0 = the best the room has */
             room.tsBelow = 0;
             room.tsGaveUp = false;
             room.steps = 0;
@@ -4847,6 +5055,10 @@
                 room.timed = true;
                 room.timedAt = room.clockMovedAt = new Date().getTime();
                 report("live", "到画面 " + Player.timings());
+                /* After the first picture, like a video's comments: the
+                 * socket must not race the stream for this set's slow link. */
+                startLiveDanmaku(room);
+                if (dmPanel.open) { paintDmPanel(); }   /* the 画质 row names what is playing now */
                 showLiveUi();
                 if (Player.mode() === "live") {
                     liveMseOk = true;
@@ -4970,6 +5182,7 @@
     }
 
     function liveKey(k) {
+        if (dmPanel.open) { return dmPanelKey(k); }
         switch (k) {
             case Nav.KEY.ENTER:
             case Nav.KEY.PLAY_PAUSE:
@@ -4981,6 +5194,9 @@
             case Nav.KEY.UP:
             case Nav.KEY.DOWN:
                 switchLive(k === Nav.KEY.DOWN ? 1 : -1); return true;
+            case Nav.KEY.LEFT:
+            case Nav.KEY.RIGHT:
+                openDmPanel(); return true;
             case Nav.KEY.RETURN:
                 stopLive(); return true;
             case Nav.KEY.EXIT:
@@ -4994,12 +5210,15 @@
         var room = liveRoom;
         if (on) {
             Player.pause();
+            if (dm) { dm.pause(true); }   /* the comments on screen stop with the picture */
             room.pausedAt = new Date().getTime();
             el("pause-glyph").className = "";
             showLiveUi();
             return;
         }
         el("pause-glyph").className = "hidden";
+        /* What was flying when the pause began is as old as the picture. */
+        if (dm) { dm.clear(); dm.pause(false); }
         /* What was live when the pause began has scrolled out of the window;
          * there is nothing to carry on from, so start again at the edge. */
         if (room.pausedAt && new Date().getTime() - room.pausedAt > LIVE_PAUSE_LIMIT) {
@@ -5033,6 +5252,9 @@
         var room = liveRoom;
         if (!room) { return; }
         if (room.okTimer) { clearTimeout(room.okTimer); }
+        stopLiveDanmaku(room);
+        if (dm) { dm.pause(false); }
+        closeDmPanel(true);
         liveRoom = null;
         Player.stop();
         hideLiveUi();
@@ -5056,6 +5278,7 @@
         if (v.area) { meta.push(v.area); }
         if (v.online) { meta.push(v.online); }
         if (liveRoom.qnName) { meta.push(liveRoom.qnName); }
+        meta.push("弹幕：" + DM_NAMES[danmakuLevel()]);
         el("live-title").textContent = v.title || "";
         el("live-meta").textContent = meta.join(" · ");
         el("live-hint").textContent = LIVE_HINT;

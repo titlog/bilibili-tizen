@@ -182,6 +182,78 @@ function mixedRun(seed, n, count) {
 const mx = mixedRun(5, 4000, 13);
 check(mx.bad === 0 && mx.fixeds > 50, "滚动和顶部 / 底部混着来：滚动 " + mx.scrolls + "、固定 " + mx.fixeds + "，压在一起 " + mx.bad);
 
+/* ---------------- live: push() ---------------- */
+/* 直播 has no media time: a comment is drawn when it arrives (renderer.push).
+ * A fake box and a fake animation stand in for the DOM, enough to count what
+ * is on screen. */
+console.log("直播 push");
+{
+  const made = [];
+  const fakeNode = () => ({
+    className: "", style: {}, parentNode: null, textContent: "",
+    animate() { const a = { playbackRate: 1, pause() {}, play() {}, cancel() {}, onfinish: null }; made.push(a); return a; },
+  });
+  const box = {
+    clientHeight: 756,
+    appendChild(n) { n.parentNode = box; },
+    removeChild(n) { n.parentNode = null; },
+  };
+  const lctx = {
+    document: { createElement: fakeNode, timeline: null },
+    window: { getComputedStyle: () => ({ fontFamily: "sans-serif" }), requestIdleCallback: null },
+    Date, Math, setTimeout: (f) => f(),
+  };
+  vm.createContext(lctx);
+  vm.runInContext(SRC + "\nthis.Danmaku = Danmaku;", lctx);
+  const r = lctx.Danmaku.renderer(box);
+  const item = (text, mode = 1) => ({ t: 0, mode, size: 25, color: "#ffffff", text, weight: 10 });
+  check(r.push(item("第一条")) === true && r.stats().live === 1, "push 立刻画一条");
+  for (let i = 0; i < 100; i++) { r.push(item("满屏的弹幕 " + i)); }
+  check(r.stats().live <= 30, "标准档同屏不超过 30 条（现在 " + r.stats().live + "）");
+  r.density("low");
+  r.clear();
+  for (let i = 0; i < 100; i++) { r.push(item("少 " + i)); }
+  check(r.stats().live <= 15 && r.stats().live > 0, "少档同屏不超过 15 条（现在 " + r.stats().live + "）");
+  r.density("off");
+  check(r.push(item("关了")) === false && r.stats().live === 0, "关掉之后 push 什么都不画");
+  r.density("normal");
+  r.clear();
+  check(r.push(item("顶部", 5)) === true && r.push(item("底部", 4)) === true && r.stats().live === 2, "顶部、底部弹幕也能 push");
+  /* A video after a room: set() clears, which resets the wall-clock lanes —
+   * left alone, lanes booked until "now" would keep every video lane shut. */
+  r.set([{ t: 300, mode: 1, size: 25, color: "#fff", text: "点播的", weight: 10 }]);
+  r.tick(100, true); r.tick(600, true);
+  check(r.stats().live === 1, "直播之后换回点播，车道是空的，第一条就画得出来");
+
+  /* The viewer's look: size (font and row height, so fewer rows) and transparency (per comment). */
+  const nodes = [];
+  const box2 = { clientHeight: 756, appendChild(n) { nodes.push(n); n.parentNode = box2; }, removeChild(n) { n.parentNode = null; } };
+  const r2 = lctx.Danmaku.renderer(box2);
+  r2.push(item("标准字号"));
+  check(nodes[0].style.fontSize === "44px" && r2.stats().lanes === 13 && Number(nodes[0].style.opacity) === 0.85,
+    "默认：44px、13 行、透明度 0.85（和改之前一样）");
+  r2.opacity(0.3);
+  check(Number(nodes[0].style.opacity) === 0.3, "改透明度，已经在飞的也跟着变");
+  r2.push(item("新的"));
+  check(Number(nodes[1].style.opacity) === 0.3, "之后画的用新的透明度");
+  r2.opacity(5); r2.opacity("x");
+  r2.push(item("乱来的值"));
+  check(Number(nodes[2].style.opacity) === 0.3, "不合理的透明度值被忽略");
+  r2.scale(1.5);
+  check(r2.stats().live === 0, "改字号清掉屏上的（行高变了，旧车道不作数）");
+  r2.push(item("特大"));
+  const big = nodes[nodes.length - 1];
+  check(big.style.fontSize === "66px" && r2.stats().lanes === 9, "特大：66px，行高 82 → 9 行（现在 " + big.style.fontSize + "、" + r2.stats().lanes + " 行）");
+  r2.scale(0.8); r2.clear();
+  r2.push(item("小"));
+  check(nodes[nodes.length - 1].style.fontSize === "35px" && r2.stats().lanes === 17, "小：35px、行高 44 → 17 行（现在 " + nodes[nodes.length - 1].style.fontSize + "、" + r2.stats().lanes + " 行）");
+  r2.push({ t: 0, mode: 1, size: 64, color: "#fff", text: "超大字号的稿件", weight: 10 });
+  check(nodes[nodes.length - 1].style.fontSize === "48px", "稿件自己要的大字号也按比例封顶（小档上限 48px）");
+  r2.scale(99); r2.scale("x");
+  r2.push(item("乱来的比例"));
+  check(nodes[nodes.length - 1].style.fontSize === "35px", "不合理的比例被忽略");
+}
+
 /* ---------------- browser ---------------- */
 if (process.argv.includes("--browser")) {
   await browserRun();
