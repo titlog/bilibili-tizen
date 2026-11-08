@@ -4425,14 +4425,16 @@
      * panel, danmaku, subtitles, the recovery ladders — belongs to a video
      * with a length, and none of it means anything at the live edge.
      *
-     * 上 / 下 change room, through the list the card came from, the way a
-     * television changes channel. A stream that fails is reconnected with a
-     * fresh address (they are signed and expire), the other CDN host first;
+     * 上 / 下 open a room chooser over the playing stream; switching needs an
+     * explicit selection, as it does in the on-demand player's panel. A stream
+     * that fails is reconnected with a fresh address (they are signed and
+     * expire), the other CDN host first;
      * three failures without a good minute in between and the room is left.
      * No live danmaku yet: that is a WebSocket of its own, left for later. */
     var liveRoom = null;
+    var liveOptionsOpen = false;
     var liveUiTimer = null;
-    var LIVE_HINT = "确认键 暂停/播放 · 上下键 换直播间 · 返回键 退出";
+    var LIVE_HINT = "确认键 暂停/播放 · 上下键 直播间列表 · 返回键 退出";
     var LIVE_PAUSE_LIMIT = 20000;   /* a live window is seconds wide; longer than this, start at the edge again */
     /* Tizen 3.0 (issue #5, 10-22): on-demand DASH plays through MSE, but every
      * live room failed with the element's decode error (Shaka 3016, data[0]=3)
@@ -4937,6 +4939,14 @@
     }
 
     function liveKey(k) {
+        if (liveOptionsOpen) {
+            if (k === Nav.KEY.RETURN) { closeLiveOptions(); return true; }
+            if (k === Nav.KEY.UP && nothingAboveInPanel(Nav.current())) {
+                closeLiveOptions(); return true;
+            }
+            if (k === Nav.KEY.UP || k === Nav.KEY.DOWN || k === Nav.KEY.LEFT ||
+                    k === Nav.KEY.RIGHT || k === Nav.KEY.ENTER) { return false; }
+        }
         switch (k) {
             case Nav.KEY.ENTER:
             case Nav.KEY.PLAY_PAUSE:
@@ -4947,7 +4957,7 @@
                 if (!Player.userPaused()) { setLivePaused(true); } return true;
             case Nav.KEY.UP:
             case Nav.KEY.DOWN:
-                switchLive(k === Nav.KEY.DOWN ? 1 : -1); return true;
+                openLiveOptions(); return true;
             case Nav.KEY.RETURN:
                 stopLive(); return true;
             case Nav.KEY.EXIT:
@@ -4955,6 +4965,49 @@
             default:
                 showLiveUi(); return true;
         }
+    }
+
+    function openLiveOptions() {
+        if (!liveRoom || liveOptionsOpen) { return; }
+        var room = liveRoom, v = room.item || room.list[room.index];
+        liveOptionsOpen = true;
+        hideLiveUi();
+        document.body.className += " options-open";
+        el("options").className = "scroll rows live-options";
+        el("options").scrollTop = 0;
+        el("live-panel").className = "";
+        el("live-panel-title").textContent = v.title || "直播";
+        el("live-panel-meta").textContent = [v.author, v.area, room.qnName].filter(function (x) { return !!x; }).join(" · ");
+        var html = "";
+        for (var i = 0; i < room.list.length; i++) {
+            var item = room.list[i];
+            html += '<div class="live-room-choice focusable' + (i === room.index ? " current" : "") +
+                    '" data-index="' + i + '"><div class="live-room-choice-title">' + esc(item.title || item.author || "直播间") +
+                    '</div><div class="live-room-choice-meta">' + esc(item.author || "") +
+                    (i === room.index ? " · 正在观看" : "") + '</div></div>';
+        }
+        el("live-room-list").innerHTML = html;
+        var choices = el("live-room-list").querySelectorAll(".live-room-choice");
+        for (var j = 0; j < choices.length; j++) {
+            (function (node) {
+                node.onselect = function () {
+                    var next = Number(node.getAttribute("data-index")), step = next - room.index;
+                    closeLiveOptions();
+                    if (step) { switchLive(step); }
+                };
+            })(choices[j]);
+        }
+        if (choices[room.index]) { Nav.focus(choices[room.index]); }
+    }
+
+    function closeLiveOptions() {
+        if (!liveOptionsOpen) { return; }
+        liveOptionsOpen = false;
+        document.body.className = document.body.className.replace(/\s*options-open/g, "");
+        el("options").className = "hidden scroll rows";
+        el("live-panel").className = "hidden";
+        el("live-room-list").innerHTML = "";
+        if (liveRoom) { showLiveUi(); }
     }
 
     function setLivePaused(on) {
@@ -5001,6 +5054,7 @@
         if (!room) { return; }
         if (room.okTimer) { clearTimeout(room.okTimer); }
         liveRoom = null;
+        closeLiveOptions();
         Player.stop();
         hideLiveUi();
         el("pause-glyph").className = "hidden";
@@ -5029,6 +5083,7 @@
     }
     function showLiveUi() {
         if (!liveRoom) { return; }
+        if (liveOptionsOpen) { return; }
         paintLiveUi();
         el("live-ui").className = "";
         if (liveUiTimer) { clearTimeout(liveUiTimer); }
