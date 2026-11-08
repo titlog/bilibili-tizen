@@ -53,3 +53,6 @@ node "$ROOT/tools/diag-verify.mjs" >/dev/null || { echo "  diagnostics upload re
 # 弹幕: parsing, dedupe and lane allocation. A lane bug does not throw — it draws
 # comments on top of each other, or none at all.
 node "$ROOT/tools/danmaku-verify.mjs" >/dev/null || { echo "  danmaku parsing or lanes regressed"; exit 1; }
+# 直播弹幕: the socket's zlib bundles, the comment filter, and the connection's
+# retries and give-ups. A decoder bug here is a quiet room, not an error.
+node "$ROOT/tools/livedm-verify.mjs" >/dev/null || { echo "  live danmaku decoding or connection regressed (node tools/livedm-verify.mjs)"; exit 1; }

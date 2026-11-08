@@ -317,6 +317,41 @@ body.density-5 .card-info-date { display: block; width: 100%; margin: 2px 0 0; f
 #live-title { font-size: 36px; }
 #live-hint { margin-top: 20px; font-size: 22px; color: #8b959e; }
 
+/* 直播弹幕设置: right of centre, above the banner (z-index 45; the toast is 60). */
+#live-dm {
+    position: absolute; right: 64px; top: 190px; width: 620px; z-index: 45;
+    background: rgba(15,20,25,0.94); border: 2px solid rgba(255,102,153,0.6);
+    border-radius: 14px; padding: 26px 32px 22px;
+}
+#live-dm-title { font-size: 30px; font-weight: 700; margin-bottom: 14px; }
+.live-dm-row {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 28px; padding: 12px 18px; margin-top: 8px;
+    border: 2px solid transparent; border-radius: 10px; color: #cbd3da;
+}
+.live-dm-row.on { border-color: #ff6699; background: rgba(255,102,153,0.16); color: #fff; }
+.live-dm-val { white-space: nowrap; }
+.live-dm-label { min-width: 120px; }
+/* The sliders: a track, the part of it filled, a round handle. Margins, not gap. */
+.live-dm-track {
+    position: relative; display: block; flex: 1; height: 8px; margin: 0 26px 0 20px;
+    background: rgba(255,255,255,0.22); border-radius: 4px;
+}
+.live-dm-fill { display: block; height: 8px; width: 0; background: #ff6699; border-radius: 4px; }
+.live-dm-thumb {
+    position: absolute; top: -9px; left: 0; width: 26px; height: 26px; margin-left: -13px;
+    background: #fff; border-radius: 13px; border: 2px solid #ff6699; box-sizing: border-box;
+}
+.live-dm-num { min-width: 86px; text-align: right; }
+.live-dm-val .end { color: #55606a; }
+#live-dm-sample {
+    margin-top: 18px; padding: 12px 18px; min-height: 90px; overflow: hidden; white-space: nowrap;
+    background: rgba(255,255,255,0.08); border-radius: 10px;
+    font-weight: 600; line-height: 1.24; color: #fff;
+    text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+}
+#live-dm-hint { margin-top: 16px; font-size: 21px; color: #8b959e; }
+
 /* 设置 → 顶栏: the panel's chips. 推荐 / 搜索 / 设置 are shown where they sit
  * but cannot be focused; the one picked up to move wears arrows. */
 #bar-chips .opt, #spare-chips .opt { font-size: 26px; padding: 12px 26px; }

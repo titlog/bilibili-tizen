@@ -88,6 +88,22 @@
     <div id="live-hint"></div>
 </div>
 
+<!-- 直播弹幕设置 (2026-11-07): 左 / 右 in a room opens it; rows are picked and
+     changed by liveKey itself, not by the focus ring. -->
+<div id="live-dm" class="hidden">
+    <div id="live-dm-title">弹幕与画质</div>
+    <div class="live-dm-row"><span class="live-dm-label">弹幕数量</span><span class="live-dm-val" id="live-dm-val0"></span></div>
+    <div class="live-dm-row"><span class="live-dm-label">透明度</span>
+        <span class="live-dm-track"><span class="live-dm-fill" id="live-dm-fill1"></span><span class="live-dm-thumb" id="live-dm-thumb1"></span></span>
+        <span class="live-dm-val live-dm-num" id="live-dm-val1"></span></div>
+    <div class="live-dm-row"><span class="live-dm-label">字号</span>
+        <span class="live-dm-track"><span class="live-dm-fill" id="live-dm-fill2"></span><span class="live-dm-thumb" id="live-dm-thumb2"></span></span>
+        <span class="live-dm-val live-dm-num" id="live-dm-val2"></span></div>
+    <div class="live-dm-row"><span class="live-dm-label">画质</span><span class="live-dm-val" id="live-dm-val3"></span></div>
+    <div id="live-dm-sample">示例弹幕 Danmaku 123</div>
+    <div id="live-dm-hint">上下键 选项 · 左右键 调整 · 确认键 / 返回键 关闭</div>
+</div>
+
 <div id="options" class="hidden scroll rows">
     <div id="panel-head">
         <div id="panel-title"></div>

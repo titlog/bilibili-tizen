@@ -16,6 +16,7 @@
  *   var r = Danmaku.renderer(containerEl)
  *   r.set(list) / r.tick(positionMs, playing) / r.pause(bool) / r.rate(x)
  *   r.density("off"|"low"|"normal"|"high") / r.clear()
+ *   r.push(item) (a live comment, now) / r.scale(x) / r.opacity(x)
  */
 var Danmaku = (function () {
     "use strict";
@@ -220,6 +221,10 @@ var Danmaku = (function () {
         var list = [], idx = 0, lastPos = -1;
         var paused = false, speed = 1, density = "normal";
         var live = [], pool = [];
+        /* The viewer's look (the live panel, 2026-11-07): size scales the font
+         * and with it the row height, so it changes how many rows fit; alpha
+         * is per comment — the CSS note on #danmaku says why not on the box. */
+        var fontScale = 1, alpha = 0.85;
         var lineH = Math.round(FONT * LINE);
         var lanes = null, laneCount = 0;
         var measureCtx = null, family = "";
@@ -236,7 +241,9 @@ var Danmaku = (function () {
         /* Widths come from canvas measureText with the container's own font,
          * not from offsetWidth: reading a layout per comment is a forced
          * reflow per comment, and a burst is dozens. */
-        function fontPx(item) { return Math.max(30, Math.min(60, Math.round(FONT * item.size / 25))); }
+        function fontPx(item) {
+            return Math.max(Math.round(30 * fontScale), Math.min(Math.round(60 * fontScale), Math.round(FONT * fontScale * item.size / 25)));
+        }
         var warmed = false;
         function warm() {
             if (warmed) { return; }
@@ -312,6 +319,7 @@ var Danmaku = (function () {
             node.style.top = (row * lineH) + "px";
             node.style.fontSize = fontPx(item) + "px";
             node.style.color = item.color;
+            node.style.opacity = alpha;
             /* Starts at its first keyframe before it is in the tree, so it is
              * never painted at left:0 for a frame. */
             node.style.transform = frames[0].transform;
@@ -384,6 +392,18 @@ var Danmaku = (function () {
                 lastPos = pos;
             },
 
+            /* 直播: one comment, drawn now. There is no media time in a room, so
+             * the lanes run on the wall clock; whoever switches the renderer
+             * back to a video must clear() first (set() does), which resets
+             * them. → false when it was not drawn (off, at the density cap,
+             * no free lane): a live comment is never queued, it is late the
+             * moment it waits. */
+            push: function (item) {
+                if (density === "off") { return false; }
+                if (live.length >= (CAPS[density] || CAPS.normal)) { return false; }
+                return spawn(item, new Date().getTime());
+            },
+
             pause: pause,
 
             rate: function (x) {
@@ -391,6 +411,27 @@ var Danmaku = (function () {
                 for (var i = 0; i < live.length; i++) {
                     try { live[i].anim.playbackRate = speed; } catch (e) {}
                 }
+            },
+
+            /* 1 is the standard size. Rows are as tall as the font, so a new
+             * size means new rows: what is on screen is cleared, the lanes
+             * start over. */
+            scale: function (x) {
+                x = Number(x);
+                if (!(x >= 0.5 && x <= 3) || x === fontScale) { return; }
+                clear();
+                fontScale = x;
+                lineH = Math.round(FONT * fontScale * LINE);
+                lanes = null;
+                laneCount = 0;
+            },
+
+            /* 0.1–1, applied to the comments already flying too. */
+            opacity: function (x) {
+                x = Number(x);
+                if (!(x >= 0.1 && x <= 1)) { return; }
+                alpha = x;
+                for (var i = 0; i < live.length; i++) { live[i].node.style.opacity = alpha; }
             },
 
             density: function (d) {

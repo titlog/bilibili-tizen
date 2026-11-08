@@ -109,6 +109,7 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
   （10-25：接收端 404 了八小时，那段时间的全丢了；认旧版本写的「没传上」，不占三分钟间隔）。**从源码装的构建也传**（1.4.1 起：#7 那台源码构建出了事，一行都没到我们这）；
   自测构建不传，`BILI_DIAG_TO=off` 不传（**这台开发机的 `~/.bilibili-tizen.conf` 里写着**，换电脑要补上），`BILI_DIAG_TO=<地址>` 传到那里。
   **桌面浏览器（UA 里没有 Tizen）一律不传**（10-23：抖音的桌面测试台没拦接收端，写到一半的代码报的错传上去两条，像两台新电视）。→ `server/README.md`
+- **直播弹幕**（11-07）：直播间里 **左 / 右 打开「弹幕与画质」面板**（数量含「关」、透明度和字号两个滑块、直播画质），第一帧之后连 WebSocket（匿名，zlib 包用 `inflate.js` 解）；日志 `danmaku:` 只数条数、不写内容。→ `docs/功能-弹幕直播画质投屏.md`
 - 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 163 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
   **能靠按键复现的 bug，就给它加一步。** 等网络的步骤返回 `WAIT` 轮询，不写死等待；每次放的视频是推荐流里随手拿的，
   一步失败先看是不是只对那一部片子成立。
@@ -280,6 +281,8 @@ app/          客户端
   js/update.js   查新版本、下载、验签名、存起来；本身随更新下发
   js/diag.js     诊断日志：记一圈去掉身份的日志，出事或手动时传给开发者；接收地址在这里（config.js 不随更新下发）
   js/danmaku.js  弹幕：取、解析、按轨道画
+  js/inflate.js  ES5 的 zlib 解码（直播弹幕的包是 zlib），由 tools/livedm-verify.mjs 对着 node 验证
+  js/livedm.js   直播弹幕：getConf 取令牌、WebSocket、拆包、挑出文字弹幕；左 / 右键开关在 app.js 的 liveKey
   js/episode-nav.js  上一集 / 下一集：先分 P、再合集（面板按钮和自动连播共用），由 tools/episode-nav-verify.mjs 验证
   js/resume.js   每个视频看到哪了 —— 按账号隔离，也按分 P 记录
   js/settings.js 跨会话保留的偏好（属于这台电视，不属于某个人）
@@ -312,6 +315,7 @@ tools/
   diag-logs.mjs       读接收端里的诊断日志（令牌在 ~/.bilibili-tizen-diag-token）
   diag-local.mjs      本机冒充接收端（:8097），给 deploy.sh --diag 用
   d1-sqlite.mjs       上面两个用的 D1 替身
+  livedm-verify.mjs   直播弹幕：inflate 对 zlib、拆包、过滤、连接重试 / 放弃（假 socket 假时钟）；--live 连一个真房间；卡发布
   danmaku-verify.mjs  弹幕：解析、去重、轨道不重叠；--browser 在桌面浏览器里量帧耗时；卡发布（node 那部分）
                       （电视上的帧耗时用 deploy.sh --dmperf 量，见「弹幕」）
   devserver.mjs       在开发机上跑 playurl/清单那套，不碰电视

@@ -48,7 +48,7 @@ for (const f of ORDER) {
 /* Browser and Tizen surface the app is allowed to assume. */
 const HOST = [
   "window", "document", "navigator", "location", "localStorage", "console",
-  "XMLHttpRequest", "MediaSource", "URL", "Image", "setTimeout", "clearTimeout",
+  "XMLHttpRequest", "WebSocket", "MediaSource", "URL", "Image", "setTimeout", "clearTimeout",
   "setInterval", "clearInterval", "Math", "JSON", "Date", "String", "Number",
   "Boolean", "Array", "Object", "RegExp", "Error", "parseInt", "parseFloat",
   "isNaN", "isFinite", "encodeURIComponent", "decodeURIComponent", "escape",
