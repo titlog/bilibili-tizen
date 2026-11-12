@@ -172,8 +172,9 @@ from OK to a picture, 1080p H.265.
 
 **Live** (直播 in the top bar): the streamers you follow who are live come first,
 then everything live on the site by popularity; inside a room, up and down change
-room the way a TV changes channel. Right opens a panel for quality and room
-selection; an optional setting also makes up/down open it. **Your own top bar**: in 设置, add or remove 直播, 动态, 我的, 稍后, 热门, 排行
+room the way a TV changes channel. Right opens a panel for live comments, quality,
+and room selection; an optional setting also makes up/down open it. Live comments
+are off by default and connect only when enabled. **Your own top bar**: in 设置, add or remove 直播, 动态, 我的, 稍后, 热门, 排行
 and any of the 30 zones, and put them in your own order (推荐 stays first, 搜索
 and 设置 last); the bar slides sideways with the focus when it does not fit. Multi-part
 uploads list their parts in one sliding row in the playback panel.

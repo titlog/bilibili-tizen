@@ -11,6 +11,10 @@ var API = (function () {
     var BASE = "https://api.bilibili.com";
     /* 直播 lives on its own host (2026-10-18). */
     var LIVE = "https://api.live.bilibili.com";
+    var liveWbiKey = "", liveWbiAt = 0;
+    var LIVE_WBI_MAP = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,
+                        33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,
+                        26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52];
     var strongState = null;
     /* Lines for the log from the detours below; app.js points it at report(). */
     var note = function () {};
@@ -615,6 +619,56 @@ var API = (function () {
     return {
         /* Which cover format this set was given, for the boot line. */
         thumbFormat: THUMB_FORMAT,
+
+        /* Live message access needs a signed WBI query. nav gives its image
+         * names even for a signed-out account (code -101), so read that one
+         * response directly; getJson correctly rejects nonzero codes elsewhere. */
+        liveDanmuInfo: function (roomId, onOk, onFail) {
+            getJson(LIVE + "/room/v1/Room/room_init?id=" + encodeURIComponent(roomId), function (room) {
+                var realId = Number(room && room.room_id) || Number(roomId);
+                if (!realId) { onFail("无效的直播间号"); return; }
+                function withKey(key) {
+                    buvid3(function (buvid) {
+                        if (!buvid) { onFail("取不到设备标识"); return; }
+                        var query = "buvid3=" + encodeURIComponent(buvid) + "&id=" + realId +
+                                    "&type=0&web_location=444.8&wts=" + Math.floor(new Date().getTime() / 1000);
+                        var url = LIVE + "/xlive/web-room/v1/index/getDanmuInfo?" +
+                                  query + "&w_rid=" + MD5(query + key);
+                        getJson(url, function (info) {
+                            if (!info || !info.token || !info.host_list || !info.host_list.length) {
+                                onFail("没有弹幕服务器"); return;
+                            }
+                            onOk({ roomId: realId, buvid: buvid, token: info.token, hosts: info.host_list });
+                        }, onFail, true);
+                    });
+                }
+                if (liveWbiKey && new Date().getTime() - liveWbiAt < 3600000) {
+                    withKey(liveWbiKey); return;
+                }
+                var xhr = new XMLHttpRequest(), done = false;
+                function fail(why) { if (!done) { done = true; onFail(why); } }
+                xhr.open("GET", BASE + "/x/web-interface/nav", true);
+                xhr.timeout = 10000;
+                xhr.onreadystatechange = function () {
+                    if (xhr.readyState !== 4 || done) { return; }
+                    if (xhr.status !== 200) { fail("WBI HTTP " + xhr.status); return; }
+                    var images;
+                    try { images = JSON.parse(xhr.responseText).data.wbi_img; }
+                    catch (e) { fail("取不到 WBI 图片名"); return; }
+                    if (!images || !images.img_url || !images.sub_url) { fail("没有 WBI 图片名"); return; }
+                    function stem(url) { return String(url).split("/").pop().split(".")[0]; }
+                    var raw = stem(images.img_url) + stem(images.sub_url), mixed = "";
+                    for (var i = 0; i < LIVE_WBI_MAP.length; i++) { mixed += raw.charAt(LIVE_WBI_MAP[i]); }
+                    liveWbiKey = mixed.slice(0, 32);
+                    liveWbiAt = new Date().getTime();
+                    done = true;
+                    withKey(liveWbiKey);
+                };
+                xhr.onerror = function () { fail("WBI 网络错误"); };
+                xhr.ontimeout = function () { fail("WBI 超时"); };
+                xhr.send();
+            }, onFail, true);
+        },
 
         onNote: function (fn) { note = fn; },
         bvidOf: bvidOf,

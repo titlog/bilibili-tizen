@@ -219,7 +219,7 @@ var Danmaku = (function () {
     function renderer(box) {
         var list = [], idx = 0, lastPos = -1;
         var paused = false, speed = 1, density = "normal";
-        var live = [], pool = [];
+        var live = [], pool = [], liveCount = 0;
         var lineH = Math.round(FONT * LINE);
         var lanes = null, laneCount = 0;
         var measureCtx = null, family = "";
@@ -350,6 +350,15 @@ var Danmaku = (function () {
         }
 
         return {
+            pushLive: function (text) {
+                if (density === "off" || paused || typeof text !== "string") { return; }
+                text = text.replace(/\s+/g, " ").slice(0, 120);
+                if (!text) { return; }
+                liveCount++;
+                if (density === "low" && liveCount % 3 !== 0) { return; }
+                if (live.length >= (CAPS[density] || CAPS.normal)) { return; }
+                spawn({ text: text, mode: 1, size: 25, color: "#fff" }, new Date().getTime());
+            },
             set: function (l) {
                 clear();
                 list = l || [];

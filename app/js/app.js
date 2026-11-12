@@ -4453,13 +4453,44 @@
      * change rooms as before. A failed stream gets a fresh signed address,
      * trying the other CDN host first;
      * three failures without a good minute in between and the room is left.
-     * No live danmaku yet: that is a WebSocket of its own, left for later. */
+     * Live comments use a separate, read-only socket opened after the picture. */
     var liveRoom = null;
+    var liveDm = null;
     var liveOptionsOpen = false;
     var liveUiTimer = null;
     function liveHint() {
         return "确认键 暂停/播放 · 上下键 " + (livePanelEnabled() ? "直播间列表" : "换直播间") +
-               " · 右键 画质/选房 · 返回键 退出";
+               " · 右键 弹幕/画质 · 返回键 退出";
+    }
+    function liveDanmakuLevel() {
+        var level = Settings.get("liveDanmaku", "off");
+        return DM_NAMES[level] ? level : "off";
+    }
+    function stopLiveDanmaku() {
+        if (liveDm) { liveDm.close(); liveDm = null; }
+        clearDanmaku();
+    }
+    function startLiveDanmaku() {
+        var room = liveRoom, level = liveDanmakuLevel();
+        if (!room || !room.timed || level === "off" || !room.item || !window.WebSocket) { return; }
+        var renderer = danmakuRenderer();
+        if (!renderer) { return; }
+        renderer.density(level);
+        renderer.rate(1);
+        renderer.pause(Player.userPaused());
+        showDanmaku(true);
+        if (liveDm && liveDm.roomId === String(room.item.roomid)) { return; }
+        stopLiveDanmaku();
+        renderer.density(level);
+        renderer.pause(Player.userPaused());
+        showDanmaku(true);
+        var activeId = String(room.item.roomid);
+        var connection = LiveDanmaku.connect(activeId, function (comment) {
+            if (liveRoom === room && String(room.item.roomid) === activeId) { renderer.pushLive(comment); }
+        }, function (why) {
+            if (liveRoom === room && String(room.item.roomid) === activeId) { report("live", why); }
+        });
+        liveDm = { roomId: activeId, close: connection.close };
     }
     var LIVE_PAUSE_LIMIT = 20000;   /* a live window is seconds wide; longer than this, start at the edge again */
     /* Tizen 3.0 (issue #5, 10-22): on-demand DASH plays through MSE, but every
@@ -4847,6 +4878,7 @@
                 room.timedAt = room.clockMovedAt = new Date().getTime();
                 report("live", "到画面 " + Player.timings());
                 showLiveUi();
+                startLiveDanmaku();
                 if (Player.mode() === "live") {
                     liveMseOk = true;
                     if (liveNative) {
@@ -5012,6 +5044,29 @@
         el("live-panel").className = "";
         el("live-panel-title").textContent = v.title || "直播";
         el("live-panel-meta").textContent = [v.author, v.area, room.qnName].filter(function (x) { return !!x; }).join(" · ");
+        function paintLiveDm() {
+            var dhtml = "", level = liveDanmakuLevel();
+            for (var d = 0; d < DM_LEVELS.length; d++) {
+                var choice = DM_LEVELS[d];
+                dhtml += '<div class="opt focusable' + (choice === level ? " current" : "") +
+                         '" data-level="' + choice + '">' + DM_NAMES[choice] + '</div>';
+            }
+            el("live-dm").innerHTML = dhtml;
+            var dchips = el("live-dm").querySelectorAll(".opt");
+            for (var x = 0; x < dchips.length; x++) {
+                (function (node) {
+                    node.onselect = function () {
+                        var chosen = node.getAttribute("data-level");
+                        Settings.set("liveDanmaku", chosen);
+                        if (chosen === "off") { stopLiveDanmaku(); }
+                        else { startLiveDanmaku(); }
+                        paintLiveDm();
+                        Nav.focus(el("live-dm").querySelector('.opt[data-level="' + chosen + '"]'));
+                    };
+                })(dchips[x]);
+            }
+        }
+        paintLiveDm();
         var qhtml = '<div class="opt focusable' + (!room.qualityChoice ? " current" : "") +
                     '" data-qn="0">自动（最高可用）</div>';
         for (var q = 0; q < room.qnOptions.length; q++) {
@@ -5070,6 +5125,7 @@
         el("live-panel").className = "hidden";
         el("live-room-list").innerHTML = "";
         el("live-quality").innerHTML = "";
+        el("live-dm").innerHTML = "";
         if (liveRoom) { showLiveUi(); }
     }
 
@@ -5077,6 +5133,7 @@
         var room = liveRoom;
         if (on) {
             Player.pause();
+            if (dm) { dm.pause(true); }
             room.pausedAt = new Date().getTime();
             el("pause-glyph").className = "";
             showLiveUi();
@@ -5094,6 +5151,7 @@
         }
         room.pausedAt = 0;
         Player.resume();
+        if (dm) { dm.pause(false); }
         showLiveUi();
     }
 
@@ -5105,6 +5163,7 @@
             return;
         }
         room.index = next;
+        stopLiveDanmaku();
         room.tries = 0;
         room.pausedAt = 0;
         if (room.okTimer) { clearTimeout(room.okTimer); room.okTimer = null; }
@@ -5116,6 +5175,7 @@
         var room = liveRoom;
         if (!room) { return; }
         if (room.okTimer) { clearTimeout(room.okTimer); }
+        stopLiveDanmaku();
         liveRoom = null;
         closeLiveOptions();
         Player.stop();

@@ -44,7 +44,8 @@ var Boot = (function () {
      * rewrites it) and this file. tools/lint.mjs reads this list; a bundle
      * carries its own, so a release can add a file. */
     var SCRIPTS = ["compat.js", "md5.js", "mpd.js", "qr.js", "accounts.js", "auth.js", "resume.js",
-                   "settings.js", "diag.js", "api.js", "nav.js", "player.js", "danmaku.js", "episode-nav.js", "app.js", "update.js", "selftest.js"];
+                   "settings.js", "diag.js", "api.js", "nav.js", "player.js", "danmaku.js", "live-danmaku.js",
+                   "episode-nav.js", "app.js", "update.js", "selftest.js"];
 
     var K_BUNDLE = "bili.update.bundle", K_META = "bili.update.meta",
         K_BOOTING = "bili.update.booting", K_BAD = "bili.update.bad";

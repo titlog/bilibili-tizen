@@ -31,10 +31,10 @@ const hooked = source.replace(anchor, `
 
 const nodes = {};
 for (const id of ["options", "live-panel", "live-panel-title", "live-panel-meta",
-    "live-room-list", "live-quality", "live-ui", "live-title", "live-meta", "live-hint"]) {
+    "live-room-list", "live-quality", "live-dm", "live-ui", "live-title", "live-meta", "live-hint"]) {
     nodes[id] = { className: id === "options" || id === "live-panel" ? "hidden" : "", textContent: "" };
 }
-let choices = [], qualityChips = [];
+let choices = [], qualityChips = [], dmChips = [];
 function chips(id, attr, top, into) {
     Object.defineProperty(nodes[id], "innerHTML", {
         get() { return this.html || ""; },
@@ -47,14 +47,15 @@ function chips(id, attr, top, into) {
             into(found);
         },
     });
-    nodes[id].querySelectorAll = () => qualityChips;
+    nodes[id].querySelectorAll = () => id === "live-quality" ? qualityChips : dmChips;
     nodes[id].querySelector = (selector) => {
-        const list = qualityChips;
+        const list = id === "live-quality" ? qualityChips : dmChips;
         const value = /\[data-(?:qn|level)="([^"]+)"\]/.exec(selector);
         return value ? list.find((x) => x.value === value[1]) : list.find((x) => x.className.includes("current"));
     };
 }
 chips("live-quality", "data-qn", 70, (list) => { qualityChips = list; });
+chips("live-dm", "data-level", 10, (list) => { dmChips = list; });
 Object.defineProperty(nodes["live-room-list"], "innerHTML", {
     get() { return this.html || ""; },
     set(html) {
@@ -73,7 +74,7 @@ Object.defineProperty(nodes["live-room-list"], "innerHTML", {
 nodes["live-room-list"].querySelectorAll = () => choices;
 const document = {
     getElementById: (id) => nodes[id] || null,
-    querySelectorAll: (selector) => selector === "#options .focusable" ? qualityChips.concat(choices) : [],
+    querySelectorAll: (selector) => selector === "#options .focusable" ? dmChips.concat(qualityChips, choices) : [],
     addEventListener: () => {},
     body: { className: "" },
 };
@@ -149,7 +150,7 @@ focus = choices[3];
 assert.equal(test.key(KEY.UP), false, "up from a lower row navigates within the sheet");
 focus = choices[0];
 assert.equal(test.key(KEY.UP), false, "up from a room reaches picture settings");
-focus = qualityChips[0];
+focus = dmChips[0];
 assert.equal(test.key(KEY.UP), true, "up from the first control closes the sheet");
 assert.equal(test.isOpen(), false);
 
@@ -183,6 +184,8 @@ test.setStart(() => { restarts++; });
 sandbox.Settings.set("liveDirectionPanel", false);
 assert.equal(test.key(KEY.RIGHT), true, "channel mode also offers the settings panel");
 assert.equal(focus.value, "0", "right opens with quality controls focused");
+dmChips.find((x) => x.value === "low").onselect();
+assert.equal(sandbox.Settings.get("liveDanmaku"), "low", "live comments setting is saved");
 qualityChips.find((x) => x.value === "400").onselect();
 assert.equal(room.qnAsk, 400, "selected live tier is requested");
 assert.equal(room.qualityChoice, 400);
