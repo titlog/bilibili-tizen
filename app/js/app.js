@@ -2552,6 +2552,7 @@
         liveNoFmp4 = !!on;
         if (on && liveRoom) { liveRoom.nativeFor = ""; Player.stop(); startLiveRoom(""); }
     };
+    window.__stLiveControls = function (on) { livePanelOverride = on === null ? null : !!on; };
     window.__stLiveRoom = function () {
         return liveRoom && { room: liveRoom.nativeFor, fmt: liveRoom.nativeFmt, used: liveRoom.qnUsed,
                              below: liveRoom.tsBelow, gaveUp: liveRoom.tsGaveUp, token: liveRoom.token, moved: liveRoom.moved,
@@ -3160,6 +3161,13 @@
         return Settings.get("showSubtitles", false) === true;
     }
 
+    /* Off keeps the original channel-style controls until the viewer opts in. */
+    var livePanelOverride = null;   /* selftest only; does not change saved settings */
+    function livePanelEnabled() {
+        return livePanelOverride === null
+            ? Settings.get("liveDirectionPanel", false) === true : livePanelOverride;
+    }
+
     /* 弹幕 (2026-10-18; danmaku.js does the fetching and drawing). One
      * setting for the television — off, sparse, standard, dense — shared by the
      * settings page and the row in the play panel. Fetched after the first
@@ -3539,6 +3547,10 @@
             '<div class="actions" style="margin-top:20px"><div class="btn focusable" id="btn-danmaku-alpha"></div>' +
             '<div class="btn focusable" id="btn-danmaku-size"></div></div>' +
 
+            '<div class="section">直播</div>' +
+            '<div class="actions"><div class="btn focusable" id="btn-live-direction"></div></div>' +
+            '<div class="me-sub" style="margin-top:24px">开：上下键打开直播间列表，确认后切换。关：上下键直接切换直播间。</div>' +
+
             '<div class="section">画质</div>' +
             '<div class="actions"><div class="btn focusable" id="btn-quality"></div></div>' +
             '<div class="me-sub" style="margin-top:24px">' + (Auth.isLoggedIn() ? "" : "没登录时清晰度更低，先去「我的」扫码登录就能用 1080P。") +
@@ -3619,6 +3631,16 @@
         dmSizeBtn.onselect = function () {
             setDanmakuSize(nextPreset([0.8, 1, 1.2, 1.5], danmakuSize()));
             paintDmLook();
+        };
+        var liveDirectionBtn = el("btn-live-direction");
+        function paintLiveDirection() {
+            liveDirectionBtn.textContent = "直播方向键打开面板：" + (livePanelEnabled() ? "开" : "关");
+        }
+        paintLiveDirection();
+        liveDirectionBtn.onselect = function () {
+            Settings.set("liveDirectionPanel", !livePanelEnabled());
+            paintLiveDirection();
+            report("settings", "直播方向键打开面板=" + (livePanelEnabled() ? "开" : "关"));
         };
 
         /* Self-update (update.js), in a few words: only what the viewer would
@@ -4683,19 +4705,25 @@
      * A room is opened from a card on the 直播 tab and owns the screen until
      * 返回. Kept apart from `playing` on purpose: everything keyed on that —
      * resume points, history reports, the scrub, the banner's hide logic, the
-     * panel, danmaku, subtitles, the recovery ladders — belongs to a video
-     * with a length, and none of it means anything at the live edge.
+     * video-only panel actions, danmaku, subtitles, the recovery ladders —
+     * belongs to a video with a length, and none of it means anything at the
+     * live edge.
      *
-     * 上 / 下 change room, through the list the card came from, the way a
-     * television changes channel. A stream that fails is reconnected with a
-     * fresh address (they are signed and expire), the other CDN host first;
+     * With the direction-panel setting on, 上 / 下 open a room chooser over the
+     * playing stream; switching needs explicit selection. With it off, they
+     * change rooms as before. A failed stream gets a fresh signed address,
+     * trying the other CDN host first;
      * three failures without a good minute in between and the room is left.
      * 弹幕 are a WebSocket of their own (livedm.js), opened with the first
      * picture, switched and tuned from the panel 左 / 右 opens — see
      * startLiveDanmaku and dmPanel. */
     var liveRoom = null;
+    var liveOptionsOpen = false;
     var liveUiTimer = null;
-    var LIVE_HINT = "确认键 暂停/播放 · 上下键 换直播间 · 左右键 弹幕与画质 · 返回键 退出";
+    function liveHint() {
+        return "确认键 暂停/播放 · 上下键 " + (livePanelEnabled() ? "直播间列表" : "换直播间") +
+               " · 左右键 弹幕与画质 · 返回键 退出";
+    }
     var LIVE_PAUSE_LIMIT = 20000;   /* a live window is seconds wide; longer than this, start at the edge again */
     /* Tizen 3.0 (issue #5, 10-22): on-demand DASH plays through MSE, but every
      * live room failed with the element's decode error (Shaka 3016, data[0]=3)
@@ -5110,7 +5138,7 @@
             room.clockPos = pos;
             room.clockMovedAt = tNow;
         } else if (kind === "buffering") {
-            el("live-hint").textContent = data ? "缓冲中…" : LIVE_HINT;
+            el("live-hint").textContent = data ? "缓冲中…" : liveHint();
             if (data) { showLiveUi(); }
             /* AVPlay only: Shaka's live path logs its own. One line per stall, at its end. */
             if (room.nativeFmt) {
@@ -5208,6 +5236,14 @@
 
     function liveKey(k) {
         if (dmPanel.open) { return dmPanelKey(k); }
+        if (liveOptionsOpen) {
+            if (k === Nav.KEY.RETURN) { closeLiveOptions(); return true; }
+            if (k === Nav.KEY.UP && nothingAboveInPanel(Nav.current())) {
+                closeLiveOptions(); return true;
+            }
+            if (k === Nav.KEY.UP || k === Nav.KEY.DOWN || k === Nav.KEY.LEFT ||
+                    k === Nav.KEY.RIGHT || k === Nav.KEY.ENTER) { return false; }
+        }
         switch (k) {
             case Nav.KEY.ENTER:
             case Nav.KEY.PLAY_PAUSE:
@@ -5218,7 +5254,9 @@
                 if (!Player.userPaused()) { setLivePaused(true); } return true;
             case Nav.KEY.UP:
             case Nav.KEY.DOWN:
-                switchLive(k === Nav.KEY.DOWN ? 1 : -1); return true;
+                if (livePanelEnabled()) { openLiveOptions(); }
+                else { switchLive(k === Nav.KEY.DOWN ? 1 : -1); }
+                return true;
             case Nav.KEY.LEFT:
             case Nav.KEY.RIGHT:
                 openDmPanel(); return true;
@@ -5229,6 +5267,49 @@
             default:
                 showLiveUi(); return true;
         }
+    }
+
+    function openLiveOptions() {
+        if (!liveRoom || liveOptionsOpen) { return; }
+        var room = liveRoom, v = room.item || room.list[room.index];
+        liveOptionsOpen = true;
+        hideLiveUi();
+        document.body.className += " options-open";
+        el("options").className = "scroll rows live-options";
+        el("options").scrollTop = 0;
+        el("live-panel").className = "";
+        el("live-panel-title").textContent = v.title || "直播";
+        el("live-panel-meta").textContent = [v.author, v.area, room.qnName].filter(function (x) { return !!x; }).join(" · ");
+        var html = "";
+        for (var i = 0; i < room.list.length; i++) {
+            var item = room.list[i];
+            html += '<div class="live-room-choice focusable' + (i === room.index ? " current" : "") +
+                    '" data-index="' + i + '"><div class="live-room-choice-title">' + esc(item.title || item.author || "直播间") +
+                    '</div><div class="live-room-choice-meta">' + esc(item.author || "") +
+                    (i === room.index ? " · 正在观看" : "") + '</div></div>';
+        }
+        el("live-room-list").innerHTML = html;
+        var choices = el("live-room-list").querySelectorAll(".live-room-choice");
+        for (var j = 0; j < choices.length; j++) {
+            (function (node) {
+                node.onselect = function () {
+                    var next = Number(node.getAttribute("data-index")), step = next - room.index;
+                    closeLiveOptions();
+                    if (step) { switchLive(step); }
+                };
+            })(choices[j]);
+        }
+        if (choices[room.index]) { Nav.focus(choices[room.index]); }
+    }
+
+    function closeLiveOptions() {
+        if (!liveOptionsOpen) { return; }
+        liveOptionsOpen = false;
+        document.body.className = document.body.className.replace(/\s*options-open/g, "");
+        el("options").className = "hidden scroll rows";
+        el("live-panel").className = "hidden";
+        el("live-room-list").innerHTML = "";
+        if (liveRoom) { showLiveUi(); }
     }
 
     function setLivePaused(on) {
@@ -5281,6 +5362,7 @@
         if (dm) { dm.pause(false); }
         closeDmPanel(true);
         liveRoom = null;
+        closeLiveOptions();
         Player.stop();
         hideLiveUi();
         el("pause-glyph").className = "hidden";
@@ -5306,10 +5388,11 @@
         meta.push("弹幕：" + DM_NAMES[danmakuLevel()]);
         el("live-title").textContent = v.title || "";
         el("live-meta").textContent = meta.join(" · ");
-        el("live-hint").textContent = LIVE_HINT;
+        el("live-hint").textContent = liveHint();
     }
     function showLiveUi() {
         if (!liveRoom) { return; }
+        if (liveOptionsOpen) { return; }
         paintLiveUi();
         el("live-ui").className = "";
         if (liveUiTimer) { clearTimeout(liveUiTimer); }
