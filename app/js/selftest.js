@@ -65,6 +65,20 @@ var SelfTest = (function () {
      * timers, so an asynchronous answer is parked here for the next step. */
     var probe = {};
 
+    /* Live uses the same bottom-sheet pattern as a video: a direction opens
+     * the chooser, and only confirming a room changes the stream. */
+    function liveSwitch(step) {
+        key(KEY.DOWN);
+        var current = document.querySelector("#live-room-list .live-room-choice.current");
+        if (!visible("options") || !current) { return false; }
+        var next = Number(current.getAttribute("data-index")) + step;
+        var choice = document.querySelector('#live-room-list .live-room-choice[data-index="' + next + '"]');
+        if (!choice) { key(KEY.RETURN); return false; }
+        Nav.focus(choice);
+        key(KEY.ENTER);
+        return true;
+    }
+
     /* Live on AVPlay: switch the room over once, then wait for the native
      * player's clock to move a second and a half. */
     function liveNativeStep(force) {
@@ -1808,8 +1822,8 @@ var SelfTest = (function () {
             return right && left ? null : ("焦点在页签上却看不见：" + (right ? "" : "设置 ") + (left ? "" : "推荐"));
         }],
 
-        /* 直播 (2026-10-18): the tab lists rooms, the first plays, 下 changes
-         * room, 返回 lands on the card of the room last watched. */
+        /* 直播: verify both direction modes. The legacy mode changes rooms;
+         * the optional panel changes rooms only after confirmation. */
         ["直播：页签里有直播间", 500, function () {
             if (!probe.liveTab) {
                 probe.liveTab = true;
@@ -1829,11 +1843,34 @@ var SelfTest = (function () {
             if (visible("shell")) { return "退回了网格（直播间打不开，看 live: 那几行）"; }
             return livePlaying() ? null : WAIT;
         }, 30000, "30 秒没出画面"],
-        ["直播：下键换一个直播间，出画面", 300, function () {
+        ["直播：选项关时上下键直接换直播间", 300, function () {
+            var st = window.__stLiveRoom() || {}, p = probe.liveChannel;
+            if (!p) {
+                p = probe.liveChannel = { first: st.room, back: false };
+                window.__stLiveControls(false);
+                key(KEY.DOWN);
+                return WAIT;
+            }
+            if (visible("options")) { return "选项关着却打开了面板"; }
+            if (!p.back) {
+                if (st.room === p.first || !livePlaying()) { return WAIT; }
+                p.back = true;
+                key(KEY.UP);
+                return WAIT;
+            }
+            return st.room === p.first && livePlaying() ? null : WAIT;
+        }, 60000, "上下键没有切走再切回原直播间"],
+        ["直播：下键打开面板，确认下一个直播间后出画面", 300, function () {
             if (!probe.liveNext) {
                 probe.liveNext = true;
+                window.__stLiveControls(true);
                 probe.liveWas = document.getElementById("live-meta").textContent;
                 key(KEY.DOWN);
+                if (!visible("options")) { return "下键没有打开直播面板"; }
+                key(KEY.RIGHT);
+                var choice = Nav.current();
+                if (!choice || choice.getAttribute("data-index") !== "1") { return "右键没有选中下一个直播间"; }
+                key(KEY.ENTER);
                 return WAIT;
             }
             if (visible("shell")) { return "退回了网格"; }
@@ -1883,17 +1920,17 @@ var SelfTest = (function () {
             post("直播间 " + st.room + " 降到 qn" + st.used + "，还是 MSE，出画面了");
             return null;
         }, 30000, "30 秒没降档出画面（看 live: 那几行）"],
-        ["直播：上键回到前一个直播间，还是 MSE，出画面", 300, function () {
+        ["直播：面板选回前一个直播间，还是 MSE，出画面", 300, function () {
             if (!probe.decodeBack) {
                 probe.decodeBack = document.getElementById("live-meta").textContent;
-                key(KEY.UP);
+                if (!liveSwitch(-1)) { return "面板里没有前一个直播间"; }
                 return WAIT;
             }
             if (visible("shell")) { return "退回了网格（看 live: 那几行）"; }
             if (document.getElementById("live-meta").textContent === probe.decodeBack) { return WAIT; }
             if (Player.mode() === "avplay") { return "前一个直播间走了 AVPlay"; }
             if (Player.mode() !== "live" || !livePlaying()) { return WAIT; }
-            key(KEY.DOWN);   /* back to the room the steps below are in */
+            liveSwitch(1);   /* back to the room the steps below are in */
             return null;
         }, 30000, "30 秒没出画面"],
         /* 10-23: one room here was Shaka 4032 (nothing in its playlist this
@@ -1953,7 +1990,7 @@ var SelfTest = (function () {
         ["直播：AVPlay 先放 HTTP-FLV，出画面、时间在走", 300, function () {
             var st = window.__stLiveRoom() || {}, f = probe.flv;
             function back(r) {
-                for (var i = 0; i < f.hops; i++) { key(KEY.UP); }
+                for (var i = 0; i < f.hops; i++) { liveSwitch(-1); }
                 return r;
             }
             if (!f) {
@@ -1968,7 +2005,7 @@ var SelfTest = (function () {
                 f.room = st.room;
                 f.hops++;
                 f.t0 = -1;
-                key(KEY.DOWN);
+                liveSwitch(1);
                 return WAIT;
             }
             if (Player.mode() !== "avplay" || visible("player-loading") || st.fmt !== "HTTP-FLV") { return WAIT; }
@@ -1992,7 +2029,7 @@ var SelfTest = (function () {
             /* Back to the room the run was in, for the 返回 step below. */
             function done(r) {
                 window.__stLiveNative(false);
-                for (var i = 0; i < ts.hops; i++) { key(KEY.UP); }
+                for (var i = 0; i < ts.hops; i++) { liveSwitch(-1); }
                 return r;
             }
             if (!ts) {
@@ -2007,7 +2044,7 @@ var SelfTest = (function () {
                 if (ts.hops >= 3) { post("连着 4 个直播间的 TS 清单都不通，降档这条路走不到，跳过"); return done(null); }
                 ts.hops++;
                 post("直播间 " + st.room + " 的 TS 清单不通，换下一个");
-                key(KEY.DOWN);
+                liveSwitch(1);
                 return WAIT;
             }
             if (visible("shell")) { return "退回了网格（看 live: 那几行）"; }
@@ -2080,6 +2117,7 @@ var SelfTest = (function () {
         }, 60000, "60 秒没在 AVPlay 上放起 FLV 或 TS（看 live: 那几行）"],
         ["直播：返回，焦点落在最后看的那个直播间", 600, function () {
             key(KEY.RETURN);
+            window.__stLiveControls(null);
             var f = document.querySelector("#feed-grid .card.focused");
             var at = f && f.getAttribute("data-i");
             /* Back on 推荐, the way the run is expected to end. */
