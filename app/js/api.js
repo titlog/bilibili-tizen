@@ -765,6 +765,15 @@ var API = (function () {
                 best = best || none;
                 ts = ts || none;
                 flv = flv || none;
+                var tiers = {}, qualities = [];
+                [best, ts, flv].forEach(function (stream) {
+                    if (stream.qn) { tiers[stream.qn] = true; }
+                    stream.accept.forEach(function (q) { tiers[Number(q)] = true; });
+                });
+                Object.keys(tiers).forEach(function (q) {
+                    if (Number(q) > 0) { qualities.push({ qn: Number(q), name: names[q] || ("qn" + q) }); }
+                });
+                qualities.sort(function (a, b) { return b.qn - a.qn; });
                 onOk({
                     urls: urls,
                     qn: best.qn, qnName: names[best.qn] || ("qn" + best.qn), codec: best.codec,
@@ -774,7 +783,7 @@ var API = (function () {
                     tsAcceptQn: ts.accept.map(Number),
                     flvUrls: urlsOf(flv), flvQn: flv.qn, flvQnName: names[flv.qn] || ("qn" + flv.qn), flvCodec: flv.codec,
                     flvAcceptQn: flv.accept.map(Number),
-                    signed: signed, shape: shape
+                    signed: signed, shape: shape, qualities: qualities
                 });
             }
             getJson(url, function (d) { pick(d, signedIn); }, function (why) {

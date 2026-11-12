@@ -3444,10 +3444,10 @@
         paintBarChips();
 
         var quality = el("btn-quality");
-        function paintQuality() { quality.textContent = "画质上限：" + QN_LABELS[Settings.qnCap()]; }
+        function paintQuality() { quality.textContent = "画质上限：" + QN_LABELS[Settings.savedQnCap()]; }
         paintQuality();
         quality.onselect = function () {
-            var steps = Settings.qnSteps(), at = steps.indexOf(Settings.qnCap());
+            var steps = Settings.qnSteps(), at = steps.indexOf(Settings.savedQnCap());
             Settings.set("maxQn", steps[(at + 1) % steps.length]);
             paintQuality();
             report("settings", "画质上限=qn" + Settings.qnCap());
@@ -4458,7 +4458,8 @@
     var liveOptionsOpen = false;
     var liveUiTimer = null;
     function liveHint() {
-        return "确认键 暂停/播放 · 上下键 " + (livePanelEnabled() ? "直播间列表" : "换直播间") + " · 返回键 退出";
+        return "确认键 暂停/播放 · 上下键 " + (livePanelEnabled() ? "直播间列表" : "换直播间") +
+               " · 右键 画质/选房 · 返回键 退出";
     }
     var LIVE_PAUSE_LIMIT = 20000;   /* a live window is seconds wide; longer than this, start at the edge again */
     /* Tizen 3.0 (issue #5, 10-22): on-demand DASH plays through MSE, but every
@@ -4556,7 +4557,8 @@
         if (index < 0) { list = [v]; index = 0; }
         liveRoom = { list: list, index: index, tries: 0, token: 0, item: null,
                      qnName: "", pausedAt: 0, timed: false, failing: false, okTimer: null,
-                     nativeFmt: "", nativeFor: "", qnAsk: 0, qnUsed: 0, qnAccept: [], tsBelow: 0, tsGaveUp: false, steps: 0,
+                     nativeFmt: "", nativeFor: "", qnAsk: 0, qnUsed: 0, qnAccept: [], qnOptions: [], qualityChoice: 0,
+                     tsBelow: 0, tsGaveUp: false, steps: 0,
                      timedAt: 0, moved: false, clockPos: -1, clockMovedAt: 0, bufAt: 0, mseRefused: false, mseSteps: 0, mseTry: false,
                      tsSilent: false, flvGaveUp: false };
         startLiveRoom("");
@@ -4579,6 +4581,8 @@
         if (room.nativeFor !== String(v.roomid)) {
             room.nativeFor = String(v.roomid);
             room.qnAsk = 0;
+            room.qualityChoice = 0;
+            room.qnOptions = [];
             room.tsBelow = 0;
             room.tsGaveUp = false;
             room.steps = 0;
@@ -4597,6 +4601,7 @@
         Player.startTiming();
         API.livePlay(v.roomid, function (p) {
             if (liveRoom !== room || token !== room.token) { return; }
+            room.qnOptions = p.qualities || [];
             if (liveNoFmp4) { p.urls = []; p.shape = "（自测：当作没有 HLS-fMP4）" + p.shape; }
             room.qnName = p.urls.length ? p.qnName : p.tsQnName;
             var url = p.urls.length ? p.urls[room.tries % p.urls.length] : "";
@@ -4985,6 +4990,8 @@
                 if (livePanelEnabled()) { openLiveOptions(); }
                 else { switchLive(k === Nav.KEY.DOWN ? 1 : -1); }
                 return true;
+            case Nav.KEY.RIGHT:
+                openLiveOptions(true); return true;
             case Nav.KEY.RETURN:
                 stopLive(); return true;
             case Nav.KEY.EXIT:
@@ -4994,7 +5001,7 @@
         }
     }
 
-    function openLiveOptions() {
+    function openLiveOptions(focusControls) {
         if (!liveRoom || liveOptionsOpen) { return; }
         var room = liveRoom, v = room.item || room.list[room.index];
         liveOptionsOpen = true;
@@ -5005,6 +5012,33 @@
         el("live-panel").className = "";
         el("live-panel-title").textContent = v.title || "直播";
         el("live-panel-meta").textContent = [v.author, v.area, room.qnName].filter(function (x) { return !!x; }).join(" · ");
+        var qhtml = '<div class="opt focusable' + (!room.qualityChoice ? " current" : "") +
+                    '" data-qn="0">自动（最高可用）</div>';
+        for (var q = 0; q < room.qnOptions.length; q++) {
+            var tier = room.qnOptions[q];
+            qhtml += '<div class="opt focusable' + (room.qualityChoice === tier.qn ? " current" : "") +
+                     '" data-qn="' + tier.qn + '">' + esc(tier.name) + '</div>';
+        }
+        el("live-quality").innerHTML = qhtml;
+        var qchips = el("live-quality").querySelectorAll(".opt");
+        for (var c = 0; c < qchips.length; c++) {
+            (function (node) {
+                node.onselect = function () {
+                    var chosen = Number(node.getAttribute("data-qn"));
+                    if (chosen === room.qualityChoice) { return; }
+                    room.qualityChoice = chosen;
+                    room.qnAsk = chosen;
+                    room.tries = 0;
+                    room.steps = room.mseSteps = 0;
+                    room.mseRefused = room.tsGaveUp = room.flvGaveUp = room.tsSilent = false;
+                    room.tsBelow = 0;
+                    closeLiveOptions();
+                    Player.stop();
+                    report("live", "手动选择画质 qn" + (chosen || "自动"));
+                    startLiveRoom("正在切换画质…");
+                };
+            })(qchips[c]);
+        }
         var html = "";
         for (var i = 0; i < room.list.length; i++) {
             var item = room.list[i];
@@ -5024,7 +5058,8 @@
                 };
             })(choices[j]);
         }
-        if (choices[room.index]) { Nav.focus(choices[room.index]); }
+        if (focusControls) { Nav.focus(el("live-quality").querySelector(".opt.current")); }
+        else if (choices[room.index]) { Nav.focus(choices[room.index]); }
     }
 
     function closeLiveOptions() {
@@ -5034,6 +5069,7 @@
         el("options").className = "hidden scroll rows";
         el("live-panel").className = "hidden";
         el("live-room-list").innerHTML = "";
+        el("live-quality").innerHTML = "";
         if (liveRoom) { showLiveUi(); }
     }
 
@@ -5585,6 +5621,38 @@
 
     /* The settings page's names for the cap (Settings.qnSteps). */
     var QN_LABELS = { 120: "4K（最高）", 112: "1080P 高码率", 80: "1080P", 64: "720P", 32: "480P" };
+    var videoQnOverride = { bvid: "", qn: 0 };
+
+    function paintVideoQuality() {
+        var qn = videoQnOverride.qn, steps = Settings.qnSteps();
+        var choices = [{ qn: 0, label: "自动（设置上限 " + QN_LABELS[Settings.savedQnCap()] + "）" }];
+        for (var i = 0; i < steps.length; i++) {
+            choices.push({ qn: steps[i], label: QN_LABELS[steps[i]] });
+        }
+        var html = "";
+        for (var j = 0; j < choices.length; j++) {
+            html += '<div class="opt focusable' + (choices[j].qn === qn ? " current" : "") +
+                    '" data-qn="' + choices[j].qn + '">' + esc(choices[j].label) + '</div>';
+        }
+        el("opt-quality").innerHTML = html;
+        var chips = el("opt-quality").querySelectorAll(".opt");
+        for (var k = 0; k < chips.length; k++) {
+            (function (node) {
+                node.onselect = function () {
+                    if (!playing) { return; }
+                    var chosen = Number(node.getAttribute("data-qn"));
+                    if (chosen === videoQnOverride.qn) { return; }
+                    var detail = playing.detail, cid = playing.cid;
+                    var at = Player.hasPosition() ? Player.position() : lastKnownPosition;
+                    var wasPaused = Player.userPaused();
+                    videoQnOverride = { bvid: detail.bvid, qn: chosen };
+                    report("player", "当前视频画质上限=" + (chosen || Settings.savedQnCap()) +
+                           (chosen ? "（手动）" : "（自动）") + "，从 " + fmt(at) + " 接着播");
+                    play(detail, cid, at, wasPaused);
+                };
+            })(chips[k]);
+        }
+    }
 
     var QUALITY_NAMES = {
         127: "8K", 120: "4K", 116: "1080P60", 112: "1080P+",
@@ -5969,6 +6037,7 @@
         paintEpisodeControls();
         paintSpeed();
         ot.mark("倍速");
+        paintVideoQuality();
         /* No 弹幕 row since 2026-10-20 (its one place is the settings page) — it
          * is a setting of this television, not of one video.
          * PR #10's 弹幕位置 row went the same way (10-25): 设置 only. */
@@ -6376,7 +6445,11 @@
      * the phone carries on here rather than starting again. Consumed once. */
     var handoff = null;
 
-    function play(detail, cid) {
+    function play(detail, cid, qualityAtMs, qualityPaused) {
+        if (videoQnOverride.bvid !== detail.bvid) {
+            videoQnOverride = { bvid: detail.bvid, qn: 0 };
+        }
+        Settings.setPlaybackQnCap(videoQnOverride.qn);
         if (detail && detail.bvid) { playedSinceGrid[detail.bvid] = 1; }
         /* Every per-video piece of player state is cleared here. Leaving any of
          * it behind is invisible until the exact moment it matters: the scrub
@@ -6447,6 +6520,12 @@
             playing.returnPick = returning.pick;
         }
         returning = null;
+        if (qualityAtMs !== undefined) {
+            startMs = Math.max(0, qualityAtMs || 0);
+            fromPhone = false;
+            playing.returnPick = -1;   /* do not replace this exact position with phone history */
+            playing.pauseOnStart = !!qualityPaused;
+        }
 
         lastKnownPosition = startMs;
         lastKnownDuration = 0;      /* the previous video's length is not this one's */
@@ -7380,6 +7459,8 @@
         Player.stop();
         bt.mark("拆播放器");
         playing = null;
+        videoQnOverride = { bvid: "", qn: 0 };
+        Settings.setPlaybackQnCap(0);
         clearSubtitles();
         clearDanmaku();
         bt.mark("清弹幕字幕");
@@ -7600,6 +7681,10 @@
             loadMetaForPlaying();
             startSubtitles();
             startDanmaku();
+            if (playing && playing.pauseOnStart) {
+                playing.pauseOnStart = false;
+                setPaused(true);
+            }
             /* The duration is only real once there is a picture, and the marks
              * are placed as a fraction of it. */
             paintChapters();

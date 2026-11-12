@@ -17,6 +17,7 @@ const hooked = source.replace(anchor, `
         isOpen: function () { return liveOptionsOpen; },
         showUi: showLiveUi,
         setSwitch: function (fn) { switchLive = fn; },
+        setStart: function (fn) { startLiveRoom = fn; },
         renderSettings: renderSettings,
         stubSettingsPage: function (setPage) {
             newView = function () {};
@@ -30,10 +31,30 @@ const hooked = source.replace(anchor, `
 
 const nodes = {};
 for (const id of ["options", "live-panel", "live-panel-title", "live-panel-meta",
-    "live-room-list", "live-ui", "live-title", "live-meta", "live-hint"]) {
+    "live-room-list", "live-quality", "live-ui", "live-title", "live-meta", "live-hint"]) {
     nodes[id] = { className: id === "options" || id === "live-panel" ? "hidden" : "", textContent: "" };
 }
-let choices = [];
+let choices = [], qualityChips = [];
+function chips(id, attr, top, into) {
+    Object.defineProperty(nodes[id], "innerHTML", {
+        get() { return this.html || ""; },
+        set(html) {
+            this.html = html;
+            const found = [...html.matchAll(new RegExp('class="opt focusable([^\"]*)" ' + attr + '="([^\"]+)"', "g"))]
+                .map((m) => ({ className: "opt focusable" + m[1], value: m[2], offsetParent: {},
+                    getAttribute: (name) => name === attr ? m[2] : null,
+                    getBoundingClientRect: () => ({ top, bottom: top + 35 }) }));
+            into(found);
+        },
+    });
+    nodes[id].querySelectorAll = () => qualityChips;
+    nodes[id].querySelector = (selector) => {
+        const list = qualityChips;
+        const value = /\[data-(?:qn|level)="([^"]+)"\]/.exec(selector);
+        return value ? list.find((x) => x.value === value[1]) : list.find((x) => x.className.includes("current"));
+    };
+}
+chips("live-quality", "data-qn", 70, (list) => { qualityChips = list; });
 Object.defineProperty(nodes["live-room-list"], "innerHTML", {
     get() { return this.html || ""; },
     set(html) {
@@ -43,7 +64,7 @@ Object.defineProperty(nodes["live-room-list"], "innerHTML", {
                 className: "live-room-choice " + m[1], index: Number(m[2]), offsetParent: {},
                 getAttribute: (name) => name === "data-index" ? m[2] : null,
                 getBoundingClientRect() {
-                    const top = Math.floor(this.index / 3) * 120;
+                    const top = 130 + Math.floor(this.index / 3) * 120;
                     return { top, bottom: top + 100 };
                 },
             }));
@@ -52,7 +73,7 @@ Object.defineProperty(nodes["live-room-list"], "innerHTML", {
 nodes["live-room-list"].querySelectorAll = () => choices;
 const document = {
     getElementById: (id) => nodes[id] || null,
-    querySelectorAll: (selector) => selector === "#options .focusable" ? choices : [],
+    querySelectorAll: (selector) => selector === "#options .focusable" ? qualityChips.concat(choices) : [],
     addEventListener: () => {},
     body: { className: "" },
 };
@@ -68,7 +89,7 @@ const sandbox = {
     window: {}, document, localStorage, console, Date, Math, JSON, String, Number, Array, Object, RegExp,
     parseInt, parseFloat, isFinite, setTimeout: () => 1, clearTimeout: () => {},
     Nav: { KEY, current: () => focus, focus: (node) => { focus = node; }, reset: () => {}, onKey: () => {}, onBack: () => {} },
-    Player: { on: () => {}, userPaused: () => false },
+    Player: { on: () => {}, userPaused: () => false, stop: () => {} },
     Auth: { cancelLogin: () => {}, isLoggedIn: () => false },
     Accounts: { active: () => null },
     Boot: { info: () => ({ running: "test" }) },
@@ -86,7 +107,7 @@ const list = [
     { roomid: 3, title: "Room three", author: "Three" },
     { roomid: 4, title: "Room four", author: "Four" },
 ];
-test.setRoom({ list, index: 1, item: list[1], qnName: "原画" });
+test.setRoom({ list, index: 1, item: list[1], qnName: "原画", qnOptions: [], qualityChoice: 0 });
 const switches = [];
 test.setSwitch((step) => { switches.push(step); });
 
@@ -127,7 +148,9 @@ test.key(KEY.DOWN);
 focus = choices[3];
 assert.equal(test.key(KEY.UP), false, "up from a lower row navigates within the sheet");
 focus = choices[0];
-assert.equal(test.key(KEY.UP), true, "up from the top row closes the sheet");
+assert.equal(test.key(KEY.UP), false, "up from a room reaches picture settings");
+focus = qualityChips[0];
+assert.equal(test.key(KEY.UP), true, "up from the first control closes the sheet");
 assert.equal(test.isOpen(), false);
 
 let settingsHtml = "";
@@ -152,4 +175,17 @@ const reload = { localStorage };
 vm.createContext(reload);
 vm.runInContext(settingsSource, reload, { filename: "settings.js" });
 assert.equal(reload.Settings.get("liveDirectionPanel", false), true, "choice survives restart");
+const room = { list, index: 1, item: list[1], qnName: "原画", qnOptions: [
+    { qn: 10000, name: "原画" }, { qn: 400, name: "蓝光" }], qualityChoice: 0, tries: 0 };
+test.setRoom(room);
+let restarts = 0;
+test.setStart(() => { restarts++; });
+sandbox.Settings.set("liveDirectionPanel", false);
+assert.equal(test.key(KEY.RIGHT), true, "channel mode also offers the settings panel");
+assert.equal(focus.value, "0", "right opens with quality controls focused");
+qualityChips.find((x) => x.value === "400").onselect();
+assert.equal(room.qnAsk, 400, "selected live tier is requested");
+assert.equal(room.qualityChoice, 400);
+assert.equal(restarts, 1, "live stream restarts at the chosen quality");
+assert.equal(test.isOpen(), false);
 console.log("✓ live controls: default channel mode, saved panel mode, selection and back");

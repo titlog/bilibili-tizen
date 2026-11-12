@@ -93,6 +93,8 @@
     <div id="live-panel" class="hidden">
         <div id="live-panel-title"></div>
         <div id="live-panel-meta"></div>
+        <div class="opt-label">当前直播画质</div>
+        <div class="opt-row" id="live-quality"></div>
         <div class="opt-label">选择直播间</div>
         <div id="live-room-list"></div>
     </div>
@@ -113,6 +115,10 @@
             <div class="speed-row"><span class="act-hint">倍速</span><div class="speed-chips" id="opt-speed"></div></div>
         </div>
         <div class="act-more hidden" id="panel-act-more"></div>
+    </div>
+    <div class="opt-group" id="opt-quality-group">
+        <div class="opt-label">当前视频画质上限</div>
+        <div class="opt-row" id="opt-quality"></div>
     </div>
     <!-- 上一集 / 下一集 (PR #9): the parts first, then the 合集. Sized like the
          row above (10-25: they came out bigger than it, and should match). -->

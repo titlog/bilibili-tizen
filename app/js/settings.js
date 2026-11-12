@@ -3,6 +3,7 @@ var Settings = (function () {
     "use strict";
     var KEY = "bili.settings";
     var data = null;
+    var playbackQn = 0;   /* current video only; never written to localStorage */
 
     function load() {
         if (data) { return data; }
@@ -19,9 +20,15 @@ var Settings = (function () {
 
     return {
         qnSteps: function () { return QN_STEPS.slice(); },
-        qnCap: function () {
+        savedQnCap: function () {
             var q = Number(this.get("maxQn", 120));
             return QN_STEPS.indexOf(q) >= 0 ? q : 120;
+        },
+        qnCap: function () { return playbackQn || this.savedQnCap(); },
+        playbackQnCap: function () { return playbackQn; },
+        setPlaybackQnCap: function (q) {
+            q = Number(q) || 0;
+            playbackQn = QN_STEPS.indexOf(q) >= 0 ? q : 0;
         },
         get: function (k, fallback) {
             var v = load()[k];
