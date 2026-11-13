@@ -3742,13 +3742,13 @@
         paintBarChips();
 
         var quality = el("btn-quality");
-        function paintQuality() { quality.textContent = "画质上限：" + QN_LABELS[Settings.qnCap()]; }
+        function paintQuality() { quality.textContent = "画质上限：" + QN_LABELS[Settings.savedQnCap()]; }
         paintQuality();
         quality.onselect = function () {
-            var steps = Settings.qnSteps(), at = steps.indexOf(Settings.qnCap());
+            var steps = Settings.qnSteps(), at = steps.indexOf(Settings.savedQnCap());
             Settings.set("maxQn", steps[(at + 1) % steps.length]);
             paintQuality();
-            report("settings", "画质上限=qn" + Settings.qnCap());
+            report("settings", "画质上限=qn" + Settings.savedQnCap());
         };
         /* Two presses: it cannot be undone, and the button sits one row from
          * where a viewer scrolling the page passes. */
@@ -4436,7 +4436,7 @@
 
     function warmCdn(e, dash) {
         if (!prefetchAllowed() || !dash) { return; }
-        var first = Mpd.peek(dash, Settings.qnCap());
+        var first = Mpd.peek(dash, qnCapFor(e.bvid));
         var reps = [["视频", first.video], ["音频", first.audio]];
         var now = new Date().getTime();
         e.warm = [];
@@ -4486,7 +4486,7 @@
                 !Auth.isLoggedIn() || !Auth.accessKey()) { return; }
         var aid = e.aid, cid = e.cid;
         e.strong = prefetchSlot(function (ok, fail) {
-            API.playurlDashStrong(aid, cid, Settings.qnCap(), ok, fail, Player.badFilesFor(cid));
+            API.playurlDashStrong(aid, cid, qnCapFor(e.bvid), ok, fail, Player.badFilesFor(cid));
         });
     }
 
@@ -4523,9 +4523,9 @@
         /* `eager`: the chooser screen's queued video, which is about to play
          * unless the viewer stops it — a web-token 403 in its warm-up starts
          * the strong-token mint right there, inside the countdown. */
-        var e = { at: now, aid: v.aid || 0, bvid: v.bvid, cid: v.cid, eager: !!eager };
-        e.dash = prefetchSlot(function (ok, fail) { API.playurlDash(bvid, cid, Settings.qnCap(), ok, fail); });
-        e.prog = prefetchSlot(function (ok, fail) { API.playurlProgressive(bvid, cid, Settings.qnCap(), ok, fail); });
+        var e = { at: now, aid: v.aid || 0, bvid: v.bvid, cid: v.cid, eager: !!eager, qn: qnCapFor(v.bvid) };
+        e.dash = prefetchSlot(function (ok, fail) { API.playurlDash(bvid, cid, e.qn, ok, fail); });
+        e.prog = prefetchSlot(function (ok, fail) { API.playurlProgressive(bvid, cid, e.qn, ok, fail); });
         e.resume = prefetchSlot(function (ok, fail) { API.playerV2(bvid, cid, ok, fail); });
         prefetched[key] = e;
         /* A video whose lesson says the web token is refused would only 403
@@ -4559,6 +4559,12 @@
         var key = prefetchKey(bvid, cid), e = prefetched[key];
         delete prefetched[key];
         if (!e || new Date().getTime() - e.at > PREFETCH_TTL) { return null; }
+        /* Asked under another cap — the settings page changed since, or this
+         * video's own 画质 pick did: its single-file answer is that cap's file. */
+        if (e.qn !== qnCapFor(bvid)) {
+            report("prefetch", "预取时的画质上限 qn" + e.qn + " 不是现在的 qn" + qnCapFor(bvid) + "，不用它");
+            return null;
+        }
         return e;
     }
 
@@ -4631,7 +4637,7 @@
         sess.dashReady = sd;
         Player.learnStrong(sess.cid, aid);
         var rep = Player.pickDashVideo(sd);
-        playDash(sd, (rep && rep.id) || Settings.qnCap());
+        playDash(sd, (rep && rep.id) || qnCap());
     }
 
     /* The press behind the next play(), for the 到画面 line's 按下起 (D). The
@@ -5905,6 +5911,22 @@
     /* The settings page's names for the cap (Settings.qnSteps). */
     var QN_LABELS = { 120: "4K（最高）", 112: "1080P 高码率", 80: "1080P", 64: "720P", 32: "480P" };
 
+    /* 当前视频画质 (PRs #11 / #18, merged 11-08): a cap for this video only —
+     * every part of it, until another video starts or the player is left. It
+     * never touches the settings page's cap (`maxQn`), so one stuttering
+     * video picked down to 480P does not make every later one 480P. Changing
+     * it starts the video again where it is, through play() — the road every
+     * episode change already takes — rather than swapping tracks in place. */
+    var videoQn = { bvid: "", qn: 0 };
+    function qnCapFor(bvid) { return videoQn.qn && bvid && bvid === videoQn.bvid ? videoQn.qn : Settings.savedQnCap(); }
+    function qnCap() { return qnCapFor(playing && playing.detail && playing.detail.bvid); }
+    /* Settings carries the same number for player.js, which builds the
+     * manifest under Settings.qnCap(). Every change of videoQn goes through here. */
+    function setVideoQn(bvid, qn) {
+        videoQn = { bvid: qn ? bvid : "", qn: qn };
+        Settings.setVideoQnCap(qn);
+    }
+
     var QUALITY_NAMES = {
         127: "8K", 120: "4K", 116: "1080P60", 112: "1080P+",
         80: "1080P", 74: "720P60", 64: "720P", 32: "480P", 16: "360P"
@@ -6229,7 +6251,7 @@
 
     function closePlaybackChoices(focus) {
         if (!playbackChoice) { return false; }
-        var back = "panel-subtitles";
+        var back = "panel-" + playbackChoice;
         playbackChoice = "";
         el("playback-choices").className = "opt-row hidden";
         el("playback-choices").innerHTML = "";
@@ -6243,6 +6265,9 @@
         var subLabel = !subtitlesEnabled() ? "关" : sub === "failed" ? "加载失败，可重试" :
             sub === "empty" ? "无可用字幕" : loaded ? (loaded.lan_doc || loaded.lan) : "正在获取…";
         el("panel-subtitles").textContent = "字幕 " + subLabel;
+        var nowQ = playing.quality ? (QUALITY_NAMES[playing.quality] || ("QN " + playing.quality)) : "";
+        el("panel-quality").textContent = "画质 " + (videoQn.qn ? (nowQ || QN_LABELS[videoQn.qn]) : "自动" + (nowQ ? "（" + nowQ + "）" : ""));
+        el("panel-autoplay").textContent = "自动连播 " + (autoNextEnabled() ? "开" : "关");
         var preferredLanguage = Settings.subtitleLanguage();
         var status = el("playback-control-status");
         status.textContent = loaded && preferredLanguage && Settings.subtitleLanguageOf(loaded) !== preferredLanguage
@@ -6251,10 +6276,62 @@
         if (playbackChoice) { paintPlaybackChoices(false); }
     }
 
+    /* The caps worth offering for this video: one per distinct outcome. Each
+     * settings-page step is mapped to the best tier the video actually has at
+     * or under it (its DASH representations, or the single file's list), and
+     * named by that tier — "1080P60", not "4K", when 1080P60 is what it gets.
+     * Of the steps that give the same tier, the lowest is the one offered: a
+     * 720P-only video's "720P" is cap 64, not cap 120 (the log says the cap). */
+    function videoQualityChoices() {
+        var have = (playing && (playing.tiers && playing.tiers.length ? playing.tiers : playing.accept)) || [],
+            steps = Settings.qnSteps(), out = [], at = {};
+        for (var i = 0; i < steps.length; i++) {   /* steps run best first */
+            var best = 0;
+            for (var j = 0; j < have.length; j++) { if (have[j] <= steps[i] && have[j] > best) { best = have[j]; } }
+            if (!have.length) { best = steps[i]; }
+            if (!best) { continue; }
+            if (at[best] !== undefined) { out[at[best]].value = String(steps[i]); continue; }
+            at[best] = out.length;
+            out.push({ value: String(steps[i]), label: have.length ? (QUALITY_NAMES[best] || ("QN " + best)) : QN_LABELS[steps[i]] });
+        }
+        return out;
+    }
+
+    function setVideoQuality(qn) {
+        if (!playing || !playing.detail) { return; }
+        qn = Number(qn) || 0;
+        if (qn === videoQn.qn) { closePlaybackChoices(true); return; }
+        var detail = playing.detail, cid = playing.cid;
+        var at = Player.hasPosition() ? Player.position() : lastKnownPosition;
+        var wasPaused = Player.userPaused();
+        setVideoQn(detail.bvid, qn);
+        report("player", "这个视频的画质上限=" + (qn ? "qn" + qn : "自动（设置里 qn" + Settings.savedQnCap() + "）") +
+               "，从 " + fmt(at) + (wasPaused ? " 暂停着" : "") + " 重开");
+        play(detail, cid, at, wasPaused);
+    }
+
     function paintPlaybackChoices(focus) {
         if (!playing || !playbackChoice) { return; }
         var box = el("playback-choices"), entries = [], current = "", i;
         var ring = Nav.current(), keep = ring && box.contains(ring) ? ring.getAttribute("data-playback-choice") : null;
+        if (playbackChoice === "quality") {
+            entries = [{ value: "0", label: "自动（设置里的上限 " + QN_LABELS[Settings.savedQnCap()] + "）" }].concat(videoQualityChoices());
+            current = String(videoQn.qn || 0);
+            var qhtml = "";
+            for (i = 0; i < entries.length; i++) {
+                qhtml += '<div class="opt focusable' + (entries[i].value === current ? " current" : "") +
+                    '" role="button" data-playback-choice="' + entries[i].value + '">' + esc(entries[i].label) + "</div>";
+            }
+            box.innerHTML = qhtml;
+            box.className = "opt-row";
+            var qnodes = box.querySelectorAll(".opt");
+            for (i = 0; i < qnodes.length; i++) {
+                qnodes[i].onselect = function () { setVideoQuality(this.getAttribute("data-playback-choice")); };
+            }
+            var qwant = box.querySelector('[data-playback-choice="' + (keep !== null ? keep : current) + '"]') || qnodes[0];
+            if ((focus || keep !== null) && qwant) { Nav.focus(qwant); }
+            return;
+        }
         entries = [{ value: "off", label: "关闭" }, { value: "auto", label: "自动选择" }];
         var tracks = playing.subtitleTracks || [];
         for (i = 0; i < tracks.length; i++) {
@@ -6275,8 +6352,9 @@
         var nodes = box.querySelectorAll(".opt");
         for (i = 0; i < nodes.length; i++) {
             nodes[i].onselect = function () {
+                if (!playing) { return; }
                 var value = this.getAttribute("data-playback-choice");
-                var track = value === "off" || value === "auto" ? null : playing.subtitleTracks[Number(value)];
+                var track = value === "off" || value === "auto" ? null : (playing.subtitleTracks || [])[Number(value)];
                 setSubtitleChoice(value !== "off", track, value === "auto");
             };
         }
@@ -6297,6 +6375,20 @@
                 } else { startSubtitles(); }
             }
             paintPlaybackChoices(true);
+        };
+        el("panel-quality").onselect = function () {
+            closeActMore(true);
+            if (playbackChoice === "quality") { closePlaybackChoices(true); return; }
+            playbackChoice = "quality";
+            paintPlaybackChoices(true);
+        };
+        /* 自动连播 (PR #11): the settings page's 自动播放下一个, one press from
+         * the video. Off, the end of a video stays on the chooser screen. */
+        el("panel-autoplay").onselect = function () {
+            closePlaybackChoices(false);
+            Settings.set("autoplayNext", !autoNextEnabled());
+            report("settings", "自动播放下一个=" + (autoNextEnabled() ? "开" : "关") + "（面板）");
+            paintPlaybackControls();
         };
         paintPlaybackControls();
     }
@@ -6797,7 +6889,8 @@
      * the phone carries on here rather than starting again. Consumed once. */
     var handoff = null;
 
-    function play(detail, cid) {
+    function play(detail, cid, keepAtMs, keepPaused) {
+        if (!detail || detail.bvid !== videoQn.bvid) { setVideoQn("", 0); }
         if (detail && detail.bvid) { playedSinceGrid[detail.bvid] = 1; }
         /* Every per-video piece of player state is cleared here. Leaving any of
          * it behind is invisible until the exact moment it matters: the scrub
@@ -6868,6 +6961,14 @@
             playing.returnPick = returning.pick;
         }
         returning = null;
+        /* A 画质 change: exactly where it was, paused if it was — no record
+         * from the account or the phone moves it (decide() checks keepStart). */
+        if (keepAtMs !== undefined) {
+            startMs = Math.max(0, keepAtMs || 0);
+            fromPhone = false;
+            playing.keepStart = true;
+            playing.pauseOnStart = !!keepPaused;
+        }
 
         lastKnownPosition = startMs;
         lastKnownDuration = 0;      /* the previous video's length is not this one's */
@@ -6944,7 +7045,7 @@
                        "/" + detail.pages.length;
         }
         report("player", detail.bvid + " " + Diag.priv(String(detail.title || "").slice(0, 24)) +
-               partTag + " — requesting qn=" + Settings.qnCap());
+               partTag + " — requesting qn=" + qnCap());
 
         /* Both forms at once. Asking DASH first and progressive from inside its
          * callback put two full round trips to bilibili back to back before a
@@ -7033,7 +7134,7 @@
                 playing.subtitleTracks = r.subtitles || [];
             }
             if (r && r.cid === cid && r.positionMs >= 30000 &&
-                    r.positionMs > playing.startMs && playing.returnPick === undefined) {
+                    r.positionMs > playing.startMs && playing.returnPick === undefined && !playing.keepStart) {
                 playing.startMs = r.positionMs;
                 lastKnownPosition = r.positionMs;
                 playing.fromPhone = false;
@@ -7208,7 +7309,7 @@
                    (early ? "用倒计时里就开始铸的强令牌" : "开播直接铸 app 端点强令牌") +
                    "（aid=" + hintAid + "）");
             (early ? function (ok, fail) { whenSettled(early, ok, fail); }
-                   : function (ok, fail) { mintStrong(hintAid, cid, Settings.qnCap(), ok, fail); })(function (sd) {
+                   : function (ok, fail) { mintStrong(hintAid, cid, qnCap(), ok, fail); })(function (sd) {
                 if (playing !== session) { report("player", "教训强令牌回来时会话已经没了，丢弃"); return; }
                 got.strong = sd;
                 decide();
@@ -7232,7 +7333,7 @@
             got.strong = undefined;
             got.strongWhy = "预热";
             var slotSt = pre.strong || prefetchSlot(function (ok, fail) {
-                mintStrong(pre.aid || detail.aid, cid, Settings.qnCap(), ok, fail);
+                mintStrong(pre.aid || detail.aid, cid, qnCap(), ok, fail);
             });
             report("player", "预热时 web 令牌已被拒（" + (pre.warmRefused || "403") + "），" +
                    (pre.strong ? "用按下前就开始铸的强令牌" : "开播直接铸 app 端点强令牌"));
@@ -7260,7 +7361,7 @@
             got.strongWhy = "近来被拒";
             report("player", Math.round((new Date().getTime() - webRefusedAt) / 60000) +
                    " 分钟前别的视频 web 令牌被拒过，这个视频直接铸 app 端点强令牌");
-            mintStrong(detail.aid || pre.aid, cid, Settings.qnCap(), function (sd) {
+            mintStrong(detail.aid || pre.aid, cid, qnCap(), function (sd) {
                 if (playing !== session) { report("player", "近来被拒那条路的强令牌回来时会话已经没了，丢弃"); return; }
                 got.strong = sd;
                 decide();
@@ -7276,12 +7377,15 @@
         /* `fresh`: past the prefetch — decide()'s one retry asks again. */
         function askStreams(fresh) {
             ask(!fresh && pre && pre.dash, function (ok, fail) {
-                API.playurlDash(detail.bvid, cid, Settings.qnCap(), ok, fail);
+                API.playurlDash(detail.bvid, cid, qnCap(), ok, fail);
             }, function (dash) {
                 if (playing !== session) { return; }
                 var best = Player.pickDashVideo(dash);
                 report("player", "dash offers qn=" + ((best && best.id) || 0) +
                        " accept=" + (dash.acceptQuality || []).join(","));
+                var tiers = [], vids = dash.video || [];
+                for (var ti = 0; ti < vids.length; ti++) { if (tiers.indexOf(vids[ti].id) < 0) { tiers.push(vids[ti].id); } }
+                session.tiers = tiers;
                 got.dash = dash;
                 decide();
             }, function (dashWhy) {
@@ -7293,7 +7397,7 @@
             });
 
             ask(!fresh && pre && pre.prog, function (ok, fail) {
-                API.playurlProgressive(detail.bvid, cid, Settings.qnCap(), ok, fail);
+                API.playurlProgressive(detail.bvid, cid, qnCap(), ok, fail);
             }, function (r) {
                 if (playing !== session) { return; }
                 report("player", "progressive gave qn=" + r.quality +
@@ -7470,7 +7574,7 @@
             report("player", "dash 兜底：开播时的清单已过期，重取 playurl");
         }
 
-        API.playurlDash(d.bvid, cid, Settings.qnCap(), function (dash) {
+        API.playurlDash(d.bvid, cid, qnCap(), function (dash) {
             startDash(dash, "重新取到清单");
         }, function (w2) {
             report("player", "dash 兜底：playurl 失败（" + w2 + "）" +
@@ -7804,6 +7908,7 @@
         Player.stop();
         bt.mark("拆播放器");
         playing = null;
+        setVideoQn("", 0);
         clearSubtitles();
         clearDanmaku();
         bt.mark("清弹幕字幕");
@@ -7947,7 +8052,7 @@
                 withAid(sessSw, function (aid0) {
                     if (!aid0) { fail("手里没有 aid"); return; }
                     sessSw.swapAid = aid0;
-                    mintStrong(aid0, sessSw.cid, Settings.qnCap(), ok, fail, webSw);
+                    mintStrong(aid0, sessSw.cid, qnCap(), ok, fail, webSw);
                 });
             });
             whenSettled(sessSw.swapSlot, function (sd) {
@@ -8024,6 +8129,10 @@
             loadMetaForPlaying();
             startSubtitles();
             startDanmaku();
+            if (playing.pauseOnStart) {
+                playing.pauseOnStart = false;
+                setPaused(true);
+            }
             /* The duration is only real once there is a picture, and the marks
              * are placed as a fraction of it. */
             paintChapters();
@@ -8106,10 +8215,10 @@
                 var startExp = function (dashExp) {
                     if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
                     var repExp = Player.pickDashVideo(dashExp);
-                    playDash(dashExp, (repExp && repExp.id) || Settings.qnCap());
+                    playDash(dashExp, (repExp && repExp.id) || qnCap());
                 };
                 var webExp = function () {
-                    API.playurlDash(sessExp.detail.bvid, sessExp.cid, Settings.qnCap(),
+                    API.playurlDash(sessExp.detail.bvid, sessExp.cid, qnCap(),
                         startExp, function (whyExp) {
                             if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
                             report("player", "过期重取 playurl 失败（" + whyExp + "）");
@@ -8118,7 +8227,7 @@
                 };
                 if (wantStrong) {
                     mintStrong(sessExp.detail.aid, sessExp.cid,
-                        Settings.qnCap(), startExp, function (whyStExp) {
+                        qnCap(), startExp, function (whyStExp) {
                             if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
                             report("player", "过期重取强令牌失败（" + whyStExp +
                                    "），改试 web 端点");
@@ -8198,7 +8307,7 @@
                         report("player", "用换令牌那次正在铸（或已铸好）的强令牌重建，不再铸第二次");
                         whenSettled(swapSlotST, ok, fail);
                     } : function (ok, fail) {
-                        mintStrong(aidST, sessST.cid, Settings.qnCap(), ok, fail, webForIndex);
+                        mintStrong(aidST, sessST.cid, qnCap(), ok, fail, webForIndex);
                     })(
                         function (strongDash) {
                             if (playing !== sessST) { report("player", "强令牌回来时会话已经没了，丢弃"); return; }
@@ -8212,7 +8321,7 @@
                                    (strongDash.tierNote || (strongDash.video ? strongDash.video.length + " 档" : "0 档")) +
                                    (strongDash.strongTiming ? "，" + strongDash.strongTiming : "") +
                                    "，从 " + fmt(playing.startMs || 0) + " 重建");
-                            playDash(strongDash, (repST && repST.id) || Settings.qnCap());
+                            playDash(strongDash, (repST && repST.id) || qnCap());
                         }, function (whyST) {
                             if (playing !== sessST) { report("player", "强令牌回来时会话已经没了，丢弃"); return; }
                             report("player", "app 端点强令牌也不行（" + whyST + "）");
@@ -8336,7 +8445,7 @@
                                " 用 DASH 原地重启");
                         var session3 = playing;
                         API.playurlDash(playing.detail.bvid, playing.cid,
-                                        Settings.qnCap(), function (dash3) {
+                                        qnCap(), function (dash3) {
                             if (playing !== session3) {
                                 report("player", "原地重启：新清单到了但会话已经没了，丢弃");
                                 return;
@@ -8460,7 +8569,7 @@
                        (backDash.strong ? "强令牌清单" : " web 端点") +
                        "压中低档，从 " + fmt(ffAt) + " 起");
                 var repL = Player.pickDashVideo(backDash);
-                playDash(backDash, (repL && repL.id) || Settings.qnCap());
+                playDash(backDash, (repL && repL.id) || qnCap());
                 return;
             }
             /* Every route has been tried. If the probes came back 403 the

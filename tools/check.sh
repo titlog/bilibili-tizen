@@ -42,6 +42,7 @@ node "$ROOT/tools/gated-verify.mjs" || { echo "  the ways round bilibili's gates
 node "$ROOT/tools/nav-verify.mjs" || { echo "  remote navigation regressed"; exit 1; }
 node "$ROOT/tools/episode-nav-verify.mjs" || { echo "  episode shortcuts regressed"; exit 1; }
 node "$ROOT/tools/subtitle-controls-verify.mjs" || exit 1
+node "$ROOT/tools/video-quality-verify.mjs" || exit 1
 # Tizen 5.5 has no flex gap. A new gap without its fallback looks fine on any
 # set made since, and cramped on the ones this check exists for.
 node "$ROOT/tools/legacy-css-verify.mjs" || exit 1

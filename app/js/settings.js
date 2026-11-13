@@ -17,6 +17,11 @@ var Settings = (function () {
      * 所以默认值只在大会员身上起作用，其他人和以前一模一样。8K / HDR / 杜比视界不在选项里：这台电视 4K、
      * 那几档要别的 fnval 位和色彩处理，没验证过。 */
     var QN_STEPS = [120, 112, 80, 64, 32];
+    /* 播放面板「画质」(11-08): the playing video's own cap, set and cleared by
+     * app.js. Never stored — it is not a preference of this television — but
+     * it lives here so that everything that asks qnCap(), player.js's manifest
+     * build included, gets the cap of the video on screen. */
+    var videoCap = 0;
 
     function language(track) {
         var lang = String((track || {}).lan || "").toLowerCase().replace(/^ai-/, "");
@@ -29,9 +34,16 @@ var Settings = (function () {
 
     return {
         qnSteps: function () { return QN_STEPS.slice(); },
-        qnCap: function () {
+        /* The settings page's cap. */
+        savedQnCap: function () {
             var q = Number(this.get("maxQn", 120));
             return QN_STEPS.indexOf(q) >= 0 ? q : 120;
+        },
+        /* The cap for what plays now: the video's own pick, else the saved one. */
+        qnCap: function () { return videoCap || this.savedQnCap(); },
+        setVideoQnCap: function (q) {
+            q = Number(q) || 0;
+            videoCap = QN_STEPS.indexOf(q) >= 0 ? q : 0;
         },
         subtitleLanguage: function () {
             var lang = this.get("subtitleLanguage", "");

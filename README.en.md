@@ -172,8 +172,10 @@ from OK to a picture, 1080p H.265.
 
 **Live** (直播 in the top bar): the streamers you follow who are live come first,
 then everything live on the site by popularity; inside a room, up and down change
-room the way a TV changes channel. Signed out it is 720p, and there are no live
-danmaku yet. **Your own top bar**: in 设置, add or remove 直播, 动态, 我的, 稍后, 热门, 排行
+room the way a TV changes channel (a setting makes up / down open a room list
+instead, switching only on OK). Signed out it is 720p. **Live danmaku** are on by
+default; left / right open a small panel for their amount, opacity and size, and the
+room's quality. **Your own top bar**: in 设置, add or remove 直播, 动态, 我的, 稍后, 热门, 排行
 and any of the 30 zones, and put them in your own order (推荐 stays first, 搜索
 and 设置 last); the bar slides sideways with the focus when it does not fit. Multi-part
 uploads list their parts in one sliding row in the playback panel.
@@ -190,7 +192,7 @@ the row below and likes too; holding OK on a card still works); and a
 suit how big the TV is and how far the sofa). These come from
 [PR #2](https://github.com/titlog/bilibili-tizen/pull/2).
 
-Press Down during playback to turn subtitles on or off, select a track, or return to automatic selection. The language preference persists across videos and app restarts. Human subtitles take priority within the same language; unavailable languages fall back without replacing the preference. Press Back once to collapse the choices and again to close the panel.
+The playback panel also has a row of **quality · subtitles · autoplay**: quality applies to the video you are watching only (it carries on from where it was and leaves the quality cap in settings alone); subtitles can be switched on or off and a track picked, and the language you pick is remembered (human subtitles first within a language); autoplay is one press. Back collapses the choices first, then closes the panel. This row comes from PRs #11 and #18.
 
 **Does not**:
 - **Casting from the phone.** A cast receiver has to listen on a port; a Tizen

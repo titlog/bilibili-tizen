@@ -548,6 +548,60 @@ var SelfTest = (function () {
             if (visible("shell")) { return "收面板把播放也退出了"; }
             return null;
         }],
+        /* 画质 in the panel (11-08, PRs #11 / #18): a cap for this video only.
+         * One tier down and the video starts again where it was; back to 自动
+         * the same way. The settings page's cap must not move with it. */
+        ["面板里「画质」选低一档，从原处接着放", 300, function () {
+            var q = probe.quality, i;
+            if (!q) {
+                if (!visible("options")) { key(KEY.DOWN); return WAIT; }
+                if (!visible("panel-quality")) { return "面板里没有画质按钮"; }
+                Nav.focus(document.getElementById("panel-quality"));
+                key(KEY.ENTER);
+                var opts = document.querySelectorAll("#playback-choices .opt"), vals = [];
+                for (i = 0; i < opts.length; i++) { vals.push(Number(opts[i].getAttribute("data-playback-choice"))); }
+                if (vals[0] !== 0) { return "画质选项第一项不是「自动」"; }
+                if (vals.length < 3) {
+                    probe.quality = { skip: true };
+                    key(KEY.RETURN); key(KEY.RETURN);
+                    post("跳过：这个视频只有一档画质");
+                    return null;
+                }
+                probe.quality = { saved: Settings.savedQnCap(), pick: vals[2], at: Player.position(), t0: -1 };
+                Nav.focus(document.querySelector('#playback-choices [data-playback-choice="' + vals[2] + '"]'));
+                key(KEY.ENTER);
+                return WAIT;
+            }
+            if (q.skip) { return null; }
+            if (visible("shell")) { return "换画质退回了网格"; }
+            if (visible("player-loading") || !Player.hasPosition()) { return WAIT; }
+            if (Settings.qnCap() !== q.pick) { return "现在的上限是 qn" + Settings.qnCap() + "，不是选的 qn" + q.pick; }
+            if (Settings.savedQnCap() !== q.saved) { return "设置页的画质上限跟着变了"; }
+            var pos = Player.position();
+            if (pos < q.at - 5000) { return "没从原处接着放（选的时候 " + q.at + " ms，现在 " + pos + " ms）"; }
+            if (q.t0 < 0) { q.t0 = pos; return WAIT; }
+            if (pos <= q.t0) { return WAIT; }
+            post("画质上限 qn" + q.pick + "：" + document.getElementById("player-quality").textContent + "，从 " + Math.round(pos / 1000) + " 秒接着放");
+            return null;
+        }, 30000, "30 秒没在新画质上放起来（看 player: 那几行）"],
+        ["面板里「画质」回到自动", 300, function () {
+            var q = probe.quality;
+            if (q.skip) { return null; }
+            if (!q.back) {
+                if (!visible("options")) { key(KEY.DOWN); return WAIT; }
+                Nav.focus(document.getElementById("panel-quality"));
+                key(KEY.ENTER);
+                var auto = document.querySelector('#playback-choices [data-playback-choice="0"]');
+                if (!auto) { return "画质选项里没有「自动」"; }
+                q.back = true;
+                Nav.focus(auto);
+                key(KEY.ENTER);
+                return WAIT;
+            }
+            if (visible("shell")) { return "换画质退回了网格"; }
+            if (visible("options") || visible("player-loading") || !Player.hasPosition()) { return WAIT; }
+            return Settings.qnCap() === q.saved ? null : "回到自动后上限还是 qn" + Settings.qnCap();
+        }, 30000, "30 秒没在自动画质上放起来"],
         ["右键进入拖动", 800, function () {
             key(KEY.RIGHT); key(KEY.RIGHT);
             return null;
@@ -2676,7 +2730,6 @@ var SelfTest = (function () {
     function run() {
         var i = 0, failures = 0;
         if (SELFTEST === "subtitles") { steps = controlSteps; window.__stNoHistory = true; }
-        post("运行标识 " + (window.__stRunId || "未标记"));
         if (SELFTEST === "dmperf") { steps = dmperfSteps; }
         if (SELFTEST === "tokenswap") { steps = swapSteps; }
         if (SELFTEST === "diag") { steps = diagSteps; }
