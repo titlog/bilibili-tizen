@@ -2556,7 +2556,8 @@
         return liveRoom && { room: liveRoom.nativeFor, fmt: liveRoom.nativeFmt, used: liveRoom.qnUsed,
                              below: liveRoom.tsBelow, gaveUp: liveRoom.tsGaveUp, token: liveRoom.token, moved: liveRoom.moved,
                              mseSteps: liveRoom.mseSteps, mseTry: liveRoom.mseTry, native: liveNative,
-                             tsSilent: liveRoom.tsSilent, flvGaveUp: liveRoom.flvGaveUp, flvDead: liveFlvDead };
+                             tsSilent: liveRoom.tsSilent, flvGaveUp: liveRoom.flvGaveUp, flvDead: liveFlvDead,
+                             dm: liveRoom.dmConn ? liveRoom.dmConn.stats() : null };
     };
     window.__stWake = function () { lastWake = 0; wokeUp("自测模拟关机再开机", AWAY_MS); };
 
@@ -3535,6 +3536,8 @@
             '<div class="btn focusable" id="btn-subtitles"></div>' +
             '<div class="btn focusable" id="btn-danmaku"></div>' +
             '<div class="btn focusable" id="btn-danmaku-area"></div></div>' +
+            '<div class="actions" style="margin-top:20px"><div class="btn focusable" id="btn-danmaku-alpha"></div>' +
+            '<div class="btn focusable" id="btn-danmaku-size"></div></div>' +
 
             '<div class="section">画质</div>' +
             '<div class="actions"><div class="btn focusable" id="btn-quality"></div></div>' +
@@ -3594,6 +3597,28 @@
         dmAreaBtn.onselect = function () {
             setDanmakuArea(DM_AREAS[(DM_AREAS.indexOf(danmakuArea()) + 1) % DM_AREAS.length]);
             paintDmArea();
+        };
+        /* The live panel's two sliders (PR #14) move every danmaku, a video's
+         * too, so they are here as well — otherwise someone who never opens a
+         * room can never change them, and someone who did can only change them
+         * back from inside one. Coarse steps: the next preset above where it is. */
+        function nextPreset(list, v) {
+            for (var i = 0; i < list.length; i++) { if (list[i] > v + 1e-6) { return list[i]; } }
+            return list[0];
+        }
+        var dmAlphaBtn = el("btn-danmaku-alpha"), dmSizeBtn = el("btn-danmaku-size");
+        function paintDmLook() {
+            dmAlphaBtn.textContent = "弹幕透明度：" + danmakuAlpha() + "%";
+            dmSizeBtn.textContent = "弹幕字号：" + danmakuSize().toFixed(1) + "×";
+        }
+        paintDmLook();
+        dmAlphaBtn.onselect = function () {
+            setDanmakuAlpha(nextPreset([40, 55, 70, 85, 100], danmakuAlpha()));
+            paintDmLook();
+        };
+        dmSizeBtn.onselect = function () {
+            setDanmakuSize(nextPreset([0.8, 1, 1.2, 1.5], danmakuSize()));
+            paintDmLook();
         };
 
         /* Self-update (update.js), in a few words: only what the viewer would

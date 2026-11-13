@@ -1840,6 +1840,27 @@ var SelfTest = (function () {
             var moved = document.getElementById("live-meta").textContent !== probe.liveWas;
             return (moved && livePlaying()) ? null : WAIT;
         }, 30000, "换台 30 秒没出画面"],
+        /* 直播弹幕 (PR #14, 11-08): on by default with the danmaku setting, the
+         * socket opens after the first picture. Connected means the server
+         * answered the auth — a quiet room may well send no comments at all. */
+        ["直播弹幕：出画面后连上弹幕服务器", 300, function () {
+            if (Settings.get("danmaku", "normal") === "off") { return "弹幕设置是关，直播弹幕不会连"; }
+            var st = window.__stLiveRoom() || {};
+            return st.dm && st.dm.connected ? null : WAIT;
+        }, 20000, "20 秒没连上（看 danmaku: 那几行）"],
+        ["直播：右键打开「弹幕与画质」，返回键只关它、还在直播间", 300, function () {
+            var p = probe.dmPanel;
+            if (!p) { probe.dmPanel = { opened: false }; key(KEY.RIGHT); return WAIT; }
+            if (!p.opened) {
+                if (!visible("live-dm")) { return WAIT; }
+                p.opened = true;
+                key(KEY.RETURN);
+                return WAIT;
+            }
+            if (visible("live-dm")) { return WAIT; }
+            if (visible("shell") || !window.__stLiveRoom()) { return "返回键退出了直播间"; }
+            return livePlaying() ? null : WAIT;
+        }, 8000, "8 秒没打开、没关掉，或者关掉之后没在放"],
         /* 10-25: a room on MSE stopped mid-play with no error, and nothing
          * watched the playhead once the picture was up. Pause the element
          * behind the app's back: the playhead stops, and the room should
