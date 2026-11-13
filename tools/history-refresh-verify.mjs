@@ -10,7 +10,7 @@ const anchor = "    window.onload = function () {";
 assert.equal(source.split(anchor).length, 2, "app.js test hook location changed");
 const hooked = source.replace(anchor, `
     window.__historyTest = {
-        setHistory: function (items) { serverHistory = { at: new Date().getTime(), items: items, complete: true }; },
+        setHistory: function (items, ageMs) { serverHistory = { at: new Date().getTime() - (ageMs || 0), items: items, complete: true }; },
         getHistory: function () { return serverHistory.items; },
         refresh: refreshHistoryIfStale,
         setFeed: function (items) { feedCache.rcmd = { items: items }; },
@@ -31,6 +31,7 @@ const hooked = source.replace(anchor, `
 ` + anchor);
 
 let requestCount = 0;
+const logged = [];
 let respond;
 let focused = { id: "deep-card" };
 let rowAttached = true;
@@ -57,6 +58,8 @@ const sandbox = {
     Player: { on: () => {} },
     Settings: { get: () => 3 },
     Resume: { recent: () => [], dead: () => ({}), clearedAt: () => 0, fraction: () => 0 },
+    Diag: { record: (kind, detail) => { logged.push(kind + ": " + detail); }, plain: (d) => d },
+    REPORT_TO: "",
 };
 vm.createContext(sandbox);
 vm.runInContext(hooked, sandbox, { filename: "app.js" });
@@ -64,7 +67,8 @@ const test = sandbox.window.__historyTest;
 const oldItem = { bvid: "BVold", at: 1000, seen: 0.1, progressMs: 1000 };
 const newItem = { bvid: "BVnew", at: 2000, seen: 0.1, progressMs: 3000 };
 
-test.setHistory([oldItem]);
+/* A minute old: an arrival reuses it (under five minutes), a 推荐 press does not (over 20 s). */
+test.setHistory([oldItem], 60000);
 test.setScreen("rcmd");
 test.setFeed([oldItem]);
 test.setScreenEl({ querySelector: () => ({ id: "first-card" }) });
@@ -78,14 +82,39 @@ assert.equal(requestCount, 1, "manual refresh must bypass cache but share an in-
 respond([newItem, oldItem], 2, true);
 assert.equal(test.getHistory()[0].bvid, "BVnew");
 assert.equal(repaints, 1, "existing strip should update even when focus is deeper in the grid");
+test.refresh(true);
+assert.equal(requestCount, 1, "a 推荐 press within 20 s of the last answer must not ask again");
+assert.ok(logged.some((l) => /刚取过，不重取/.test(l)), "the skipped refresh must say so in the log");
+
+// The cursor on a later card of the strip: the phone's newest would push the
+// cards under it, so the redraw waits (and says so).
+const stripFirst = { id: "strip-first", parentNode: row }, stripSecond = { id: "strip-second", parentNode: row };
+test.setScreenEl({ querySelector: () => stripFirst });
+const thirdItem = { bvid: "BVthird", at: 3000, seen: 0.1, progressMs: 5000 };
+test.setHistory([thirdItem, newItem, oldItem]);
+focused = stripSecond;
+test.maybeRefreshRow();
+assert.equal(repaints, 1, "a strip must not reorder under a cursor on its later cards");
+assert.ok(logged.some((l) => /先不重排/.test(l)), "the deferred redraw must say so in the log");
+// On its first card: redrawn, and the cursor goes to the new first card.
+let firstReset;
+sandbox.Nav.reset = (selector) => { firstReset = selector; };
+focused = stripFirst;
+test.maybeRefreshRow();
+assert.equal(repaints, 2, "a strip with the cursor on its first card is redrawn");
+assert.equal(firstReset, ".card", "the cursor goes to the new first card");
+sandbox.Nav.reset = () => {};
 
 // The actual strip painter keeps focus on the same video after a phone watch
 // puts a newer card before it, and never focuses a detached card on removal.
 test.setPaintCards((container, items) => {
     container.cards = items.map((video) => ({ __video: video, parentNode: container, attached: true }));
 });
-focused = { __video: oldItem, parentNode: row, attached: false };
+const detached = { __video: oldItem, parentNode: row, attached: false };
+focused = detached;
 test.repaintRow();
+assert.notEqual(focused, detached, "focus must leave the detached card");
+assert.ok(row.cards.includes(focused) && focused.attached, "focus must land on a card that is in the document");
 assert.equal(focused.__video.bvid, "BVold", "focus should follow the same video after reorder");
 test.setHistory([]);
 let resetTo;

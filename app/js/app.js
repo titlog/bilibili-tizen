@@ -2058,19 +2058,34 @@
         fitCardMeta(grid);
     }
 
-    /* Automatic arrivals reuse recent history. Selecting 推荐 asks for a fresh
-     * history even if the phone played something only seconds after the last
-     * fetch. In-flight requests are shared, so rapid presses do not multiply
-     * simultaneous page chains. Nothing polls while the television is idle. */
+    /* Coming back to the home tab is the moment to notice that the phone has
+     * been watching. Nothing polls: a set left on the home screen never asks
+     * again, so an evening's worth of phone viewing was invisible until the app
+     * was restarted. An arrival on its own asks only when what is in hand is
+     * five minutes old. Selecting 推荐 (PR #15, 11-08) is the viewer saying
+     * "show me what I just watched", so it asks unless the last answer is under
+     * 20 seconds old — the floor is what keeps flicking between tabs from
+     * being three serialized history pages per press. An idle television
+     * still sends nothing at all.
+     *
+     * A failure is a log line only: the strip simply stays as it was, and
+     * there is nothing the viewer could do differently about it. */
     var HISTORY_STALE_MS = 300000;
+    var HISTORY_FORCE_MS = 20000;
 
     function refreshHistoryIfStale(force) {
         if (!Auth.isLoggedIn()) { return; }
-        if (!force && serverHistory.items && serverHistory.complete &&
-                (new Date().getTime() - serverHistory.at) < HISTORY_STALE_MS) { return; }
+        var age = new Date().getTime() - serverHistory.at;
+        if (serverHistory.items && serverHistory.complete && age < (force ? HISTORY_FORCE_MS : HISTORY_STALE_MS)) {
+            if (force) { report("history", "选了推荐：观看记录 " + Math.round(age / 1000) + " 秒前刚取过，不重取"); }
+            return;
+        }
+        if (force) {
+            report("history", "选了推荐：重取观看记录（" +
+                (serverHistory.items ? "上次 " + Math.round(age / 1000) + " 秒前" : "还没取过") + "）");
+        }
         fetchServerHistory(function () { maybeRefreshResumeRow(); }, function (why) {
             report("history", "刷新失败：" + why);
-            if (force && state.screen === "rcmd") { toast("观看记录刷新失败，请稍后再试"); }
         }, force);
     }
 
@@ -2304,11 +2319,25 @@
         var items = resumeRowItems(), row = el("resume-row");
         if (!items.length && !row) { return; }
         if (row && rowSignature(items) === resumeRowSig) { return; }
-        var first = screenEl.querySelector(".card");
-        /* Updating an existing strip does not move the grid below it. Only
-         * inserting or removing a strip needs the first-card focus guard. */
-        if (row && items.length) { repaintResumeStrip(); return; }
-        if (!first || Nav.current() !== first) { return; }
+        var first = screenEl.querySelector(".card"), cur = Nav.current();
+        /* Updating an existing strip does not move the grid below it, so it
+         * is redrawn wherever the cursor is in the grid. Not while the cursor
+         * is on one of its later cards: the phone's newest pushes the cards
+         * right under it, or out of the strip, and an OK pressed in that
+         * moment plays a different video. On its first card it is master's
+         * old rule — the cursor goes to the new first card, which is the one
+         * the viewer came back for. Inserting or removing the whole strip
+         * still waits for the first card. */
+        if (row && items.length) {
+            if (cur && cur !== first && inResumeStrip(cur)) {
+                report("history", "继续观看有新内容，光标在这一行的后几张上，先不重排");
+                return;
+            }
+            repaintResumeStrip();
+            if (cur && cur === first) { Nav.reset(".card"); }
+            return;
+        }
+        if (!first || cur !== first) { return; }
         /* A disappearing strip needs no grid rebuild; a new one needs a place
          * above the grid and must be drawn with it. */
         if (row) {
