@@ -81,7 +81,9 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
    `git add update && git commit -m "更新包 x.y.z" && git tag vx.y.z && git push origin master vx.y.z`
    —— tag 要一起推：manifest 从 master 取，bundle 从 tag 取。
 3. `zsh tools/release.sh` 出 wgt，`gh release create`，说明中英双份（照前几版的格式）。
-4. 装着 1.2.0 以后版本的电视会自己更新。**发布包绝不能用 `SamsungBili` 签**（里面有账号邮箱、真名、DUID），
+4. 装着 1.2.0 以后版本的电视会自己更新。用更新包启动、两秒内出了 js 错误或屏幕是空的，下次就退回安装包、那一版标坏；
+   没出错就没了的（开机时被打断之类，11-07、11-14 各有一台因此丢了 1.4.14）再给一次，**连着两次**才标坏 —— 这条在 boot.js 里，
+   只随安装包走，1.5.1 以前装的电视还是一次就标坏。**发布包绝不能用 `SamsungBili` 签**（里面有账号邮箱、真名、DUID），
    `release.sh` 用一次性作者证书并读回验证。→ `docs/自动更新.md`、`docs/部署与发布.md`
 5. 不用管 Apps2Samsung 的社区目录（README 里推荐的装法）：它每天按 `releases/latest` 自己取新的 wgt
    （`Apps2Samsung/tizen-community-packages` 的 `packages/titlog__bilibili-tizen.json`，按 `bilibili-tizen-.*[.]wgt$` 挑资产），
@@ -113,7 +115,7 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
 - **直播弹幕**（PR #14，11-08 合入）：**默认开**，跟着设置里的「弹幕」档位走；第一帧之后连 WebSocket（匿名，`getConf` 取令牌，zlib 包用 `inflate.js` 解 ——
   不用 pako 之类放在 `vendor/` 的库：更新包只带 `SCRIPTS` 里的 `js/`，靠自动更新升上来的电视没有 `vendor/` 里新加的文件）。直播间里
   **左 / 右 打开「弹幕与画质」面板**（数量含「关」、透明度和字号两个滑块、直播画质；透明度、字号设置页也能改）。日志 `danmaku:` 只数条数、不写内容。→ `docs/功能-弹幕直播画质投屏.md`
-- 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 168 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
+- 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 172 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
   **能靠按键复现的 bug，就给它加一步。** 等网络的步骤返回 `WAIT` 轮询，不写死等待；每次放的视频是推荐流里随手拿的，
   一步失败先看是不是只对那一部片子成立。
 
@@ -177,7 +179,8 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
 - 自救阶梯：同族重载（换镜像出发）→ 换 avc1 → 换 av01 → 逐级压档；坏文件剔出清单；预算按事故计，真实前进后回血。
 - **看门狗是每秒一跳的常驻心跳**，不靠媒体事件叫醒；播放头和缓冲末端两个水位线各记各的；首帧前 10 秒、播放中
   15 秒、字节在而首帧出不来 4 秒。**「画面卡住、时间在走」从网页这一侧看不出来**：`requestVideoFrameCallback`、
-  `getVideoPlaybackQuality` 在这台电视上都不报帧。
+  `getVideoPlaybackQuality` 在这台电视上都不报帧。**卡在片尾**（缓冲用完、缓冲末端离标的时长不到 1.5 秒）3 秒就当播完、
+  走 `ended`：有的文件比标的时长短半秒，`ended` 永远不来（11-12，看门狗当断连重建了 12 分钟，最后报「视频流被拒绝（403）」）。
 - **任何会启动新播放的入口，第一件事是拆掉旧的**（`Player.stop()`，世代计数器让旧回调闭嘴）；每个视频的状态在
   `play()` 顶部清，不在拆除时清；`lastKnownPosition` 不是「已经看到哪」，进度要相对 `playing.startMs`。
 - 两种卡顿要分开：通道空着（我们自己不要字节了 → 立刻重建）和请求吊着没回（连接或 CDN → 才轮到退避）。

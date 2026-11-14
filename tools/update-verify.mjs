@@ -127,11 +127,14 @@ function launch(store) {
     querySelectorAll: () => links,
     createElement: (t) => ({ tag: t }),
   };
+  const listeners = {};
   const c = { document, localStorage: store, JSON, parseInt, Math, Date, String,
+    window: { addEventListener: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); } },
     Blob: function () {}, URL: { createObjectURL: () => "blob:" + (++blobs) }, location: { reload: () => { reloaded = true; } } };
   vm.createContext(c);
   vm.runInContext(bootSrc + "\nthis.Boot = Boot;", c);
-  return { Boot: c.Boot, written, inserted, styles, linksRemoved: links.removed || 0, reloaded, kids: bodyKids };
+  const fire = (type) => (listeners[type] || []).forEach((fn) => fn({}));
+  return { Boot: c.Boot, written, inserted, styles, linksRemoved: links.removed || 0, reloaded, kids: bodyKids, fire };
 }
 const bundleText = JSON.stringify(bundle);
 const meta = (v, extra) => JSON.stringify(Object.assign({ version: v, shell: 1 }, extra));
@@ -147,13 +150,55 @@ r = launch(s);
 ok(r.written.length === bundle.scripts.length && r.written.every((w) => /src="blob:\d+"/.test(w)), "有更新的 9.0.0 → 脚本全从 bundle 来（blob:）");
 ok(r.inserted === bundle.files.body && r.kids.every((k) => k.nodeName === "SCRIPT"), "body 的静态 DOM 换成 bundle 的，脚本标签留着");
 ok(r.linksRemoved === 2 && r.styles === bundle.styles.length, "样式换成 bundle 的");
-ok(s.getItem("bili.update.booting") === "9.0.0", "记下 booting=9.0.0，等首页起来");
+ok(s.getItem("bili.update.booting") === "9.0.0#1", "记下 booting=9.0.0#1，等首页起来");
 ok(r.Boot.info().running === "9.0.0", "running = 9.0.0");
 
-r = launch(s);   /* 上一次没调 Boot.ok() */
-ok(r.written.every((w) => w.indexOf('src="js/') > 0), "上次用 9.0.0 没走到首页 → 这次用安装包");
+/* 11-07 / 11-14: one launch over within seconds, no error, no log line. */
+r = launch(s);   /* 上一次没调 Boot.ok()，也没出错 */
+ok(r.Boot.info().running === "9.0.0" && r.written.every((w) => /src="blob:\d+"/.test(w)), "上次用 9.0.0 没走到首页、没出错 → 再试一次 9.0.0");
+ok(!r.Boot.isBad("9.0.0") && s.getItem("bili.update.booting") === "9.0.0#2", "没标坏，booting=9.0.0#2");
+ok(/再试一次/.test(r.Boot.info().note) && !/标坏/.test(r.Boot.info().note), "note 说再试一次、不说标坏（不算出事）：" + r.Boot.info().note);
+
+r = launch(s);   /* 连着第二次没调 Boot.ok() */
+ok(r.written.every((w) => w.indexOf('src="js/') > 0), "连着两次没走到首页 → 这次用安装包");
 ok(r.Boot.isBad("9.0.0") && !s.getItem("bili.update.bundle") && !s.getItem("bili.update.booting"), "9.0.0 标坏、更新包删掉");
-ok(/没走到首页/.test(r.Boot.info().note), "说明写在 note 里：" + r.Boot.info().note);
+ok(/没走到首页（连着 2 次）.*标坏/.test(r.Boot.info().note), "说明写在 note 里：" + r.Boot.info().note);
+
+s = storage({ "bili.update.meta": meta("9.0.0"), "bili.update.bundle": bundleText });
+r = launch(s);
+r.fire("error");   /* 启动时出了 js 错误：不是被打断，是这份代码坏 */
+ok(s.getItem("bili.update.booting") === "9.0.0#!", "启动时出错 → booting=9.0.0#!");
+r = launch(s);
+ok(r.Boot.info().running === boot.packagedFallback && r.Boot.isBad("9.0.0"), "启动时出过错 → 下一次就用安装包、标坏");
+ok(/启动时出了错.*标坏/.test(r.Boot.info().note), "note：" + r.Boot.info().note);
+
+s = storage({ "bili.update.meta": meta("9.0.0"), "bili.update.bundle": bundleText });
+r = launch(s);
+r.Boot.fail();   /* app.js：两秒了屏幕还是空的 */
+ok(s.getItem("bili.update.booting") === "9.0.0#!", "Boot.fail() → booting=9.0.0#!");
+r = launch(s);
+ok(r.Boot.info().running === boot.packagedFallback && r.Boot.isBad("9.0.0"), "Boot.fail() 之后下一次就用安装包、标坏");
+
+s = storage({ "bili.update.meta": meta("9.0.0"), "bili.update.bundle": bundleText });
+r = launch(s);
+r.Boot.ok();
+r.fire("error");   /* 首页起来之后的错误不算启动失败 */
+r.Boot.fail();
+ok(!s.getItem("bili.update.booting"), "Boot.ok() 之后的错误和 Boot.fail() 不留 booting");
+
+s = storage({ "bili.update.meta": meta("9.0.0"), "bili.update.bundle": bundleText, "bili.update.booting": "9.0.0" });
+r = launch(s);   /* 1.5.1 之前的 boot.js 写的是光版本号 */
+ok(r.Boot.info().running === "9.0.0" && s.getItem("bili.update.booting") === "9.0.0#2", "老格式 booting=9.0.0 算一次 → 再试一次，booting=9.0.0#2");
+
+s = storage({ "bili.update.meta": meta("9.0.0"), "bili.update.bundle": bundleText, "bili.update.booting": "8.0.0#1" });
+r = launch(s);
+ok(r.Boot.info().running === "9.0.0" && s.getItem("bili.update.booting") === "9.0.0#1" && !r.Boot.info().note, "别的版本留下的 booting 不算这一份的");
+
+s = storage({ "bili.update.meta": meta("9.0.0"), "bili.update.bundle": bundleText, "bili.update.booting": "9.0.0#1" });
+r = launch(s);
+r.Boot.ok();
+r = launch(s);
+ok(r.Boot.info().running === "9.0.0" && s.getItem("bili.update.booting") === "9.0.0#1" && !r.Boot.info().note, "再试那次走到了首页 → 从头记");
 
 s = storage({ "bili.update.meta": meta("9.0.0"), "bili.update.bundle": bundleText });
 r = launch(s);

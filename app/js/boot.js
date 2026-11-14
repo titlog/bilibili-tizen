@@ -18,11 +18,13 @@
  * there can already run code in this app. Verifying again would mean an async
  * step in the one place that cannot have one.
  *
- * A bundle that cannot get the app to its first screen is marked bad on the next
- * launch and the package's own code runs instead: `booting` is set just before
- * the bundle's scripts go in, and only Boot.ok() — called by app.js once the
- * home screen is drawn — clears it. ES5, like everything in app/js: the oldest
- * supported set runs Chromium 69. */
+ * A bundle that cannot get the app to its first screen is marked bad and the
+ * package's own code runs instead: `booting` is set just before the bundle's
+ * scripts go in, and only Boot.ok() — called by app.js once the home screen is
+ * drawn — clears it. A launch that saw itself fail (a JS error while booting, or
+ * Boot.fail()) condemns the bundle on the next launch; one that simply never
+ * got there is given a second launch, and two of those in a row condemn it.
+ * ES5, like everything in app/js: the oldest supported set runs Chromium 69. */
 var Boot = (function () {
     "use strict";
 
@@ -80,6 +82,16 @@ var Boot = (function () {
     }
     function drop() { del(K_BUNDLE); del(K_META); del(K_BOOTING); }
 
+    /* `booting` is "version#n": n launches of it in a row that never reached
+     * Boot.ok(), or "!" for one that saw itself fail. A bare version is what
+     * the boot.js before 1.5.1 wrote, and counts as one. */
+    function bootingOf(s) {
+        var m = /^(.*?)(?:#(\d+|!))?$/.exec(String(s || ""));
+        if (!s || !m) { return { version: "", tries: 0, failed: false }; }
+        return { version: m[1], tries: m[2] === "!" ? 0 : (parseInt(m[2] || "1", 10) || 1), failed: m[2] === "!" };
+    }
+    var tries = 0;   /* earlier launches of the chosen bundle that never said Boot.ok() */
+
     /* What this launch decided, for update.js to report — this file has no
      * diagnostics channel of its own, and a decision nobody can read is how a
      * fallback turns into a mystery. */
@@ -105,11 +117,23 @@ var Boot = (function () {
             info.note = meta.version + " 在这台电视上启动失败过，用安装包";
             return null;
         }
-        if (get(K_BOOTING) === meta.version) {
+        /* One launch that never got there is not proof of anything. 11-07 (MY,
+         * Tizen 5.0) and 11-14 (TW, Tizen 9.0) each threw 1.4.14 away after a
+         * launch that left not one log line — over within seconds, in the
+         * morning, after twelve hours off and many good launches of the same
+         * version — and ran their old packages (1.4.12, 1.3.2) until the next
+         * release. A launch that saw itself fail still condemns at once. */
+        var bt = bootingOf(get(K_BOOTING));
+        if (bt.version === meta.version && (bt.failed || bt.tries >= 2)) {
             markBad(meta.version);
             drop();
-            info.note = "上次用 " + meta.version + " 启动没走到首页，标坏，退回安装包 " + info.packaged;
+            info.note = "上次用 " + meta.version + " 启动没走到首页（" +
+                (bt.failed ? "启动时出了错" : "连着 " + bt.tries + " 次") + "），标坏，退回安装包 " + info.packaged;
             return null;
+        }
+        tries = bt.version === meta.version ? bt.tries : 0;
+        if (tries) {
+            info.note = "上次用 " + meta.version + " 启动没走到首页就没了（没出错，多半是被打断），再试一次";
         }
         var b = parse(get(K_BUNDLE));
         if (!b || b.version !== meta.version || !b.files || !b.scripts || !b.scripts.length) {
@@ -162,7 +186,15 @@ var Boot = (function () {
             }
         }
 
-        put(K_BOOTING, b.version);
+        put(K_BOOTING, b.version + "#" + (tries + 1));
+        /* An error while it boots is the bundle failing, not the launch being
+         * cut short — app.js's own window.onerror comes too late for the
+         * scripts before it, or for an app.js that does not parse. */
+        try {
+            window.addEventListener("error", function () {
+                if (get(K_BOOTING)) { put(K_BOOTING, b.version + "#!"); }
+            });
+        } catch (e) {}
         for (var m = 0; m < urls.length; m++) { tag(urls[m]); }
     }
 
@@ -201,6 +233,9 @@ var Boot = (function () {
         info: function () { return { packaged: info.packaged, running: info.running, note: info.note }; },
         /* The home screen is up: this launch's code is good. */
         ok: function () { del(K_BOOTING); },
+        /* This launch's code has shown it does not work (app.js: a blank screen
+         * two seconds in): the next launch takes the package. */
+        fail: function () { if (get(K_BOOTING)) { put(K_BOOTING, info.running + "#!"); } },
         /* window.onerror sees a bundle's scripts as blob: urls; this names them. */
         scriptName: function (src) { return names[src] || String(src || "").split("/").pop(); }
     };

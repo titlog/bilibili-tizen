@@ -1598,6 +1598,10 @@ var API = (function () {
              * search-result open, the 403 rescue's aid lookup and the
              * dead-video check alike. */
             function gated(why) { return /^HTTP |^bad JSON|code -352|code -403/.test(String(why)); }
+            /* The unsigned twin's -400 is its refusal too: 11-08, after view's
+             * 412, it answered 「-400 请求错误」 to a search card, and the app's
+             * view — the one meant for exactly that — was never asked. */
+            function twinRefused(why) { return gated(why) || /code -400\b/.test(String(why)); }
             var plain = BASE + "/x/web-interface/view?bvid=" + bvid;
             var twin = BASE + "/x/web-interface/wbi/view?bvid=" + bvid;
             /* Both of those are on api.bilibili.com, and the gate closes both:
@@ -1647,7 +1651,7 @@ var API = (function () {
                     getJson(twin, function (d) {
                         onOk(shape(d), "wbi/view 答上了（view 近来被闸，先问它）");
                     }, function (why2) {
-                        if (!gated(why2)) { onFail("wbi/view " + why2); return; }
+                        if (!twinRefused(why2)) { onFail("wbi/view " + why2); return; }
                         getJson(plain, function (d) {
                             viewGatedUntil = 0;
                             onOk(shape(d), "wbi/view 答 " + why2 + "，view 又答上了");
@@ -1668,7 +1672,7 @@ var API = (function () {
                         onOk(shape(d), "view 答 " + why1 + "，wbi/view 不签名答上了（之后 30 分钟先问它）");
                     }, function (why2) {
                         var tried = "view " + why1 + "；wbi/view " + why2;
-                        if (appLast && gated(why2)) { appAfter(tried); return; }
+                        if (appLast && twinRefused(why2)) { appAfter(tried); return; }
                         onFail(tried);
                     });
                 });

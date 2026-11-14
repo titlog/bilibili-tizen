@@ -171,6 +171,13 @@
         var login = loginNeeded(why);
         if (login) { askLogin(login, why); } else { trouble(text); }
     }
+    /* The same, for the exits failOut() follows. On a 充电专属 video failOut
+     * says what bilibili said, and that is an answer, not a fault — 11-12 one
+     * went up as 「播放失败：no dash streams」 under the right sentence. */
+    function playTrouble(text, why) {
+        if (chargeOnly()) { report("player", "不算出事（充电专属）：" + text); return; }
+        if (why) { troubleOrLogin(why, text); } else { trouble(text); }
+    }
 
     /* Errors used to be terminal: the only escape from "加载失败" was to switch
      * tab and come back. */
@@ -7290,7 +7297,7 @@
                     repaintResumeStrip();
                 });
             } else {
-                troubleOrLogin(whyText, "播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）");
+                playTrouble("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）", whyText);
             }
             failOut();
         }
@@ -7580,7 +7587,7 @@
             report("player", "dash 兜底：playurl 失败（" + w2 + "）" +
                    (playing !== session ? "，而且会话已经没了" : ""));
             if (playing !== session) { return; }
-            trouble("播放失败：" + w2);
+            playTrouble("播放失败：" + w2);
             failOut();
         });
     }
@@ -8455,7 +8462,7 @@
                         }, function (w3) {
                             if (playing !== session3) { report("player", "原地重启的 playurl 回来时会话已经没了，丢弃"); return; }
                             report("player", "原地重启：重取 playurl 失败（" + w3 + "），退出");
-                            trouble("播放错误：" + data);
+                            playTrouble("播放错误：" + data);
                             failOut();
                         });
                     } else if (playing.urls && playing.urls.length &&
@@ -8465,13 +8472,13 @@
                         Player.playProgressive(playing.urls[playing.urlIdx || 0],
                                                lastKnownPosition);
                     } else {
-                        trouble("播放错误：" + data);
+                        playTrouble("播放错误：" + data);
                         failOut();
                     }
                     return;
                 }
                 report("player", "原地重启后仍然出错，退出：" + data);
-                trouble("播放错误：" + data);
+                playTrouble("播放错误：" + data);
                 failOut();
                 return;
             }
@@ -8589,7 +8596,7 @@
              * to wait a few minutes. */
             if (refused && !Auth.accessKey()) { askLogin("视频流被拒绝（403）——先去「我的」扫码登录再试", "视频流 403"); }
             else {
-                trouble(refused ? "视频流被拒绝（403）——可能是临时限流，过几分钟再试，或换一个视频" : "播放错误：" + data);
+                playTrouble(refused ? "视频流被拒绝（403）——可能是临时限流，过几分钟再试，或换一个视频" : "播放错误：" + data);
             }
             failOut();
         }
@@ -8916,12 +8923,21 @@
          * home feed arriving — a network that is down keeps the feed away, and
          * that is no reason to throw away a good version. Harmless on the
          * package's own code. */
+        /* A launch that is over before this fires (the set switched off, the
+         * app closed) says nothing either way, and boot.js gives the update a
+         * second launch; one that gets here and fails says so with Boot.fail(),
+         * which the package's boot.js before 1.5.1 does not have. */
         setTimeout(function () {
             if (jsErrors) {
                 report("update", "启动后两秒内出过 " + jsErrors + " 次 js 错误，这次启动不算成功（跑的是更新的话，下次打开退回安装包）");
+                try { if (Boot.fail) { Boot.fail(); } } catch (e) {}
                 return;
             }
-            if (!screenEl.innerHTML) { report("update", "启动两秒了屏幕上还什么都没有，这次启动不算成功"); return; }
+            if (!screenEl.innerHTML) {
+                report("update", "启动两秒了屏幕上还什么都没有，这次启动不算成功");
+                try { if (Boot.fail) { Boot.fail(); } } catch (e) {}
+                return;
+            }
             try { Boot.ok(); } catch (e) {}
         }, 2000);
 

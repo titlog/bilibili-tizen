@@ -217,6 +217,10 @@ var Player = (function () {
     var watchdogPos = -1;     /* furthest playhead position seen */
     var watchdogAt = 0;       /* when either of them last moved */
     var userPaused = false;
+    /* selftest: the file ends this many seconds before the length it declares
+     * (the element's own `ended` is swallowed), and how many times the
+     * watchdog has called such an end the end. */
+    var shortEnd = 0, endsCalled = 0;
 
     function startWatchdog() {
         watchdogSeen = -1;
@@ -271,8 +275,26 @@ var Player = (function () {
          * start paints within a second of its data arriving. */
         var decoderStuck = !firstFrame && v.readyState < 3 && bufferedAhead(v) >= 3;
         if (decoderStuck) { need = 4000; }
+        /* Stuck at the end of a file shorter than the length it declares: the
+         * buffer is used up within a second and a half of the declared end, so
+         * there is nothing left to fetch and `ended` never comes. 2026-11-12,
+         * BV1QC4y1P7YG: 342.0 s declared, media to 341.5, the playhead parked
+         * at 341.4 — read as a dead link, the ladder reloaded, stepped down
+         * to qn16 and rebuilt for twelve minutes (33 firings), then exited on
+         * 「视频流被拒绝（403）」 with the CDN answering 416 past the file's
+         * end. It is over; three seconds is patience enough to say so. */
+        var dur = (v.duration || 0) + shortEnd;
+        var atEnd = firstFrame && isFinite(dur) && dur > 0 && bufferedAhead(v) < 0.5 && dur - end < 1.5;
+        if (atEnd) { need = 3000; }
         if (now - watchdogAt < need) { return; }
         watchdogAt = now;
+        if (atEnd) {
+            endsCalled++;
+            log("卡在片尾 3 秒：t=" + at.toFixed(1) + "s，缓冲到 " + end.toFixed(1) +
+                "s，标的时长 " + dur.toFixed(1) + "s —— 文件比标的短，当作播完了");
+            emit("ended");
+            return;
+        }
         log("卡住 " + Math.round(need / 1000) + " 秒无错误也无进展，" +
             (decoderStuck ? "数据在缓冲区里而首帧出不来，是解码卡住" : "当作断连") + "，走重载阶梯" +
             "（t=" + (v.currentTime || 0).toFixed(1) + "s" +
@@ -786,7 +808,9 @@ var Player = (function () {
             stopStallWatch();
         });
         v.addEventListener("ended", function () {
-            if (mode === "mse") { emit("ended"); }
+            if (mode !== "mse") { return; }
+            if (shortEnd) { log("自测：元素自己的 ended 不算（假装文件比标的时长短 " + shortEnd + " 秒）"); return; }
+            emit("ended");
         });
         v.addEventListener("error", function () {
             if (mode !== "mse") { return; }
@@ -3034,6 +3058,12 @@ var Player = (function () {
                 if (typeof SELFTEST !== "undefined" && SELFTEST) { fakeFailover = 1; fakeNoMint = true; }
             },
             endFakes: function () { fakeFailover = 0; fakeNoMint = false; },
+            /* Seconds the file falls short of its declared length (0 ends the
+             * pretence); answers how many ends the watchdog has called. */
+            shortEnd: function (sec) {
+                if (typeof SELFTEST !== "undefined" && SELFTEST && arguments.length) { shortEnd = sec || 0; }
+                return endsCalled;
+            },
             swapInfo: function () {
                 return { pending: !!swapPending, swapped: !!tokenSwap, fakeLeft: fake403, mode: mode,
                          failoverLeft: fakeFailover, failovers: failoverRefusals };

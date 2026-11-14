@@ -119,7 +119,7 @@ ok(s.info.running === "9.0.0" && s.marker === "9.0.0", "重新打开跑的是 9.
 ok(s.loadAfter === "9.0.0", "bundle 的脚本在 load 事件之前执行完（document.write 的时机对）");
 ok(s.onload && s.screen, "app.js 照样从 window.onload 启动、画出了首页");
 ok(s.dom, "body 换成了 bundle 里的 DOM");
-ok(s.booting === "9.0.0", "booting=9.0.0 挂着，等 Boot.ok()");
+ok(s.booting === "9.0.0#1", "booting=9.0.0#1 挂着，等 Boot.ok()");
 await page.evaluate(() => Boot.ok());
 ok((await state()).booting === null, "Boot.ok() 之后清掉");
 r = await check();
@@ -131,11 +131,11 @@ r = await check();
 ok(/^已下载 9\.1\.0/.test(r), "检查：" + r);
 await load();
 s = await state();
-ok(s.info.running === "9.1.0" && !s.onload && s.booting === "9.1.0", "9.1.0 起来了但 app 没启动（没人调 Boot.ok）");
+ok(s.info.running === "9.1.0" && !s.onload && s.booting === "9.1.0#!", "9.1.0 起来了但 app 没启动，启动时的错误 boot.js 自己看见了（booting=" + s.booting + "）");
 await load();
 s = await state();
 ok(s.info.running === s.info.packaged && s.onload && s.screen, "再打开一次：退回安装包 " + s.info.packaged + "，首页正常");
-ok(/没走到首页/.test(s.info.note), "原因：" + s.info.note);
+ok(/没走到首页（启动时出了错）.*标坏/.test(s.info.note), "原因：" + s.info.note);
 r = await check();
 ok(/启动失败过/.test(r), "线上还是 9.1.0 时：" + r);
 

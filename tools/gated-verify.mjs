@@ -175,6 +175,21 @@ const GATE_PAGE = '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN
   assert.equal(t.calls.length, 2);
 }
 {
+  /* The unsigned twin's -400 after view's 412 is a refusal, not an answer
+   * (11-08, a search card): the app's view is asked. */
+  const t = load();
+  t.respond(GATE_PAGE, 412);
+  t.respond({ code: -400, message: "请求错误" });
+  t.respond({ code: 0, data: { bvid: "BV1oXnx6sEnc", aid: 117488562013838, cid: 42977132680, title: "片子",
+    pages: [{ cid: 42977132680, page: 1, part: "P1", duration: 60 }] } });
+  const r = settle((ok, fail) => t.API.view("BV1oXnx6sEnc", ok, fail));
+  await flush();
+  assert.ok(r.ok, "twin -400: answered by the app's view (" + r.fail + ")");
+  assert.match(t.calls[2].url, /^https:\/\/app\.bilibili\.com\/x\/v2\/view\?/);
+  assert.equal(r.ok[1], "view HTTP 412；wbi/view code -400 请求错误，app 端 view 答上了（之后 30 分钟先问它）");
+  assert.equal(r.ok[0].cid, 42977132680);
+}
+{
   /* All three refusing: the text names each. The app's -404 is not the 稿件
    * gone — it says that for a 充电专属 video the web view serves (10-29). */
   const t = load();

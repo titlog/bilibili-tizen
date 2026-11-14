@@ -1797,6 +1797,60 @@ var SelfTest = (function () {
             return null;
         }],
 
+        /* 11-12: a file that ends half a second short of the length it declares
+         * (BV1QC4y1P7YG, media to 341.5 of 342.0) never fires `ended`; the
+         * watchdog took the parked playhead for a dead link, rebuilt for twelve
+         * minutes and exited on 「视频流被拒绝（403）」. Staged: the element's own
+         * `ended` is swallowed and the declared length reads half a second
+         * longer — the same picture from where the watchdog sits. */
+        ["片尾比标的时长短：打开一个视频", 600, function () {
+            probe.se = null;
+            var v = (window.__stItems || [])[4];
+            if (!v) { return "推荐里没有第五张卡片"; }
+            if (!visible("shell")) { return "不在首页（上一步没退出播放）"; }
+            probe.se = { said: [], was: Diag.incident, ends: Player.test.shortEnd() };
+            Diag.incident = function (r) { probe.se.said.push(r); probe.se.was(r); };
+            window.__stOpenNoCid(v);
+            return null;
+        }],
+        ["出画面后跳到片尾，文件比标的短半秒", 1000, function () {
+            if (!probe.se) { return null; }
+            var st = window.__stStrongState();
+            if (!st || !st.shown) { return WAIT; }
+            if (Player.mode() !== "mse") {
+                probe.se.skip = true;
+                Diag.incident = probe.se.was;
+                post("片尾：走的是 " + Player.mode() + "，看门狗只管 MSE，跳过");
+                return null;
+            }
+            Player.test.shortEnd(0.5);
+            return window.__stNearEnd() ? null : "拿不到时长，跳不过去";
+        }, 30000, function () { Diag.incident = probe.se.was; return "30 秒了还没出画面"; }],
+        /* The press that leaves is made in the call that finds the screen, so
+         * the countdown never gets to start the next video. */
+        ["卡在片尾当作播完了：出「即将播放」，没走重载阶梯，不算出事", 1000, function () {
+            if (!probe.se || probe.se.skip) { return null; }
+            if (!visible("nextup")) { return WAIT; }
+            key(KEY.RETURN);
+            Player.test.shortEnd(0);
+            Diag.incident = probe.se.was;
+            if (Player.test.shortEnd() <= probe.se.ends) { return "即将播放出来了，却不是看门狗叫的（元素自己的 ended 没吞掉？）"; }
+            return probe.se.said.length ? "当出事传了：" + probe.se.said.join(" / ") : null;
+        }, 30000, function () {
+            Player.test.shortEnd(0);
+            Diag.incident = probe.se.was;
+            return "30 秒了还没出即将播放（播放器 " + (Player.mode() || "没了") + "）";
+        }],
+        ["片尾：回到首页", 900, function () {
+            if (!probe.se) { return null; }
+            if (visible("nextup")) { return "即将播放界面没有收起来"; }
+            if (!visible("shell")) {
+                if (!probe.se.skip) { post("提示：倒计时抢先开播了下一个，按返回退出"); }
+                key(KEY.RETURN);
+            }
+            return null;
+        }],
+
         /* 10-27 (a set on no account): the durl failed before any picture, the
          * viewer pressed right twice on the black screen, and the failure was
          * taken for one mid-play — 「播放中出错，从 0:20 用 DASH 原地重启」
