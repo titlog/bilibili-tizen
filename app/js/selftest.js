@@ -2669,7 +2669,11 @@ var SelfTest = (function () {
             Nav.focus(document.querySelector('#tabs .tab[data-screen="settings"]'));
             key(KEY.ENTER);
             dg.wasOn = Diag.enabled();
-            if (!dg.wasOn) { Diag.setEnabled(true); }
+            if (!dg.wasOn) {
+                Diag.setEnabled(true);
+                /* 刚打开的那一圈是空的，手动上传不到 5 行不传（diag.js）：先记几行 */
+                for (var i = 0; i < 5; i++) { Diag.record("diag", "自测：刚打开，先记几行（" + (i + 1) + "/5）"); }
+            }
             var st = Diag.status();
             if (!st.configured) { return "这个构建没有接收地址（deploy.sh --diag 应该写进了 DIAG_TO）"; }
             post("诊断日志：编号 " + st.device + "，缓冲里 " + st.lines + " 行");

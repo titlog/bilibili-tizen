@@ -224,6 +224,13 @@ var Diag = (function () {
         var url = endpoint();
         if (!url) { refuse("这个版本没有接收地址"); return; }
         if (sending) { refuse("正在上传上一份"); return; }
+        /* 刚打开就按「上传」：关着的时候什么都不记，打开之后那一圈里只有「诊断日志=开」这一行。10-21…11-06 十四份手动上传里
+         * 六份只有这一行（抖音、Telegram 那边也一样），传上来什么也看不出，状态行却说「已上传」，像是问题报出去了。
+         * 几乎是空的就不传，状态行说清楚为什么 */
+        if (manual) {
+            load();
+            if (ring.length < 5) { refuse("日志里还没什么东西（" + ring.length + " 行）：用一会儿、遇到问题之后再传"); return; }
+        }
         var t = now(), s = sentState();
         if (manual) {
             if (t - (s.manualAt || 0) < MANUAL_GAP) { refuse("刚传过，过几秒再按"); return; }

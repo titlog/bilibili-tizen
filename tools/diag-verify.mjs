@@ -224,8 +224,24 @@ await t("出事后等 8 秒再传，期间的几件事合成一份", () => {
   assert.ok(tv.reported.some((l) => /传了 \d+ 行，编号 abc23456，走 https/.test(l)));
 });
 
+/* 手动上传要日志里有点东西（diag.js：不到 5 行不传），像一台用了一会儿的电视 */
+function fill(tv) { for (let i = 0; i < 6; i++) tv.Diag.record("player", "用了一会儿 " + i); }
+
+await t("刚打开就手动上传：几乎是空的不传，状态行说清楚", () => {
+  const tv = television();
+  let r; tv.Diag.upload((x) => { r = x; });
+  assert.equal(r.ok, false);
+  assert.equal(tv.sent.length, 0, "nothing sent");
+  assert.match(tv.Diag.status().last.why, /还没什么东西.*行/);
+  fill(tv);
+  tv.Diag.upload((x) => { r = x; });
+  assert.equal(r.ok, true, "after some use it goes up");
+  assert.equal(tv.sent.length, 1);
+});
+
 await t("自动上传：三分钟一份、一天十二份；手动不受这个限制", () => {
   const tv = television();
+  fill(tv);
   const { SETTLE, AUTO_GAP, AUTO_PER_DAY } = tv.Diag._test;
   tv.Diag.incident("一"); tv.advance(SETTLE);
   tv.Diag.incident("二"); tv.advance(SETTLE);
@@ -241,6 +257,7 @@ await t("自动上传：三分钟一份、一天十二份；手动不受这个�
 
 await t("手动连按：十秒内第二次被拒，状态里写着原因", () => {
   const tv = television();
+  fill(tv);
   tv.Diag.upload(() => {});
   let r; tv.Diag.upload((x) => { r = x; });
   assert.equal(r.ok, false);
@@ -250,6 +267,7 @@ await t("手动连按：十秒内第二次被拒，状态里写着原因", () =>
 
 await t("https 连不上时用 http 再试一次，日志写明走的哪条", () => {
   const tv = television();
+  fill(tv);
   tv.responder.fn = (x) => (x.url.startsWith("https:") ? [0, ""] : [200, JSON.stringify({ id: "viahttp2" })]);
   tv.Diag.upload(() => {});
   assert.deepEqual(tv.sent.map((x) => x.url), ["https://diag.test/v1/upload", "http://diag.test/v1/upload"]);
@@ -259,6 +277,7 @@ await t("https 连不上时用 http 再试一次，日志写明走的哪条", ()
 
 await t("服务器拒绝：写进状态，不当成功", () => {
   const tv = television();
+  fill(tv);
   tv.responder.fn = () => [429, JSON.stringify({ error: "too many from this device" })];
   let r; tv.Diag.upload((x) => { r = x; });
   assert.equal(r.ok, false);
