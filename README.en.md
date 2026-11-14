@@ -36,14 +36,14 @@ what you half-watched on the phone is under the cursor when the TV comes on.
 | **Community-tested** | Samsung 2020 55" **Q90T**, Tizen 5.5 (Chromium 69), tested by the author of [PR #2](https://github.com/titlog/bilibili-tizen/pull/2) on their branch; the old-engine compatibility comes from there |
 | **Community-tested** | Samsung 2018 49" **UA49NU7100**, Tizen 4.0 (Chromium 56). 1.4.0 installed from source works ([#4](https://github.com/titlog/bilibili-tizen/issues/4)) |
 | **Community-tested** | Samsung 2018 75" **Q8C**, Tizen 3.0 (Chromium 47). Videos play from 1.3.4, live streams from 1.3.6 ([#5](https://github.com/titlog/bilibili-tizen/issues/5)) |
-| **Very likely** | 2020 onwards (Tizen 5.5+). Playback uses standard MSE and AVPlay, nothing model-specific — but **no other model has been tried yet** |
-| **Installs, untested** | Other 2017–2019 sets (Tizen 3.0–5.0, Chromium 47–63), allowed to install from 1.2.5. One Tizen 3.0 and one Tizen 4.0 set have been tried (above); Tizen 5.0 has not. **If you install it on one, please open an issue saying how it went** |
-| **No** | Non-Samsung sets; Samsung models from 2016 and earlier (Tizen 2.x) |
+| **In use** | Samsung sets from 2020 onwards (Tizen 5.5+): the diagnostic logs show sets on Tizen 5.5, 6.0, 6.5, 8.0, 9.0 and 10.0 playing normally |
+| **In use** | Samsung sets from 2017–2019 (Tizen 3.0–5.0, Chromium 47–63), installable from 1.2.5: the diagnostic logs show sets on 3.0, 4.0 and 5.0 playing normally too |
+| **No** | Non-Samsung sets; Samsung models from 2016 and earlier (Tizen 2.x): the engine is too old for bilibili's current streams (tried by a Tizen 2.4 owner in [#17](https://github.com/titlog/bilibili-tizen/issues/17)), and the package needs Tizen 3.0 or later |
 
-A build from source reports its engine string and codec support on boot; that
-line is the first thing to read (the release package reports nothing). **Either
-way, if it works or fails on another model, please open an issue with the model
-and firmware version** — that is how this table grows.
+With diagnostic logs on (the default), a problem report carries the engine
+version and codec support — that is where the two "In use" rows come from.
+**Either way, if it works or fails on another model, please open an issue with
+the model and firmware version** — that is how this table grows.
 
 ## Install
 
