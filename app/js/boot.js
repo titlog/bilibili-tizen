@@ -36,7 +36,7 @@ var Boot = (function () {
 
     /* The package's own version, for engines without tizen.application (the
      * desktop devserver). tools/update-verify.mjs keeps it equal to config.xml. */
-    var PACKAGED_FALLBACK = "1.5.1";
+    var PACKAGED_FALLBACK = "1.5.2";
 
     /* ECDSA P-256 public key, SPKI, base64. Written by tools/update-key.mjs; the
      * private half never enters the repository. */
