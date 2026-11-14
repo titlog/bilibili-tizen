@@ -1049,7 +1049,11 @@ var SelfTest = (function () {
          * 上一集 / 下一集 to the 合集 under them; only 弹幕 and 点赞 reached them.
          * From the far end of the top row, down must land in the next row down
          * — on 上一集 / 下一集 when they are there. The step after this one puts
-         * the ring back where the panel opens it. */
+         * the ring back where the panel opens it.
+         * Since #11 / #18 (11-13) the next row down is 「画质 · 字幕 · 自动连播」,
+         * and 上一集 / 下一集 come after it: this step said 「越过了上一集」 on
+         * the first device run of that merge, for a ring that had gone exactly
+         * one row down. */
         ["面板顶上一排最右边按下键，到紧挨着的下一排", 600, function () {
             if (!visible("options")) { return "面板没有出现"; }
             var top = document.querySelectorAll("#panel-actions .focusable"), from = top[top.length - 1];
@@ -1060,6 +1064,10 @@ var SelfTest = (function () {
             var to = Nav.current();
             if (!to || to === from) { return "下键焦点没动"; }
             var name = to.id || String(to.className).split(" ")[0];
+            if (visible("opt-playback-controls")) {
+                return document.getElementById("opt-playback-controls").contains(to) ? null
+                    : "下面紧挨着的是「画质 · 字幕 · 自动连播」，下键却落到了 " + name;
+            }
             if (visible("opt-episode-controls")) {
                 return /^panel-(prev|next)-episode$/.test(to.id) ? null
                     : "有上一集 / 下一集，下键却越过它们落到了 " + name;
