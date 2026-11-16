@@ -268,6 +268,16 @@ assert.equal((appSource.match(/if \(!stillDead\(\)\) \{/g) || []).length, 2);
 /* play()'s redirect keeps a 画质 change's position and pause state. */
 assert.match(site("function play(detail, cid, keepAtMs, keepPaused)", "closeOptions();"), /detail, null,\s*keepAtMs !== undefined \? \{ atMs: keepAtMs, paused: !!keepPaused \} : null\);/);
 assert.match(site("function playPgc(", "function pgcEpisodeDetail("), /if \(hold && card && Number\(chosen\.cid\) === Number\(card\.cid\)\) \{\s*play\(pgcEpisodeDetail\(season, chosen\), chosen\.cid, hold\.atMs, hold\.paused\);/);
+/* 花絮 and other seasons list only entries playurl can be asked for. */
+assert.match(appSource, /function pgcPlayable\(ep\) \{ return !!\(ep && ep\.bvid && ep\.cid\); \}/);
+assert.match(site("function paintPgcExtras(", "function showPgcSeason("), /if \(!pgcPlayable\(ep\)\) \{ skipped\+\+; continue; \}/);
+assert.match(site("function showPgcSeason(", "function paintDesc("), /var eps = season\.episodes\.filter\(pgcPlayable\);/);
+/* …and the other season's list has a way back. */
+assert.match(site("function showPgcSeason(", "function paintDesc("), /data-back="1">返回本季[\s\S]*if \(node\.getAttribute\('data-back'\) !== null\) \{\s*paintPgcExtras\(\);/);
+/* An ordinary 合集 resets the row before its range branch (a 番剧 leaves pgc-eps). */
+assert.match(site("function paintSeason(", "function paintPgcEpisodes("), /el\("opt-season"\)\.className = "opt-row";\s*if \(s\.episodes\.length > SEASON_FOLD\)/);
+/* Up next names a 番剧's list 正片, as the panel does. */
+assert.match(appSource, /title: \(d\.epId \? "正片第 " : "合集第 "\) \+ \(adj\.index \+ 1\)/);
 /* Cancelling an opening over a video still playing keeps the browse screen veiled. */
 assert.match(site("function cancelOpening(", "/* ---------------- 直播"), /if \(playing && el\("nextup"\)\.className\.indexOf\("hidden"\) >= 0\) \{[\s\S]*?return;\s*\}\s*el\("shell"\)\.className = "";/);
 /* The UGC → PGC handoff keeps an ep:<id> resume point further than the provisional clock. */

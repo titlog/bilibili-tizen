@@ -5773,7 +5773,7 @@
         if (adj) {
             var ep = d.season.episodes[adj.index];
             cb({ detail: d.epId ? pgcEpisodeDetail(d.season, ep) : seasonEpisodeDetail(ep), cid: ep.cid,
-                 title: "合集第 " + (adj.index + 1) + " 集  " + ep.title });
+                 title: (d.epId ? "正片第 " : "合集第 ") + (adj.index + 1) + " 集  " + ep.title });
             return;
         }
 
@@ -6310,6 +6310,9 @@
         pgcShown = null;
         el("opt-season-tabs").className = "opt-row hscroll pgc-tabs hidden";
         el("opt-season-tabs").innerHTML = "";
+        /* Before the range branch too: a 番剧 leaves `pgc-eps` here, and its
+         * 344px tiles then sized a 60-episode 合集's range chips. */
+        el("opt-season").className = "opt-row";
         if (s.episodes.length > SEASON_FOLD) {
             /* Ranges of 50, the list itself on the right (openEpisodeList). */
             var ranges0 = EpisodeNav.ranges(s.episodes.length, SEASON_FOLD);
@@ -6327,7 +6330,6 @@
             }
             return;
         }
-        el("opt-season").className = "opt-row";
         for (var i = 0; i < s.episodes.length; i++) {
             var ep = s.episodes[i];
             html += '<div class="opt focusable' + (i === at ? " current" : "") + '" data-i="' + i + '">' +
@@ -6434,19 +6436,25 @@
         return true;
     }
 
+    /* 花絮, PV and other seasons' entries go straight to play(), so they get
+     * the check playPgc() makes: without a bvid and cid there is nothing to
+     * ask playurl for (cid=undefined, then 「播放失败」 as an incident). */
+    function pgcPlayable(ep) { return !!(ep && ep.bvid && ep.cid); }
     function paintPgcExtras() {
         var group = el("opt-pgc-extra"), d = playing && playing.detail;
         if (!d || !d.epId || !d.season) { group.className = "opt-group hidden"; group.innerHTML = ""; return; }
-        var s = d.season, html = "", i, j;
+        var s = d.season, html = "", i, j, skipped = 0;
         for (i = 0; i < s.sections.length; i++) {
-            html += '<div class="opt-label">' + esc(s.sections[i].title) + '</div><div class="opt-row hscroll">';
+            var row = "";
             for (j = 0; j < s.sections[i].episodes.length; j++) {
                 var ep = s.sections[i].episodes[j];
-                html += '<div class="opt focusable" data-section="' + i + '" data-episode="' + j + '">' +
+                if (!pgcPlayable(ep)) { skipped++; continue; }
+                row += '<div class="opt focusable" data-section="' + i + '" data-episode="' + j + '">' +
                     esc(ep.title) + (ep.badge ? ' · ' + esc(ep.badge) : '') + '</div>';
             }
-            html += '</div>';
+            if (row) { html += '<div class="opt-label">' + esc(s.sections[i].title) + '</div><div class="opt-row hscroll">' + row + '</div>'; }
         }
+        if (skipped) { report("player", "番剧花絮里 " + skipped + " 条没有稿件（bvid / cid），不列"); }
         if (s.seasons.length > 1) {
             html += '<div class="opt-label">其他季</div><div class="opt-row hscroll">';
             for (i = 0; i < s.seasons.length; i++) {
@@ -6477,8 +6485,13 @@
         var session = playing, token = newView();
         API.pgcSeason(seasonId, false, function (season) {
             if (!stillViewing(token) || playing !== session || !optionsOpen) { return; }
+            var eps = season.episodes.filter(pgcPlayable);
             function paint(range) {
-                var group = el("opt-pgc-extra"), eps = season.episodes, html = '<div class="opt-label">' + esc(season.title) + ' · 正片</div>';
+                /* 「返回本季」 first: this replaces the 花絮 and 其他季 rows,
+                 * which had no way back short of closing the panel. */
+                var group = el("opt-pgc-extra"),
+                    html = '<div class="opt-label">' + esc(season.title) + ' · 正片</div>' +
+                           '<div class="opt-row"><div class="opt focusable" data-back="1">返回本季</div></div>';
                 var ranges = EpisodeNav.ranges(eps.length, SEASON_FOLD), i;
                 if (ranges.length > 1) {
                     html += '<div class="opt-row hscroll">';
@@ -6498,6 +6511,12 @@
                 for (i = 0; i < nodes.length; i++) {
                     (function (node) {
                         node.onselect = function () {
+                            if (node.getAttribute('data-back') !== null) {
+                                paintPgcExtras();
+                                Nav.focus(el("opt-pgc-extra").querySelector('.opt[data-season]') ||
+                                          el("opt-pgc-extra").querySelector('.opt'));
+                                return;
+                            }
                             var r = node.getAttribute('data-range');
                             if (r !== null) { paint(Number(r)); return; }
                             var ep = eps[Number(node.getAttribute('data-episode'))];
@@ -6505,7 +6524,7 @@
                         };
                     })(nodes[i]);
                 }
-                if (nodes.length) { Nav.focus(nodes[0]); }
+                Nav.focus(group.querySelector('.opt[data-episode]') || nodes[0]);
             }
             paint(0);
         }, function (why) {
