@@ -1035,7 +1035,16 @@ var SelfTest = (function () {
          * by way of a reload instead of restoring where it came from. */
         ["再开一个视频，为了走到 UP 主页", 600, function () {
             if (!visible("shell")) { return "不在浏览界面"; }
-            if (!document.querySelector("#screen .card.focused")) { return "没有选中的卡片"; }
+            var f = document.querySelector("#screen .card.focused");
+            if (!f) { return "没有选中的卡片"; }
+            /* Not from 继续观看: after the 番剧 steps its first card is a 番剧
+             * episode, which has no UP 主 chip (2026-11-16, four steps failed
+             * on a run that followed one). The 推荐 grid is ordinary uploads. */
+            if (f.parentNode && f.parentNode.parentNode && f.parentNode.parentNode.id === "resume-row") {
+                key(KEY.DOWN);
+                f = document.querySelector("#screen .card.focused");
+                if (!f || !f.parentNode || f.parentNode.id !== "feed-grid") { return "从继续观看下不到推荐网格"; }
+            }
             key(KEY.ENTER);
             return null;
         }],
@@ -2792,6 +2801,126 @@ var SelfTest = (function () {
             Settings.set("showSubtitles", control.enabled); Settings.set("subtitleLanguage", control.language); return null;
         }]
     ];
+
+    /* The system IME supplies text; selection and playback use remote keys. */
+    steps.push(
+        ["搜索番剧", 500, function () {
+            if (!visible("shell")) { key(KEY.RETURN); }
+            Nav.focus(document.querySelector('#tabs .tab[data-screen="search"]'));
+            key(KEY.ENTER);
+            Nav.focus(document.querySelector('#screen [data-act="ime"]'));
+            key(KEY.ENTER);
+            var input = document.getElementById("ime");
+            input.value = "罗小黑战记学前篇";
+            var event = document.createEvent("Event"); event.initEvent("input", true, true); input.dispatchEvent(event);
+            var enter = document.createEvent("Event"); enter.initEvent("keydown", true, true); enter.keyCode = KEY.ENTER; input.dispatchEvent(enter);
+            return null;
+        }],
+        ["番剧置顶并选择免费集", 1000, function () {
+            var episodes = document.querySelectorAll("#results .pgc-episode");
+            if (!episodes.length) { return WAIT; }
+            for (var i = 0; i < episodes.length; i++) {
+                if (!/会员/.test(episodes[i].textContent)) { Nav.focus(episodes[i]); key(KEY.ENTER); return null; }
+            }
+            return "没有找到免费集";
+        }, 30000, "30 秒内没有番剧置顶选集"],
+        ["番剧开播后打开面板", 1000, function () {
+            var state = window.__stStrongState();
+            if (!state || !state.shown) { return WAIT; }
+            if (!state.epId) { return "出画面了，但走的不是番剧路径"; }
+            key(KEY.DOWN);
+            return visible("options") && /正片/.test(document.getElementById("opt-season-label").textContent)
+                ? null : "下键没有打开番剧正片面板";
+        }, 35000, "35 秒内番剧没有出画面"],
+        /* 2026-11-16: 正片 had the 合集's tiles, 48 episodes in twelve rows.
+         * Now 20 to a range, five to a row: four rows at most. */
+        ["番剧正片 20 集一组，最多四行", 600, function () {
+            var row = document.getElementById("opt-season");
+            var chips = row.querySelectorAll(".opt");
+            if (!chips.length) { return "正片一集都没画出来"; }
+            var tops = {}, lines = 0;
+            for (var i = 0; i < chips.length; i++) {
+                var t = Math.round(chips[i].getBoundingClientRect().top);
+                if (!tops[t]) { tops[t] = 1; lines++; }
+            }
+            var tabs = document.getElementById("opt-season-tabs").querySelectorAll(".opt");
+            post("番剧正片：这一组 " + chips.length + " 个，" + lines + " 行，高 " + row.offsetHeight + "px，分组 " + tabs.length + " 个");
+            if (chips.length > 20) { return "一组里放了 " + chips.length + " 集（应该 20 集一组）"; }
+            return lines <= 4 ? null : "这一组排成了 " + lines + " 行";
+        }],
+        /* ← on a range's first episode / → on its last rolls into the
+         * neighbouring range, as the official TV client does. */
+        ["正片在一组的头尾按左右键换组", 800, function () {
+            var row = document.getElementById("opt-season");
+            var chips = row.querySelectorAll(".opt");
+            if (!document.getElementById("opt-season-tabs").querySelector(".opt")) {
+                post("正片不到 20 集，没有分组，跳过换组");
+                return null;
+            }
+            var first = Number(chips[0].getAttribute("data-i"));
+            var edge = first > 0 ? chips[0] : chips[chips.length - 1];
+            var dir = first > 0 ? -1 : 1;
+            var want = Number(edge.getAttribute("data-i")) + dir;
+            Nav.focus(edge);
+            key(dir > 0 ? KEY.RIGHT : KEY.LEFT);
+            var now = Nav.current();
+            var got = now && now.parentNode === row ? Number(now.getAttribute("data-i")) : -1;
+            post("换组：第 " + (Number(edge.getAttribute("data-i")) + 1) + " 集按" + (dir > 0 ? "右" : "左") + "，落到第 " + (got + 1) + " 集");
+            return got === want ? null : "按" + (dir > 0 ? "右" : "左") + "键没有换到相邻那组的第 " + (want + 1) + " 集";
+        }],
+        ["退出番剧面板和播放", 500, function () {
+            if (visible("options")) { key(KEY.RETURN); }
+            if (!visible("shell")) { key(KEY.RETURN); }
+            return null;
+        }],
+        /* What the design leans on (measured 11-16 from here, signed out): a
+         * 会员 episode opened as an ordinary card that carries its cid gets
+         * -404 from the ordinary playurl, view() redirects to the 番剧, and
+         * the PGC side refuses the 试看 and says why. Never the 180-second
+         * 试看 played as the episode — signed in too, which is what only this
+         * set can tell. A 大会员 account plays it whole. */
+        ["番剧会员集当带 cid 的普通卡片打开", 500, function () {
+            if (!visible("shell")) { return "不在浏览界面（上一步没退出播放）"; }
+            if (!probe.vip) {
+                probe.vip = {};
+                API.pgcSeason(1733, false, function (s) {
+                    for (var i = 0; i < s.episodes.length; i++) {
+                        var e = s.episodes[i];
+                        if (/会员/.test(e.badge) && e.bvid && e.cid) { probe.vip.ep = e; return; }
+                    }
+                    probe.vip.why = "罗小黑战记里没有会员集";
+                }, function (why) { probe.vip.why = "season 没答：" + why; });
+                return WAIT;
+            }
+            if (probe.vip.why) { return probe.vip.why; }
+            if (!probe.vip.ep) { return WAIT; }
+            document.getElementById("toast").className = "hidden";
+            window.__stOpenCard({ bvid: probe.vip.ep.bvid, cid: probe.vip.ep.cid, title: "会员集（自测）" });
+            return null;
+        }, 20000, "20 秒内 season 没答"],
+        ["会员集没有把试看当正片放", 1000, function () {
+            var t = document.getElementById("toast");
+            var said = t && t.className !== "hidden" ? t.textContent : "";
+            var st = window.__stStrongState();
+            if (said && /会员/.test(said) && !(st && st.shown)) {
+                post("会员集：没放，提示「" + said + "」");
+                return null;
+            }
+            if (st && st.shown) {
+                var v = document.querySelector("video"), dur = v ? v.duration : 0;
+                var full = Math.round(probe.vip.ep.durationMs / 1000);
+                if (!(dur > 0)) { return WAIT; }
+                post("会员集：放了（" + (st.epId ? "番剧路径" : "普通路径") + "），时长 " + Math.round(dur) + " 秒，全长 " + full + " 秒");
+                return dur > full - 60 ? null : "放的是试看（" + Math.round(dur) + " 秒，全长 " + full + " 秒）";
+            }
+            if (said) { return "提示了「" + said + "」"; }
+            return WAIT;
+        }, 30000, "30 秒内既没提示也没出画面"],
+        ["退出会员集", 500, function () {
+            if (!visible("shell")) { key(KEY.RETURN); }
+            return null;
+        }]
+    );
 
     function run() {
         var i = 0, failures = 0;

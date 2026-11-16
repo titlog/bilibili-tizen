@@ -16,10 +16,18 @@ var EpisodeNav = (function () {
         if (!episodes) { return null; }
         var current = -1;
         for (i = 0; i < episodes.length; i++) {
-            if (episodes[i].bvid === detail.bvid) { current = i; break; }
+            if (detail.epId ? Number(episodes[i].epId) === Number(detail.epId) :
+                    episodes[i].bvid === detail.bvid) { current = i; break; }
         }
         if (current < 0 || !episodes[current + direction]) { return null; }
         return { kind: "season", index: current + direction, cid: episodes[current + direction].cid };
     }
-    return { adjacent: adjacent };
+    function ranges(count, size) {
+        var out = [];
+        for (var start = 0; start < count; start += size) {
+            out.push({ start: start, end: Math.min(count, start + size) });
+        }
+        return out;
+    }
+    return { adjacent: adjacent, ranges: ranges };
 })();

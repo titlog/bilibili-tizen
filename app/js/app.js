@@ -1550,6 +1550,11 @@
                 }
                 if (!winner.cid && loser.cid) { winner.cid = loser.cid; }
                 if (!winner.page && loser.page) { winner.page = loser.page; }
+                /* A 番剧 episode played here remembers its ep_id (the local
+                 * card); the account's copy may not. It names one part, so
+                 * it carries only within the part: the card then reopens
+                 * through PGC (playVideo). */
+                if (!winner.epId && loser.epId) { winner.epId = loser.epId; winner.seasonId = loser.seasonId; }
             }
             byBvid[k] = winner;
         }
@@ -2612,6 +2617,8 @@
     window.__stOpenNoCid = function (v) {
         playVideo({ bvid: v.bvid, title: v.title, pic: v.pic, author: v.author, duration: v.duration, play: v.play });
     };
+    /* A card that carries its cid, as 推荐 / 热门 / 排行 hand them over. */
+    window.__stOpenCard = function (v) { playVideo(v); };
     /* As if the start-up check had found this set's key dead. */
     window.__stRefuseKey = function (on) { refusedKey = on ? (Auth.accessKey() || "") : ""; };
     window.__stDanmaku = function (level) { setDanmakuLevel(level); };
@@ -2629,7 +2636,8 @@
         if (!playing) { return null; }
         return { route: playing.route || "", triedStrong: !!playing.triedStrong, cid: playing.cid,
                  strong: !!(playing.dashReady && playing.dashReady.strong),
-                 label: playing.timedLabel || "", shown: !!playing.shown };
+                 label: playing.timedLabel || "", shown: !!playing.shown,
+                 epId: (playing.detail && playing.detail.epId) || 0 };
     };
     /* Returns what it forgot: a step that only needs the window out of its
      * way puts it back with __stRecallRefusal, for the steps after it. */
@@ -2707,7 +2715,7 @@
 
         /* Coming back from a video used to land on an empty keyboard with the
          * results thrown away, so finding one thing meant searching twice. */
-        if (state.results && state.results.length) {
+        if (state.results && (state.results.length || (state.searchMedia || []).length)) {
             paintResults(state.results);
         } else {
             paintSearchStarters();
@@ -2738,8 +2746,8 @@
          * video), on the first result: the keyboard is collapsed then, and
          * Nav.reset does not check visibility — the ring used to land on a
          * display:none key and vanish. */
-        if (state.results && state.results.length && screenEl.querySelector("#results .card")) {
-            Nav.reset("#results .card");
+        if (state.results && screenEl.querySelector("#results .focusable")) {
+            Nav.reset("#results .focusable");
         } else {
             Nav.reset('[data-act="ime"]');
         }
@@ -2953,9 +2961,47 @@
         var focusedIndex = (keepFocus && cur && cur.getAttribute &&
                             cur.getAttribute("data-i") !== null)
             ? Number(cur.getAttribute("data-i")) : null;
+        /* The pinned shows are rebuilt with the grid: a ring on one of their
+         * controls is found again by what it is, or the next page leaves
+         * Nav on a detached node. */
+        var pgcKind = keepFocus && cur && cur.className && /\bpgc-(watch|range|episode)\b/.exec(cur.className);
+        var pgcFocus = pgcKind ? "." + pgcKind[0] + '[data-media="' + cur.getAttribute("data-media") + '"]' +
+            (cur.getAttribute("data-range") !== null ? '[data-range="' + cur.getAttribute("data-range") + '"]' : "") +
+            (cur.getAttribute("data-episode") !== null ? '[data-episode="' + cur.getAttribute("data-episode") + '"]' : "") : null;
         var results = el("results");
         if (!results) { return null; }
-        var html = '<div class="grid">';
+        var html = "", media = state.searchMedia || [];
+        for (var m = 0; m < media.length; m++) {
+            var show = media[m], eps = show.episodes || [], range = show.range || 0;
+            var start = eps.length > SEASON_FOLD ? range * SEASON_FOLD : 0;
+            var end = Math.min(eps.length, start + SEASON_FOLD);
+            html += '<div class="pgc-card"><img class="pgc-cover" src="' + esc(show.pic) + '">' +
+                '<div class="pgc-info"><div class="pgc-title">' + esc(show.title) + '</div>' +
+                '<div class="pgc-meta">' + esc((show.score ? show.score + " 分 · " : "") +
+                    (show.indexShow || "") + (show.typeName ? " · " + show.typeName : "") +
+                    (show.styles ? " · " + show.styles : "") + (show.areas ? " · " + show.areas : "")) + '</div>';
+            for (var b = 0; b < show.badges.length; b++) {
+                html += '<span class="pgc-badge">' + esc(show.badges[b].text || "") + '</span>';
+            }
+            html += '<div class="pgc-desc">' + esc(show.desc) + '</div>' +
+                '<div class="btn focusable pgc-watch" data-media="' + m + '">立即观看</div>';
+            if (eps.length > SEASON_FOLD) {
+                html += '<div class="pgc-row hscroll">';
+                var ranges = EpisodeNav.ranges(eps.length, SEASON_FOLD);
+                for (var r = 0; r < ranges.length; r++) {
+                    html += '<div class="opt focusable pgc-range" data-media="' + m + '" data-range="' + r + '">' +
+                        (ranges[r].start + 1) + '–' + ranges[r].end + '</div>';
+                }
+                html += '</div>';
+            }
+            html += '<div class="pgc-row hscroll">';
+            for (var e = start; e < end; e++) {
+                html += '<div class="opt focusable pgc-episode" data-media="' + m + '" data-episode="' + e + '">' +
+                    esc(eps[e].title || String(e + 1)) + (eps[e].badge ? ' · ' + esc(eps[e].badge) : '') + '</div>';
+            }
+            html += '</div></div></div>';
+        }
+        html += '<div class="grid">';
         for (var i = 0; i < items.length; i++) { html += cardHtml(items[i], i); }
         results.innerHTML = html + "</div>";
         fitCardMeta(results);
@@ -2963,6 +3009,27 @@
          * results are not buried under four rows of letters. */
         var kb = screenEl.querySelector(".keyboard");
         if (kb) { kb.className = "keyboard collapsed"; }
+        var pgcNodes = results.querySelectorAll(".pgc-watch, .pgc-range, .pgc-episode");
+        for (var n = 0; n < pgcNodes.length; n++) {
+            (function (node) {
+                node.onselect = function () {
+                    var item = media[Number(node.getAttribute("data-media"))];
+                    if (node.className.indexOf("pgc-range") >= 0) {
+                        item.range = Number(node.getAttribute("data-range"));
+                        paintResults(items);
+                        Nav.focus(results.querySelector('.pgc-episode[data-media="' + node.getAttribute("data-media") + '"]'));
+                    } else {
+                        var idx = node.getAttribute("data-episode");
+                        /* Not through playVideo(), which is where the press is
+                         * taken: without it 到画面 按下起 counted from an
+                         * earlier one (7455ms on a 964ms start, 11-16). */
+                        pressAt = new Date().getTime();
+                        rememberPosition(); backStack = [];
+                        playPgc(idx === null ? 0 : item.episodes[Number(idx)].epId, item.seasonId, item);
+                    }
+                };
+            })(pgcNodes[n]);
+        }
         var cards = results.querySelectorAll(".card");
         for (var j = 0; j < cards.length; j++) {
             (function (card, v) {
@@ -2974,8 +3041,10 @@
         }
         if (keepFocus && focusedIndex !== null && cards[focusedIndex]) {
             Nav.focus(cards[focusedIndex]);
+        } else if (pgcFocus) {
+            Nav.focus(results.querySelector(pgcFocus) || results.querySelector(".focusable"));
         }
-        return cards[0];
+        return results.querySelector(".focusable");
     }
 
     function runSearch() {
@@ -2984,6 +3053,7 @@
         var results = el("results");
         results.innerHTML = '<div class="empty">搜索中…</div>';
         state.searchPage = 1;
+        state.searchMedia = [];
         state.searchDone = false;
         state.searchRetryAt = 0;
         /* The term too, not just the view: Enter on the IME and a suggestion
@@ -2991,13 +3061,14 @@
          * slower one used to paint its results under the other's heading.
          * maybeLoadMoreSearch has guarded on the term all along. */
         var term = state.query.trim();
-        API.search(term, 1, function (items) {
+        API.search(term, 1, function (items, media) {
             if (!stillViewing(token) || state.query.trim() !== term) { return; }
             results = el("results");
             if (!results) { return; }
-            if (!items.length) { results.innerHTML = '<div class="empty">没有结果</div>'; return; }
+            if (!items.length && !media.length) { results.innerHTML = '<div class="empty">没有结果</div>'; return; }
             rememberSearch(term);
             state.results = items;
+            state.searchMedia = media;
             var first = paintResults(items);
             Nav.focus(first);
         }, function (why) {
@@ -4498,7 +4569,7 @@
     }
 
     function prefetchCard(v, eager) {
-        if (!v || !v.bvid || !v.cid || !prefetchAllowed()) { return; }
+        if (!v || v.epId || v.seasonId || !v.bvid || !v.cid || !prefetchAllowed()) { return; }
         var now = new Date().getTime();
         var wait = PREFETCH_GAP - (now - lastPrefetchAt);
         var key = prefetchKey(v.bvid, v.cid);
@@ -4656,6 +4727,10 @@
         pressAt = new Date().getTime();
         if (!fromPanel) { rememberPosition(); backStack = []; }
         if (v.live) { openLive(v); return; }
+        if (v.epId || v.seasonId) {
+            if (v.bvid && v.cid && v.progressMs) { handoff = { bvid: v.bvid, cid: v.cid, positionMs: v.progressMs }; }
+            playPgc(v.epId || 0, v.seasonId || 0, v); return;
+        }
 
         /* A card from bilibili's own history carries where the phone got to.
          * Picking it up is the whole point of showing that section: the phone
@@ -4671,7 +4746,8 @@
          * Waiting on a view() round trip just to learn something we were handed
          * put seconds of black screen between the button and the picture. Start
          * immediately and fill in the description, parts and related list behind
-         * the video, since only the panel wants them. */
+         * the video, since only the panel wants them. A 番剧 episode among them
+         * plays as the upload it also is (playPgc says why). */
         if (v.cid) {
             var provisional = {
                 bvid: v.bvid, aid: v.aid, cid: v.cid, title: v.title, pic: v.pic,
@@ -4691,6 +4767,9 @@
         showOpening(v);
         API.view(v.bvid, function (d, via) {
             if (!stillViewing(token)) { return; }
+            var redirect = PGC.redirect(d.redirect);
+            /* `d`, not `v`: the card came without a cid, and view() has it. */
+            if (redirect) { playPgc(redirect.kind === "ep" ? redirect.id : 0, redirect.kind === "ss" ? redirect.id : 0, d); return; }
             /* Which endpoint answered: the gated pair or the app's. */
             report("meta", videoTag(v) + " 打开没带 cid 的卡片，" + via);
             /* 10-30: two cards on an uploader's page, listed only once the set
@@ -4727,6 +4806,115 @@
         });
     }
 
+    function pgcFailure(why, fallback) {
+        var text = String(why), reason = text.replace(/^code -?\d+\s+/, "");
+        var login = loginNeeded(text);
+        if (login) { askLogin("B 站说：" + reason + "；" + login, text); }
+        else if (/会员/.test(reason)) {
+            if (!Auth.isLoggedIn()) { askLogin("B 站说：" + reason + "；" + loginNeeded("code -101"), text); }
+            else { report("player", "不算出事（番剧会员专享）：" + text); toast("B 站说：" + reason); }
+        } else if (/code -10403\b/.test(text)) {
+            report("player", "不算出事（番剧地区限制）：" + text);
+            toast("B 站说：" + reason);
+        }
+        else { trouble(/^code -?\d+\s+/.test(text) ? "B 站说：" + reason : fallback + text); }
+    }
+
+    /* A 番剧 / 影视 episode: the season first (it has the episode's bvid, cid
+     * and the 正片 list), then play() with a detail carrying epId, which sends
+     * every playurl request of this playback to the PGC endpoint
+     * (playDetailDash). Entered from a pinned search result, a 继续观看 card
+     * that remembers its epId, view()'s redirect_url on a card opened without
+     * a cid, and the -404 after an ordinary start.
+     *
+     * Only those. A card that carries a cid and turns out to be a 番剧 episode
+     * keeps playing as the upload it also is: measured 2026-11-16 from here,
+     * signed out, the ordinary /x/player/playurl gives a free episode the same
+     * full-length DASH as the PGC endpoint, and a 会员 one -404 — never the
+     * 试看. The -404 path then lands here. Switching a playing video over to
+     * PGC once view() answers was tried (PR #19) and dropped: two identities
+     * for one episode, and every position / pause / resume rule twice. */
+    function playPgc(epId, seasonId, card) {
+        var token = newView();
+        showOpening(card || {});
+        API.pgcSeason(epId || seasonId, !!epId, function (season) {
+            if (!stillViewing(token)) { return; }
+            var episodes = season.episodes.slice(), i, j, chosen = null;
+            for (i = 0; i < season.sections.length; i++) {
+                episodes = episodes.concat(season.sections[i].episodes);
+            }
+            /* The upload the card stands for, when it says: its cid, else a
+             * bvid only one episode has. An ss… redirect names no episode, and
+             * the season-level pick below would turn episode 2 into 1. */
+            function byArchive(cid, bvid) {
+                var hit = null, n = 0, k;
+                for (k = 0; cid && k < episodes.length; k++) {
+                    if (Number(episodes[k].cid) === Number(cid)) { return episodes[k]; }
+                }
+                for (k = 0; bvid && k < episodes.length; k++) {
+                    if (episodes[k].bvid === bvid) { hit = episodes[k]; n++; }
+                }
+                return n === 1 ? hit : null;
+            }
+            if (!epId && (chosen = byArchive(card && card.cid, card && card.bvid))) {
+                report("player", "番剧按卡片的稿件对上了这一集（ep_id=" + chosen.epId + "）");
+            } else if (!epId) {
+                /* 立即观看: the episode of this season watched here last. */
+                var recent = Resume.recent(300);
+                for (i = 0; i < recent.length && !chosen; i++) {
+                    for (j = 0; j < season.episodes.length; j++) {
+                        var candidate = season.episodes[j];
+                        if (recent[i].epId ? candidate.epId === recent[i].epId :
+                                (candidate.bvid === recent[i].bvid && Resume.positionMs(candidate.bvid, candidate.cid))) {
+                            chosen = candidate; break;
+                        }
+                    }
+                }
+                chosen = chosen || season.episodes[0];
+            } else {
+                for (i = 0; i < episodes.length; i++) {
+                    if (episodes[i].epId === Number(epId)) { chosen = episodes[i]; break; }
+                }
+            }
+            if (!chosen || !chosen.bvid || !chosen.cid) {
+                cancelOpening();
+                trouble("番剧集数信息不完整（" + (epId ? "ep" + epId : "ss" + seasonId) + "，" + episodes.length + " 集）");
+                return;
+            }
+            opening = false;
+            play(pgcEpisodeDetail(season, chosen), chosen.cid);
+        }, function (why) {
+            if (!stillViewing(token)) { return; }
+            cancelOpening(); pgcFailure(why, "番剧信息加载失败：");
+        });
+    }
+
+    function pgcEpisodeDetail(season, episode) {
+        return { bvid: episode.bvid, aid: episode.aid, cid: episode.cid,
+            epId: episode.epId, seasonId: season.seasonId, paymentTip: season.paymentTip,
+            title: season.title + " " + episode.title, pic: episode.pic || season.pic,
+            desc: season.desc, season: season, pages: [{ cid: episode.cid }] };
+    }
+
+    function playDetailDash(detail, cid, qn, onOk, onFail) {
+        var session = playing;
+        API.playurlDash(detail.bvid, cid, qn, onOk, function (why) {
+            if (detail.epId && why === "会员专享" && playing === session) {
+                if (!Auth.isLoggedIn()) { askLogin((detail.paymentTip || "会员专享") + "，" + loginNeeded("code -101"), "番剧会员专享"); }
+                else {
+                    report("player", "不算出事（番剧会员专享，只给了试看）：" + videoTag(detail));
+                    toast(detail.paymentTip || "会员专享");
+                }
+                failOut(); return;
+            }
+            if (detail.epId && /^code -?\d+\s+/.test(String(why)) && playing === session) {
+                pgcFailure(why, "播放失败：");
+                failOut(); return;
+            }
+            onFail(why);
+        }, detail.epId);
+    }
+
     /* A card without a cid (搜索, 动态, UP 主页, 收藏夹…) has to ask view() for
      * one before anything can play. That round trip used to show a toast,
      * 「正在打开…」, which then sat under the picture for its full four seconds
@@ -4747,6 +4935,15 @@
         opening = false;
         newView();   /* a late view() answer must not start the video anyway */
         el("player-loading").className = "hidden";
+        /* Opened from the panel (a 番剧 in 相关推荐), the video it was opened
+         * over is still playing and still owns the keys: the browse screen
+         * stays veiled, or it shows over the picture while the remote drives
+         * the player. Not on the 即将播放 screen: there `playing` is kept for
+         * the keys, but the player has already stopped. */
+        if (playing && el("nextup").className.indexOf("hidden") >= 0) {
+            report("player", "取消打开，回到还在放的 " + videoTag(playing.detail));
+            return;
+        }
         el("shell").className = "";
     }
 
@@ -5550,10 +5747,12 @@
         }
         if (adj) {
             var ep = d.season.episodes[adj.index];
-            cb({ detail: seasonEpisodeDetail(ep), cid: ep.cid,
-                 title: "合集第 " + (adj.index + 1) + " 集  " + ep.title });
+            cb({ detail: d.epId ? pgcEpisodeDetail(d.season, ep) : seasonEpisodeDetail(ep), cid: ep.cid,
+                 title: (d.epId ? "正片第 " : "合集第 ") + (adj.index + 1) + " 集  " + ep.title });
             return;
         }
+
+        if (d.epId) { cb(null); return; }
 
         function fromList(list) {
             for (var i = 0; i < (list || []).length; i++) {
@@ -6045,7 +6244,7 @@
     }
     function seasonIndex(season, bvid) {
         for (var i = 0; i < season.episodes.length; i++) {
-            if (season.episodes[i].bvid === bvid) { return i; }
+            if (playing && playing.detail.epId ? season.episodes[i].epId === playing.detail.epId : season.episodes[i].bvid === bvid) { return i; }
         }
         return -1;
     }
@@ -6079,13 +6278,21 @@
         if (!s) { group.className = "opt-group hidden"; el("opt-season").innerHTML = ""; return; }
         group.className = "opt-group";
         var at = seasonIndex(s, playing.detail.bvid);
-        el("opt-season-label").textContent = "合集 · " + s.title +
+        el("opt-season-label").textContent = (playing.detail.epId ? "正片 · " : "合集 · ") + s.title +
             (at >= 0 ? "（第 " + (at + 1) + " / " + s.episodes.length + " 集）" : "（" + s.episodes.length + " 集）");
         var html = "";
+        if (playing.detail.epId) { paintPgcEpisodes(s, at); return; }
+        pgcShown = null;
+        el("opt-season-tabs").className = "opt-row hscroll pgc-tabs hidden";
+        el("opt-season-tabs").innerHTML = "";
+        /* Before the range branch too: a 番剧 leaves `pgc-eps` here, and its
+         * 344px tiles then sized a 60-episode 合集's range chips. */
+        el("opt-season").className = "opt-row";
         if (s.episodes.length > SEASON_FOLD) {
             /* Ranges of 50, the list itself on the right (openEpisodeList). */
-            for (var r = 0; r * SEASON_FOLD < s.episodes.length; r++) {
-                var a = r * SEASON_FOLD, b = Math.min(s.episodes.length, a + SEASON_FOLD);
+            var ranges0 = EpisodeNav.ranges(s.episodes.length, SEASON_FOLD);
+            for (var r = 0; r < ranges0.length; r++) {
+                var a = ranges0[r].start, b = ranges0[r].end;
                 html += '<div class="opt opt-range focusable' + (at >= a && at < b ? " current" : "") +
                         '" data-range="' + r + '">' + (a + 1) + "–" + b + "</div>";
             }
@@ -6103,6 +6310,7 @@
             html += '<div class="opt focusable' + (i === at ? " current" : "") + '" data-i="' + i + '">' +
                     '<span class="opt-p">' + (i + 1) + "</span>" +
                     '<span class="opt-name">' + esc(ep.title) + "</span>" +
+                    (ep.badge ? '<span class="opt-dur">' + esc(ep.badge) + '</span>' : '') +
                     (ep.duration ? '<span class="opt-dur">' + esc(ep.duration) + "</span>" : "") + "</div>";
         }
         el("opt-season").innerHTML = html;
@@ -6115,6 +6323,188 @@
                 };
             })(chips[k]);
         }
+    }
+
+    /* 番剧 正片 in the panel, as the official TV client lays it out: past 20
+     * episodes, a row of range tabs
+     * 「1~20」「21~40」… over that range as a grid, five to a row (four rows at
+     * most); ← on a range's first episode / → on its last rolls into the next
+     * range. Before this, 48 episodes were the 合集's 436px tiles, twelve rows;
+     * then one sideways row of all of them, walked one press at a time; once
+     * grouped by 20, back to a grid (the viewer, same day). Chips: number, the
+     * episode's own name, 会员/预告. */
+    var PGC_GROUP = 20;
+    var pgcShown = null;   /* { s, g, groups } while the panel shows a 番剧's 正片 */
+    function paintPgcEpisodes(s, at) {
+        showPgcGroup(s, at >= 0 ? Math.floor(at / PGC_GROUP) : 0, -1);
+        if (at < 0) { return; }
+        /* Start the row at the episode playing. After a tick: the panel may
+         * not be laid out yet, and reveal() measures. */
+        var shown = playing;
+        setTimeout(function () {
+            if (playing !== shown || !optionsOpen) { return; }
+            Nav.reveal(document.querySelector("#opt-season-tabs .opt.current"));
+        }, 0);
+    }
+    function showPgcGroup(s, g, focusAt) {
+        var count = s.episodes.length, groups = Math.ceil(count / PGC_GROUP) || 1;
+        var at = seasonIndex(s, playing.detail.bvid), tabs = el("opt-season-tabs"), row = el("opt-season");
+        var html = "", i;
+        pgcShown = { s: s, g: g, groups: groups };
+        if (groups > 1) {
+            for (i = 0; i < groups; i++) {
+                var a = i * PGC_GROUP, b = Math.min(count, a + PGC_GROUP);
+                html += '<div class="opt opt-range focusable' + (i === g ? " current" : "") + '" data-g="' + i + '">' +
+                        (a + 1) + "~" + b + "</div>";
+            }
+            tabs.innerHTML = html;
+            tabs.className = "opt-row hscroll pgc-tabs";
+            var tabNodes = tabs.querySelectorAll(".opt");
+            for (i = 0; i < tabNodes.length; i++) {
+                (function (node) {
+                    node.onselect = function () {
+                        var g2 = Number(node.getAttribute("data-g"));
+                        showPgcGroup(s, g2, at >= g2 * PGC_GROUP && at < (g2 + 1) * PGC_GROUP ? at : g2 * PGC_GROUP);
+                    };
+                })(tabNodes[i]);
+            }
+        } else {
+            tabs.innerHTML = "";
+            tabs.className = "opt-row hscroll pgc-tabs hidden";
+        }
+        html = "";
+        var from = g * PGC_GROUP, to = Math.min(count, from + PGC_GROUP);
+        for (i = from; i < to; i++) {
+            var ep = s.episodes[i];
+            html += '<div class="opt focusable' + (i === at ? " current" : "") + '" data-i="' + i + '">' +
+                    '<span class="opt-p">' + (i + 1) + "</span>" +
+                    '<span class="opt-name">' + esc(ep.longTitle || "") + "</span>" +
+                    (ep.badge ? '<span class="opt-dur">' + esc(ep.badge) + '</span>' : '') + "</div>";
+        }
+        row.className = "opt-row pgc-eps";
+        row.innerHTML = html;
+        var chips = row.querySelectorAll(".opt");
+        for (i = 0; i < chips.length; i++) {
+            (function (node) {
+                node.onselect = function () {
+                    closeOptions();
+                    playSeasonEpisode(s, Number(node.getAttribute("data-i")));
+                };
+            })(chips[i]);
+        }
+        if (focusAt >= 0) {
+            Nav.focus(row.querySelector('[data-i="' + focusAt + '"]'));
+            Nav.reveal(tabs.querySelector(".opt.current"));
+        }
+    }
+    /* ← / → on the end of a range: the neighbouring range, focus on its near
+     * end. At the very first / last episode the key is spent and nothing moves
+     * (the official client shakes the row). Anything else is Nav's. */
+    function pgcRoll(dir) {
+        var cur = Nav.current(), row = el("opt-season");
+        if (!pgcShown || !cur || cur.parentNode !== row) { return false; }
+        if (dir > 0 ? cur.nextElementSibling : cur.previousElementSibling) { return false; }
+        var g2 = pgcShown.g + dir;
+        if (g2 < 0 || g2 >= pgcShown.groups) { return true; }
+        var count = pgcShown.s.episodes.length;
+        showPgcGroup(pgcShown.s, g2, dir > 0 ? g2 * PGC_GROUP : Math.min(count, (g2 + 1) * PGC_GROUP) - 1);
+        return true;
+    }
+
+    /* 花絮, PV and other seasons' entries go straight to play(), so they get
+     * the check playPgc() makes: without a bvid and cid there is nothing to
+     * ask playurl for (cid=undefined, then 「播放失败」 as an incident). */
+    function pgcPlayable(ep) { return !!(ep && ep.bvid && ep.cid); }
+    function paintPgcExtras() {
+        var group = el("opt-pgc-extra"), d = playing && playing.detail;
+        if (!d || !d.epId || !d.season) { group.className = "opt-group hidden"; group.innerHTML = ""; return; }
+        var s = d.season, html = "", i, j, skipped = 0;
+        for (i = 0; i < s.sections.length; i++) {
+            var row = "";
+            for (j = 0; j < s.sections[i].episodes.length; j++) {
+                var ep = s.sections[i].episodes[j];
+                if (!pgcPlayable(ep)) { skipped++; continue; }
+                row += '<div class="opt focusable" data-section="' + i + '" data-episode="' + j + '">' +
+                    esc(ep.title) + (ep.badge ? ' · ' + esc(ep.badge) : '') + '</div>';
+            }
+            if (row) { html += '<div class="opt-label">' + esc(s.sections[i].title) + '</div><div class="opt-row hscroll">' + row + '</div>'; }
+        }
+        if (skipped) { report("player", "番剧花絮里 " + skipped + " 条没有稿件（bvid / cid），不列"); }
+        if (s.seasons.length > 1) {
+            html += '<div class="opt-label">其他季</div><div class="opt-row hscroll">';
+            for (i = 0; i < s.seasons.length; i++) {
+                if (s.seasons[i].seasonId !== s.seasonId) {
+                    html += '<div class="opt focusable" data-season="' + i + '">' + esc(s.seasons[i].title) + '</div>';
+                }
+            }
+            html += '</div>';
+        }
+        group.innerHTML = html; group.className = html ? "opt-group" : "opt-group hidden";
+        var chips = group.querySelectorAll('.opt');
+        for (i = 0; i < chips.length; i++) {
+            (function (node) {
+                node.onselect = function () {
+                    var seasonIndex0 = node.getAttribute('data-season');
+                    if (seasonIndex0 !== null) { showPgcSeason(s.seasons[Number(seasonIndex0)].seasonId); }
+                    else {
+                        closeOptions();
+                        var selected = s.sections[Number(node.getAttribute('data-section'))].episodes[Number(node.getAttribute('data-episode'))];
+                        play(pgcEpisodeDetail(s, selected), selected.cid);
+                    }
+                };
+            })(chips[i]);
+        }
+    }
+
+    function showPgcSeason(seasonId) {
+        var session = playing, token = newView();
+        API.pgcSeason(seasonId, false, function (season) {
+            if (!stillViewing(token) || playing !== session || !optionsOpen) { return; }
+            var eps = season.episodes.filter(pgcPlayable);
+            function paint(range) {
+                /* 「返回本季」 first: this replaces the 花絮 and 其他季 rows,
+                 * which had no way back short of closing the panel. */
+                var group = el("opt-pgc-extra"),
+                    html = '<div class="opt-label">' + esc(season.title) + ' · 正片</div>' +
+                           '<div class="opt-row"><div class="opt focusable" data-back="1">返回本季</div></div>';
+                var ranges = EpisodeNav.ranges(eps.length, SEASON_FOLD), i;
+                if (ranges.length > 1) {
+                    html += '<div class="opt-row hscroll">';
+                    for (i = 0; i < ranges.length; i++) {
+                        html += '<div class="opt focusable" data-range="' + i + '">' + (ranges[i].start + 1) + '–' + ranges[i].end + '</div>';
+                    }
+                    html += '</div>';
+                }
+                html += '<div class="opt-row hscroll">';
+                var from = range * SEASON_FOLD, end = Math.min(eps.length, from + SEASON_FOLD);
+                for (i = from; i < end; i++) {
+                    html += '<div class="opt focusable" data-episode="' + i + '">' + esc(eps[i].title) +
+                        (eps[i].badge ? ' · ' + esc(eps[i].badge) : '') + '</div>';
+                }
+                group.innerHTML = html + '</div>';
+                var nodes = group.querySelectorAll('.opt');
+                for (i = 0; i < nodes.length; i++) {
+                    (function (node) {
+                        node.onselect = function () {
+                            if (node.getAttribute('data-back') !== null) {
+                                paintPgcExtras();
+                                Nav.focus(el("opt-pgc-extra").querySelector('.opt[data-season]') ||
+                                          el("opt-pgc-extra").querySelector('.opt'));
+                                return;
+                            }
+                            var r = node.getAttribute('data-range');
+                            if (r !== null) { paint(Number(r)); return; }
+                            var ep = eps[Number(node.getAttribute('data-episode'))];
+                            closeOptions(); play(pgcEpisodeDetail(season, ep), ep.cid);
+                        };
+                    })(nodes[i]);
+                }
+                Nav.focus(group.querySelector('.opt[data-episode]') || nodes[0]);
+            }
+            paint(0);
+        }, function (why) {
+            if (stillViewing(token) && playing === session && optionsOpen) { pgcFailure(why, "番剧信息加载失败："); }
+        });
     }
 
     /* bilibili writes 「-」 for an upload with no description, and the panel
@@ -6131,7 +6521,8 @@
      * playing just carries on. */
     function playSeasonEpisode(s, i) {
         var ep = s && s.episodes[i];
-        if (!ep || !playing || ep.bvid === playing.detail.bvid) { return; }
+        if (!ep || !playing || (ep.epId ? ep.epId === playing.detail.epId : ep.bvid === playing.detail.bvid)) { return; }
+        if (ep.epId) { play(pgcEpisodeDetail(s, ep), ep.cid); return; }
         report("season", "合集「" + Diag.priv(s.title) + "」选第 " + (i + 1) + " 集 " + ep.bvid);
         play(seasonEpisodeDetail(ep), ep.cid);
     }
@@ -6161,9 +6552,9 @@
         }
         var s = d.season;
         if (!s) { return null; }
-        return { name: "合集", unit: "集", title: s.title, at: seasonIndex(s, d.bvid), count: s.episodes.length,
+        return { name: d.epId ? "正片" : "合集", unit: "集", title: s.title, at: seasonIndex(s, d.bvid), count: s.episodes.length,
                  no: function (j) { return String(j + 1); },
-                 label: function (j) { return s.episodes[j].title; },
+                 label: function (j) { return s.episodes[j].title + (s.episodes[j].badge ? " · " + s.episodes[j].badge : ""); },
                  dur: function (j) { return s.episodes[j].duration || ""; },
                  pick: function (j) { playSeasonEpisode(s, j); } };
     }
@@ -6440,7 +6831,7 @@
 
         var d = playing.detail;
 
-        el("panel-title").textContent = d.title || "";
+        el("panel-title").textContent = d.epId && d.season ? d.season.title : (d.title || "");
         /* The uploader's name is the way to their page, so it is a chip, not a
          * word in a line of grey text. It sits above the part row, which is
          * where 上键 from the parts already goes; one more press up from the
@@ -6452,6 +6843,9 @@
             '<span class="opt-up focusable" id="panel-up">' + esc(d.author || "UP 主") + '</span>' +
             '<span class="opt-follow hidden" id="panel-follow"></span>' +
             (rest ? '<span class="panel-meta-rest">' + esc(rest) + '</span>' : "");
+        if (d.epId) {
+            el("panel-meta").innerHTML = d.season && d.season.score ? esc(d.season.score + " 分") : "";
+        } else {
         el("panel-up").onselect = function () {
             var cur = playing && playing.detail;
             if (!cur) { return; }
@@ -6472,6 +6866,7 @@
                         stack: backStack.slice() };
             stopPlayback(function () { openUp(mid, name, face); upReturn = ret; });
         };
+        }
         ot.mark("标题");
         paintDesc(d.desc);
         ot.mark("简介");
@@ -6484,6 +6879,7 @@
         paintParts();
         ot.mark("分P");
         paintSeason();
+        paintPgcExtras();
         ot.mark("合集");
         paintEpisodeControls();
         paintSpeed();
@@ -6661,7 +7057,7 @@
              * down a series otherwise paid the cold start on every episode.
              * On the button too, so coming back to it after browsing the
              * related row finds it still covered. */
-            var queued = { bvid: next.detail && next.detail.bvid, cid: next.cid,
+            var queued = { epId: next.detail && next.detail.epId, seasonId: next.detail && next.detail.seasonId, bvid: next.detail && next.detail.bvid, cid: next.cid,
                            aid: (next.detail && next.detail.aid) || 0 };
             el("nextup-go").__video = queued;
             Nav.focus(el("nextup-go"));
@@ -7067,7 +7463,7 @@
         /* Whatever the ring's dwell on this card already asked. A slot that
          * failed is asked again rather than trusted — the prefetch must never
          * be a way to fail that pressing the button afresh would not be. */
-        var pre = takePrefetch(detail.bvid, cid);
+        var pre = detail.epId ? null : takePrefetch(detail.bvid, cid);
         justPlayed = detail.bvid;
         function ask(slot, fetcher, onOk, onFail) {
             if (!slot) { fetcher(onOk, onFail); return; }
@@ -7114,9 +7510,9 @@
              * seconds have already gone. */
             var cut = /^(HTTP 0|network error)$/;
             if (!got.strong && !got.dash && !got.prog && !session.netRetried &&
-                    cut.test(got.dashWhy || "") && cut.test(got.progWhy || "")) {
+                    cut.test(got.dashWhy || "") && (detail.epId || cut.test(got.progWhy || ""))) {
                 session.netRetried = true;
-                report("player", "两种形式都没连上（dash " + got.dashWhy + " / durl " + got.progWhy +
+                report("player", "播放地址没连上（dash " + got.dashWhy + " / durl " + got.progWhy +
                        "），1.5 秒后原样再要一次");
                 el("loading-status").textContent = "网络不顺，正在自动重试…";
                 got.dash = got.prog = undefined;
@@ -7237,7 +7633,7 @@
              * that does not exist, and they press play again. 2026-08-12:
              * BV1GAu163EXE answered -404 on both forms, and view() answered
              * -404 for the whole 稿件 — pressed twice, five seconds apart. */
-            if (API.gone(whyText)) {
+            if (!detail.epId && API.gone(whyText)) {
                 /* Hiding a card is a persistent decision, so it gets a
                  * discriminating test rather than an inference. playurl is
                  * asked for one *part*: a -404 means the streams behind this
@@ -7249,30 +7645,41 @@
                  * Should the other case ever appear in the log, the answer is
                  * to re-resolve the cid, not to hide anything. */
                 var deadBvid = detail.bvid;
+                /* failOut() first: its stopPlayback() puts the grid back with
+                 * a new view, and the answer below belongs to that grid. The
+                 * playback too: a card that carries its cid starts with play()
+                 * and no new view, and a 番剧 redirect arriving after it would
+                 * stop that video for this one. Either way the answer is only
+                 * acted on screen while the viewer is still where it left them;
+                 * markDead below is bookkeeping and happens regardless. */
+                failOut();
+                var deadToken = viewToken, deadPlaying = playing;
+                var stillDead = function () { return stillViewing(deadToken) && playing === deadPlaying; };
                 /* The toast waits for view(), which tells the three apart —
                  * one round trip after a playback that has already failed.
                  * 10-20: 「【风骚律师】全系列上线B站！」 is a 稿件 that stands
                  * for 番剧 episode ep813154, and was told 「已经被删除或下架」
-                 * and sent back to the grid, which read as a crash. */
+                 * and sent back to the grid, which read as a crash. Since
+                 * 11-16 a 番剧 episode is played through PGC from here: a 会员
+                 * episode answers the ordinary playurl -404 (measured), and the
+                 * PGC side says what bilibili says (会员专享, 地区限制). */
                 API.view(deadBvid, function (full) {
-                    if (full && /\/bangumi\/play\//.test(full.redirect || "")) {
-                        /* Say bilibili's own reason when there is one: 「这个应用
-                         * 还放不了」 read as the app's fault, while from this
-                         * network the episode is region-locked for every client
-                         * (2026-10-20, -10403). One request, after a failure. */
-                        API.pgcAvailability(full.redirect, cid, function (why) {
-                            toast(why ? "这是番剧或影视区的正片，B 站说：" + why
-                                      : "这是番剧或影视区的正片，这个应用还放不了");
-                            report("player", "playurl -404：这个稿件跳到番剧页（" + full.redirect +
-                                   "），番剧接口" + (why ? "答：" + why : "说这里能放，但这个应用没接番剧播放"));
-                        });
+                    if (!stillDead()) {
+                        report("player", "-404 之后 view 回来时已经在看别的，不动");
+                        return;
+                    }
+                    var redirected = full && PGC.redirect(full.redirect);
+                    if (redirected) {
+                        report("player", "playurl -404：这个稿件是番剧的一集（" + redirected.kind + redirected.id + "），改走番剧");
+                        playPgc(redirected.kind === "ep" ? redirected.id : 0, redirected.kind === "ss" ? redirected.id : 0, full);
                         return;
                     }
                     toast("这个视频已经被删除或下架了");
                     report("player", "playurl 说 -404 但稿件还在 —— 是这一 P 的 cid" +
                            "（" + cid + "）过期了，继续观看不动它");
                 }, function (vWhy) {
-                    toast("这个视频已经被删除或下架了");
+                    var here = stillDead();
+                    if (here) { toast("这个视频已经被删除或下架了"); }
                     /* 62002 「稿件不可见」 is the other shape of gone: 2026-09-28
                      * BV1pPY66BEJX played at 21:24 and answered playurl -404 +
                      * wbi/view 62002 from 21:30 — pressed five times in thirty
@@ -7298,8 +7705,8 @@
                 });
             } else {
                 playTrouble("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）", whyText);
+                failOut();
             }
-            failOut();
         }
 
         /* The lesson's fourth request. Only with an access_key: the app
@@ -7308,7 +7715,9 @@
          * lesson of 08-11). Fails soft — got.strong becomes null and decide()
          * takes the web manifest exactly as before, with the 403 escalation
          * still available downstream. */
-        var hintAid = Player.strongHint(cid);
+        if (detail.epId) { report("player", "番剧 ep_id=" + detail.epId + " season_id=" + detail.seasonId +
+                " /pgc/player/web/playurl " + Diag.priv(detail.title) + "；无已验证的番剧 app 强令牌端点，不换强令牌"); }
+        var hintAid = detail.epId ? 0 : Player.strongHint(cid);
         if (hintAid && Auth.isLoggedIn() && Auth.accessKey()) {
             got.strong = undefined;
             var early = pre && pre.strong;
@@ -7355,7 +7764,7 @@
                 got.strongWhy = "";
                 decide();
             });
-        } else if (webRefusedAt && new Date().getTime() - webRefusedAt < WEB_REFUSED_WINDOW &&
+        } else if (!detail.epId && webRefusedAt && new Date().getTime() - webRefusedAt < WEB_REFUSED_WINDOW &&
                    Auth.isLoggedIn() && Auth.accessKey() && (detail.aid || (pre && pre.aid))) {
             /* C: another video's web token was refused within the window, so
              * this one goes to the strong token at once rather than proving the
@@ -7384,7 +7793,7 @@
         /* `fresh`: past the prefetch — decide()'s one retry asks again. */
         function askStreams(fresh) {
             ask(!fresh && pre && pre.dash, function (ok, fail) {
-                API.playurlDash(detail.bvid, cid, qnCap(), ok, fail);
+                playDetailDash(detail, cid, qnCap(), ok, fail);
             }, function (dash) {
                 if (playing !== session) { return; }
                 var best = Player.pickDashVideo(dash);
@@ -7404,6 +7813,7 @@
             });
 
             ask(!fresh && pre && pre.prog, function (ok, fail) {
+                if (detail.epId) { fail("番剧仅使用 DASH"); return; }
                 API.playurlProgressive(detail.bvid, cid, qnCap(), ok, fail);
             }, function (r) {
                 if (playing !== session) { return; }
@@ -7581,7 +7991,7 @@
             report("player", "dash 兜底：开播时的清单已过期，重取 playurl");
         }
 
-        API.playurlDash(d.bvid, cid, qnCap(), function (dash) {
+        playDetailDash(d, cid, qnCap(), function (dash) {
             startDash(dash, "重新取到清单");
         }, function (w2) {
             report("player", "dash 兜底：playurl 失败（" + w2 + "）" +
@@ -7654,6 +8064,14 @@
                  * `meta:` lines must mean no view() was needed, not that the
                  * plain path quietly worked — or quietly was never asked. */
                 report("meta", videoTag(d) + " " + via);
+                /* A card that carried its cid and is a 番剧 episode plays on as
+                 * the upload (playPgc says why); its panel is the upload's,
+                 * with no 正片 list and an empty 相关推荐. Counted here, to
+                 * learn from the logs whether that is worth more. */
+                var pgcTo = !d.epId && PGC.redirect(full && full.redirect);
+                if (pgcTo) {
+                    report("meta", videoTag(d) + " 是番剧的一集（" + pgcTo.kind + pgcTo.id + "），按普通稿件放");
+                }
                 absorbMeta(session, full);
             }, function (why) {
                 if (playing !== session) {
@@ -7671,7 +8089,7 @@
             });
         }
         if (!d.related) {
-            API.related(d.bvid, function (list) {
+            (d.epId ? API.pgcRelated : API.related)(d.epId ? d.seasonId : d.bvid, function (list) {
                 if (playing !== session) {
                     report("meta", videoTag(d) + " 相关视频回来时已经换了视频，丢弃");
                     return;
@@ -7812,6 +8230,7 @@
         if (secs > 0 && durSecs && secs > durSecs - 30) { secs = -1; }
 
         var d = playing.detail;
+        if (d.epId) { return; } /* PGC history report parameters are unverified. */
         /* Cards from the feeds carry an aid; the ones that do not are playing
          * from a provisional detail while view() is still in flight. Returning
          * without stamping `lastReport` is the point — otherwise the throttle
@@ -7998,7 +8417,7 @@
                         bvid: d0.bvid, aid: d0.aid, title: d0.title, pic: d0.pic,
                         author: d0.author, duration: d0.duration, play: d0.play,
                         publishedAt: d0.publishedAt || 0,
-                        cid: playing.cid, page: pg, part: ptitle
+                        cid: playing.cid, epId: d0.epId || 0, seasonId: d0.seasonId || 0, page: pg, part: ptitle
                     });
                 }
             }
@@ -8043,7 +8462,7 @@
              * 403 handler's rebuild through Player.swapFailed. Not marked
              * triedStrong until it worked, so that fallback is still open. */
             noteWebRefused();
-            if (!playing || playing.route !== "dash" || playing.triedStrong ||
+            if (!playing || playing.detail.epId || playing.route !== "dash" || playing.triedStrong ||
                     !Auth.isLoggedIn() || !Auth.accessKey()) {
                 Player.swapFailed(!playing ? "会话已经没了" : "这个会话换不了强令牌");
                 return;
@@ -8206,7 +8625,7 @@
                 playing.expiredRefetches = (playing.expiredRefetches || 0) + 1;
                 var atExp = Player.hasPosition() ? Player.position()
                           : (lastKnownPosition || playing.startMs || 0);
-                var wantStrong = !!(playing.dashReady && playing.dashReady.strong &&
+                var wantStrong = !!(!playing.detail.epId && playing.dashReady && playing.dashReady.strong &&
                                     playing.detail.aid);
                 playing.failed = false;
                 playing.startMs = atExp;
@@ -8225,7 +8644,7 @@
                     playDash(dashExp, (repExp && repExp.id) || qnCap());
                 };
                 var webExp = function () {
-                    API.playurlDash(sessExp.detail.bvid, sessExp.cid, qnCap(),
+                    playDetailDash(sessExp.detail, sessExp.cid, qnCap(),
                         startExp, function (whyExp) {
                             if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
                             report("player", "过期重取 playurl 失败（" + whyExp + "）");
@@ -8257,7 +8676,7 @@
              * was hot). Straight to the strong token keeps the position and the
              * quiet pipe. Player raises this via offerStrongToken; app.js also
              * reaches it when a load fails outright. */
-            if (playing.route === "dash" && !playing.triedStrong &&
+            if (playing.route === "dash" && !playing.detail.epId && !playing.triedStrong &&
                     String(data).indexOf("403") >= 0 &&
                     playing.dashReady && !playing.dashReady.strong &&
                     playing.detail && (playing.detail.aid || playing.detail.bvid)) {
@@ -8451,7 +8870,7 @@
                                "重取 playurl 后从 " + fmt(lastKnownPosition) +
                                " 用 DASH 原地重启");
                         var session3 = playing;
-                        API.playurlDash(playing.detail.bvid, playing.cid,
+                        playDetailDash(playing.detail, playing.cid,
                                         qnCap(), function (dash3) {
                             if (playing !== session3) {
                                 report("player", "原地重启：新清单到了但会话已经没了，丢弃");
@@ -8657,6 +9076,7 @@
             if (k === Nav.KEY.UP && nothingAboveInPanel(Nav.current())) {
                 closeOptions(); return true;
             }
+            if ((k === Nav.KEY.LEFT || k === Nav.KEY.RIGHT) && pgcRoll(k === Nav.KEY.RIGHT ? 1 : -1)) { return true; }
             if (k === Nav.KEY.EXIT) { return false; }
             return false;   /* let Nav move focus between the options */
         }
