@@ -242,4 +242,13 @@ assert.match(pgcStart, /if \(!keep\) \{ showOpening\(/);
 assert.match(pgcStart, /play\(pgcEpisodeDetail\(season, chosen\), chosen\.cid, at, Player\.userPaused\(\)\)/);
 assert.match(pgcStart, /if \(keep\) \{ report\("player", "番剧信息没拿到，继续按普通稿件放：" \+ why\); return; \}/);
 
-console.log("  ✓ 搜索折段、选集与普通入口跳转；播放重取共用番剧端点；带 cid 的卡片不先问 view、转番剧时接着放");
+/* PR #19 review. -404: the token is taken after failOut() repainted the grid. */
+assert.match(appSource, /failOut\(\);\s*var deadToken = viewToken;[\s\S]{0,400}API\.view\(deadBvid/);
+/* Cancelling an opening over a video still playing keeps the browse screen veiled. */
+assert.match(site("function cancelOpening(", "/* ---------------- 直播"), /if \(playing && el\("nextup"\)\.className\.indexOf\("hidden"\) >= 0\) \{[\s\S]*?return;\s*\}\s*el\("shell"\)\.className = "";/);
+/* The UGC → PGC handoff keeps an ep:<id> resume point further than the provisional clock. */
+assert.match(pgcStart, /var saved = Resume\.positionMs\(chosen\.bvid, chosen\.cid, chosen\.epId\);\s*if \(saved > at\) \{ at = saved; \}/);
+/* Search pagination finds a ring on a pinned show's control again. */
+assert.match(site("function paintResults(", "var cards = results.querySelectorAll"), /pgc-\(watch\|range\|episode\)/);
+assert.match(site("function paintResults(", "return results.querySelector"), /else if \(pgcFocus\) \{\s*Nav\.focus\(results\.querySelector\(pgcFocus\)/);
+console.log("  ✓ 搜索折段、选集与普通入口跳转；播放重取共用番剧端点；带 cid 的卡片不先问 view、转番剧时接着放；-404 验证、取消打开、翻页焦点、续播点");

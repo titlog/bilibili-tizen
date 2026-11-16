@@ -2960,6 +2960,13 @@
         var focusedIndex = (keepFocus && cur && cur.getAttribute &&
                             cur.getAttribute("data-i") !== null)
             ? Number(cur.getAttribute("data-i")) : null;
+        /* The pinned shows are rebuilt with the grid: a ring on one of their
+         * controls is found again by what it is, or the next page leaves
+         * Nav on a detached node (PR #19 review). */
+        var pgcKind = keepFocus && cur && cur.className && /\bpgc-(watch|range|episode)\b/.exec(cur.className);
+        var pgcFocus = pgcKind ? "." + pgcKind[0] + '[data-media="' + cur.getAttribute("data-media") + '"]' +
+            (cur.getAttribute("data-range") !== null ? '[data-range="' + cur.getAttribute("data-range") + '"]' : "") +
+            (cur.getAttribute("data-episode") !== null ? '[data-episode="' + cur.getAttribute("data-episode") + '"]' : "") : null;
         var results = el("results");
         if (!results) { return null; }
         var html = "", media = state.searchMedia || [];
@@ -3029,6 +3036,8 @@
         }
         if (keepFocus && focusedIndex !== null && cards[focusedIndex]) {
             Nav.focus(cards[focusedIndex]);
+        } else if (pgcFocus) {
+            Nav.focus(results.querySelector(pgcFocus) || results.querySelector(".focusable"));
         }
         return results.querySelector(".focusable");
     }
@@ -4848,6 +4857,11 @@
             opening = false;
             if (keep && Number(chosen.cid) === Number(playing.cid)) {
                 var at = Player.hasPosition() ? Player.position() : lastKnownPosition;
+                /* The ordinary start read bvid:cid only, so an ep:<id> record
+                 * from an earlier 番剧 play started it at zero: the further of
+                 * the two wins, as with the phone's handoff (PR #19 review). */
+                var saved = Resume.positionMs(chosen.bvid, chosen.cid, chosen.epId);
+                if (saved > at) { at = saved; }
                 report("player", "换到番剧路径，从 " + fmt(at) + (Player.userPaused() ? " 暂停着" : "") + " 接着放");
                 play(pgcEpisodeDetail(season, chosen), chosen.cid, at, Player.userPaused());
                 return;
@@ -4906,6 +4920,16 @@
         opening = false;
         newView();   /* a late view() answer must not start the video anyway */
         el("player-loading").className = "hidden";
+        /* Opened from the panel (a 番剧 in 相关推荐), the video it was opened
+         * over is still playing and still owns the keys: the browse screen
+         * stays veiled, or it shows over the picture while the remote drives
+         * the player (PR #19 review). */
+        /* Not on the 即将播放 screen: there `playing` is kept for the keys,
+         * but the player has already stopped. */
+        if (playing && el("nextup").className.indexOf("hidden") >= 0) {
+            report("player", "取消打开，回到还在放的 " + videoTag(playing.detail));
+            return;
+        }
         el("shell").className = "";
     }
 
@@ -7589,7 +7613,14 @@
                  * has already failed. Only the takedown removes the card.
                  * Should the other case ever appear in the log, the answer is
                  * to re-resolve the cid, not to hide anything. */
-                var deadBvid = detail.bvid, deadToken = viewToken;
+                var deadBvid = detail.bvid;
+                /* failOut() first: its stopPlayback() puts the grid back with
+                 * a new view, and the answer below belongs to that grid. A
+                 * token taken before it was stale by the time view() answered
+                 * — every answer was dropped, no toast, no markDead (PR #19
+                 * review). */
+                failOut();
+                var deadToken = viewToken;
                 /* The toast waits for view(), which tells the three apart —
                  * one round trip after a playback that has already failed.
                  * 10-20: 「【风骚律师】全系列上线B站！」 is a 稿件 that stands
@@ -7633,8 +7664,8 @@
                 });
             } else {
                 playTrouble("播放失败：拿不到播放地址（" + whyText.slice(0, 60) + "）", whyText);
+                failOut();
             }
-            failOut();
         }
 
         /* The lesson's fourth request. Only with an access_key: the app
