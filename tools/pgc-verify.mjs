@@ -253,7 +253,11 @@ assert.match(pgcStart, /if \(!keep\) \{ showOpening\(/);
 assert.match(pgcStart, /play\(pgcEpisodeDetail\(season, chosen\), chosen\.cid, at, Player\.userPaused\(\)\)/);
 assert.match(pgcStart, /if \(keep\) \{ report\("player", "番剧信息没拿到，继续按普通稿件放：" \+ why\); keep\(\); return; \}/);
 /* A keep handoff stays on the episode playing (its cid), whatever the redirect named. */
-assert.match(pgcStart, /if \(keep\) \{\s*for \(i = 0; i < episodes\.length; i\+\+\) \{\s*if \(Number\(episodes\[i\]\.cid\) === Number\(session\.cid\)\)/);
+assert.match(pgcStart, /if \(keep\) \{\s*chosen = byArchive\(session\.cid, ""\);/);
+/* An opening (not a switch) with no ep_id honours the card's upload before
+ * the season-level pick, and the no-cid card passes view()'s answer. */
+assert.match(pgcStart, /\} else if \(!epId && \(chosen = byArchive\(card && card\.cid, card && card\.bvid\)\)\) \{/);
+assert.match(site("function playVideo(", "function playPgc("), /if \(redirect\) \{ playPgc\([^;]*, d\); return; \}/);
 assert.match(pgcStart, /继续按普通稿件放"\);\s*keep\(\); return;/);
 
 /* PR #19 review. -404: the token is taken after failOut() repainted the grid. */

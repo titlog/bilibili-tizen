@@ -4768,7 +4768,8 @@
         API.view(v.bvid, function (d, via) {
             if (!stillViewing(token)) { return; }
             var redirect = PGC.redirect(d.redirect);
-            if (redirect) { playPgc(redirect.kind === "ep" ? redirect.id : 0, redirect.kind === "ss" ? redirect.id : 0, v); return; }
+            /* `d`, not `v`: the card came without a cid, and view() has it. */
+            if (redirect) { playPgc(redirect.kind === "ep" ? redirect.id : 0, redirect.kind === "ss" ? redirect.id : 0, d); return; }
             /* Which endpoint answered: the gated pair or the app's. */
             report("meta", videoTag(v) + " 打开没带 cid 的卡片，" + via);
             /* 10-30: two cards on an uploader's page, listed only once the set
@@ -4842,14 +4843,29 @@
             for (i = 0; i < season.sections.length; i++) {
                 episodes = episodes.concat(season.sections[i].episodes);
             }
-            if (keep) {
-                for (i = 0; i < episodes.length; i++) {
-                    if (Number(episodes[i].cid) === Number(session.cid)) { chosen = episodes[i]; break; }
+            /* The upload the card stands for, when it says: its cid, else a
+             * bvid only one episode has. An ss… redirect names no episode,
+             * and the season-level pick below (most recent, else the first)
+             * turned episode 2 into episode 1 — on the switch while playing
+             * and on a card opened without a cid alike (PR #19 review). */
+            function byArchive(cid, bvid) {
+                var hit = null, n = 0, k;
+                for (k = 0; cid && k < episodes.length; k++) {
+                    if (Number(episodes[k].cid) === Number(cid)) { return episodes[k]; }
                 }
+                for (k = 0; bvid && k < episodes.length; k++) {
+                    if (episodes[k].bvid === bvid) { hit = episodes[k]; n++; }
+                }
+                return n === 1 ? hit : null;
+            }
+            if (keep) {
+                chosen = byArchive(session.cid, "");
                 if (!chosen) {
                     report("player", "番剧里没有正在放的这一 P（cid=" + session.cid + "），继续按普通稿件放");
                     keep(); return;
                 }
+            } else if (!epId && (chosen = byArchive(card && card.cid, card && card.bvid))) {
+                report("player", "番剧按卡片的稿件对上了这一集（ep_id=" + chosen.epId + "）");
             } else if (!epId) {
                 var recent = Resume.recent(300);
                 for (i = 0; i < recent.length && !chosen; i++) {
