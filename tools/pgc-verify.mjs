@@ -16,7 +16,7 @@ const plain = (v) => JSON.parse(JSON.stringify(v));
 const { API, PGC, EpisodeNav } = ctx;
 const response = (data, result = false) => { body = JSON.stringify({ code: 0, [result ? "result" : "data"]: data }); };
 response({ result: [
-  { result_type: "media_bangumi", data: [{ season_id: 1733, title: '<em class="keyword">小黑</em>',
+  { result_type: "media_bangumi", data: [{ season_id: 1733, title: '<em class="keyword">小黑</em>', cover: "http://i0.hdslb.com/bfs/bangumi/x.jpg",
     media_score: { score: 9.9, user_count: 20 }, ep_size: 2, index_show: "更新至第2话",
     eps: [{ id: 1, title: "1", badges: [{ text: "会员" }] }] }] },
   { result_type: "media_ft", data: [{ pgc_season_id: 42, title: "电影" }] },
@@ -26,6 +26,9 @@ API.search("test", 1, (videos, media) => {
   assert.equal(videos.length, 0); assert.equal(media.length, 2);
   assert.equal(media[0].title, "小黑"); assert.equal(media[0].episodes[0].badge, "会员");
   assert.equal(media[1].seasonId, 42);
+  /* Posters through thumb(): https, sized to .pgc-cover. */
+  assert.match(media[0].pic, /^https:\/\/i0\.hdslb\.com\/bfs\/bangumi\/x\.jpg@205w_275h_1c\./);
+  assert.equal(media[1].pic, "");
 }, assert.fail);
 assert.match(requested, /\/x\/web-interface\/search\/all\/v2\?/);
 response({ season_id: 1733, title: "番剧", rating: { score: 9.9 }, payment: { tip: "大会员" },
@@ -45,7 +48,9 @@ assert.equal(PGC.redirect("https://example.com/video/BV1"), null);
 response({ is_preview: 1, type: "MP4", durls: [{ durl: [] }] }, true);
 API.playurlDash("BV1", 1, 127, assert.fail, (why) => assert.equal(why, "会员专享"), 2);
 assert.match(requested, /\/pgc\/player\/web\/playurl\?ep_id=2&cid=1/);
-assert.match(requested, /[?&]fnval=4048/);
+/* The same fnval as an ordinary upload at this qn (DASH + AV1 + 4K): HDR,
+ * Dolby Vision and 8K stay unasked here too. ep 32374 answers DASH to it. */
+assert.match(requested, /[?&]fnval=2192&/);
 ctx.Auth = { isLoggedIn: () => true, accessKey: () => "fixture-key", signTv: () => "access_key=fixture-key",
   cookieHeader: () => "", jarIsOurs: () => false };
 API.playurlDash("BV1", 1, 127, assert.fail, (why) => assert.equal(why, "会员专享"), 2);
@@ -102,7 +107,7 @@ const appCtx = vm.createContext({ window: {}, document: { getElementById: (id) =
   Date, Math, JSON, String, Number, Array, Object, RegExp, parseInt, parseFloat, isFinite, setTimeout, clearTimeout,
   Nav: { onKey() {}, onBack() {}, current: () => null, focus: (n) => { focused = n; } },
   Player: { on() {} }, Settings: { get: () => 3 }, PGC, EpisodeNav, API: { view: (bvid, ok) => ok({ redirect: "https://www.bilibili.com/bangumi/play/ep32374" }, "fixture") },
-  Auth: { isLoggedIn: () => true }, Diag: { record() {}, priv: (v) => v, incident() {} }, REPORT_TO: "" });
+  Auth: { isLoggedIn: () => true }, Diag: { record() {}, priv: (v) => v, plain: (v) => v, incident() {} }, REPORT_TO: "" });
 vm.runInContext(hooked, appCtx);
 const T = appCtx.window.pgcTest;
 T.setScreenEl({ querySelector: () => null });
@@ -229,6 +234,12 @@ assert.match(site("var session3 = playing", "} else if (playing.urls"), /playDet
  * behind the video. Asking first cost every 推荐 card the round trip. */
 const openCard = site("function playVideo(", "var token = newView();");
 assert.match(openCard, /if \(v\.cid\) \{[\s\S]*play\(provisional, resumeCid\(provisional\)\);\s*return;/);
-assert.match(site("function loadMetaForPlaying(", "absorbMeta(session, full);"), /PGC\.redirect\(full && full\.redirect\)[\s\S]*playPgc\(/);
+assert.match(site("function loadMetaForPlaying(", "absorbMeta(session, full);"), /PGC\.redirect\(full && full\.redirect\)[\s\S]*playPgc\([^;]*, d, true\);/);
+/* Switched while playing: no loading screen to cancel over a video still
+ * going, the PGC start carries the position, a failed season plays on. */
+const pgcStart = site("function playPgc(", "function pgcEpisodeDetail(");
+assert.match(pgcStart, /if \(!keep\) \{ showOpening\(/);
+assert.match(pgcStart, /play\(pgcEpisodeDetail\(season, chosen\), chosen\.cid, at, Player\.userPaused\(\)\)/);
+assert.match(pgcStart, /if \(keep\) \{ report\("player", "番剧信息没拿到，继续按普通稿件放：" \+ why\); return; \}/);
 
-console.log("  ✓ 搜索折段、选集与普通入口跳转；播放重取共用番剧端点；带 cid 的卡片不先问 view");
+console.log("  ✓ 搜索折段、选集与普通入口跳转；播放重取共用番剧端点；带 cid 的卡片不先问 view、转番剧时接着放");

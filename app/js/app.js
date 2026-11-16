@@ -4798,16 +4798,28 @@
         if (login) { askLogin("B 站说：" + reason + "；" + login, text); }
         else if (/会员/.test(reason)) {
             if (!Auth.isLoggedIn()) { askLogin("B 站说：" + reason + "；" + loginNeeded("code -101"), text); }
-            else { toast("B 站说：" + reason); }
-        } else if (/code -10403\b/.test(text)) { toast("B 站说：" + reason); }
+            else { report("player", "不算出事（番剧会员专享）：" + text); toast("B 站说：" + reason); }
+        } else if (/code -10403\b/.test(text)) {
+            report("player", "不算出事（番剧地区限制）：" + text);
+            toast("B 站说：" + reason);
+        }
         else { trouble(/^code -?\d+\s+/.test(text) ? "B 站说：" + reason : fallback + text); }
     }
 
-    function playPgc(epId, seasonId, card) {
-        var token = newView();
-        showOpening(card || {});
+    /* `keep`: the card already playing as an ordinary upload turned out to be
+     * this 番剧 (loadMetaForPlaying). It plays on while the season is asked
+     * — no loading screen, whose cancelOpening() would put the browse screen
+     * back over a video still playing — and the PGC start picks up where it
+     * had got to. If the season cannot be had, it simply plays on. */
+    function playPgc(epId, seasonId, card, keep) {
+        var token = keep ? 0 : newView(), session = playing;
+        function current() { return keep ? playing === session : stillViewing(token); }
+        if (!keep) { showOpening(card || {}); }
         API.pgcSeason(epId || seasonId, !!epId, function (season) {
-            if (!stillViewing(token)) { return; }
+            if (!current()) {
+                if (keep) { report("player", "番剧信息回来时已经换了视频，丢弃"); }
+                return;
+            }
             var episodes = season.episodes.slice(), i, j, chosen = null;
             for (i = 0; i < season.sections.length; i++) {
                 episodes = episodes.concat(season.sections[i].episodes);
@@ -4830,12 +4842,20 @@
                 }
             }
             if (!chosen || !chosen.bvid || !chosen.cid) {
+                if (keep) { report("player", "番剧集数信息不完整，继续按普通稿件放"); return; }
                 cancelOpening(); trouble("番剧集数信息不完整"); return;
             }
             opening = false;
+            if (keep && Number(chosen.cid) === Number(playing.cid)) {
+                var at = Player.hasPosition() ? Player.position() : lastKnownPosition;
+                report("player", "换到番剧路径，从 " + fmt(at) + (Player.userPaused() ? " 暂停着" : "") + " 接着放");
+                play(pgcEpisodeDetail(season, chosen), chosen.cid, at, Player.userPaused());
+                return;
+            }
             play(pgcEpisodeDetail(season, chosen), chosen.cid);
         }, function (why) {
-            if (!stillViewing(token)) { return; }
+            if (!current()) { return; }
+            if (keep) { report("player", "番剧信息没拿到，继续按普通稿件放：" + why); return; }
             cancelOpening(); pgcFailure(why, "番剧信息加载失败：");
         });
     }
@@ -4852,7 +4872,10 @@
         API.playurlDash(detail.bvid, cid, qn, onOk, function (why) {
             if (detail.epId && why === "会员专享" && playing === session) {
                 if (!Auth.isLoggedIn()) { askLogin((detail.paymentTip || "会员专享") + "，" + loginNeeded("code -101"), "番剧会员专享"); }
-                else { toast(detail.paymentTip || "会员专享"); }
+                else {
+                    report("player", "不算出事（番剧会员专享，只给了试看）：" + videoTag(detail));
+                    toast(detail.paymentTip || "会员专享");
+                }
                 failOut(); return;
             }
             if (detail.epId && /^code -?\d+\s+/.test(String(why)) && playing === session) {
@@ -7975,7 +7998,7 @@
                 var pgcTo = !d.epId && PGC.redirect(full && full.redirect);
                 if (pgcTo) {
                     report("player", videoTag(d) + " 是番剧（" + pgcTo.kind + pgcTo.id + "），改走番剧路径");
-                    playPgc(pgcTo.kind === "ep" ? pgcTo.id : 0, pgcTo.kind === "ss" ? pgcTo.id : 0, d);
+                    playPgc(pgcTo.kind === "ep" ? pgcTo.id : 0, pgcTo.kind === "ss" ? pgcTo.id : 0, d, true);
                     return;
                 }
                 absorbMeta(session, full);

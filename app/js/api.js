@@ -332,6 +332,8 @@ var API = (function () {
                "h_1c." + THUMB_FORMAT;
     }
 
+    function pgcEpisodeThumb(e) { e.pic = thumb(e.pic); }
+
     function stripEm(s) {
         return String(s || "").replace(/<[^>]+>/g, "");
     }
@@ -848,13 +850,26 @@ var API = (function () {
                         break;
                     }
                 }
-                onOk(out, PGC.search(d));
+                onOk(out, PGC.search(d).map(function (show) {
+                    /* Through thumb() like every other cover: the posters come
+                     * back full size and often http:. 205×275 is .pgc-cover. */
+                    show.pic = thumb(show.pic, 205, 275);
+                    show.episodes.forEach(pgcEpisodeThumb);
+                    return show;
+                }));
             }, onFail);
         },
 
         pgcSeason: function (id, isEpisode, onOk, onFail) {
             getJson(BASE + "/pgc/view/web/season?" + (isEpisode ? "ep_id=" : "season_id=") +
-                    encodeURIComponent(id), function (d) { onOk(PGC.season(d)); }, onFail);
+                    encodeURIComponent(id), function (d) {
+                var s = PGC.season(d);
+                /* Its pic becomes the episode's card in 继续观看: card-sized. */
+                s.pic = thumb(s.pic);
+                s.episodes.forEach(pgcEpisodeThumb);
+                s.sections.forEach(function (x) { x.episodes.forEach(pgcEpisodeThumb); });
+                onOk(s);
+            }, onFail);
         },
 
         /* Doubles as the proof that the stored session actually reaches the
@@ -1750,7 +1765,7 @@ var API = (function () {
              * Only the AV1 bit is added; HDR/DoVi/8K stay unrequested. */
             var url = BASE + (epId ? "/pgc/player/web/playurl?ep_id=" + encodeURIComponent(epId) :
                               "/x/player/playurl?bvid=" + bvid) + "&cid=" + cid +
-                      "&qn=" + (qn || 64) + "&fnval=" + (epId ? 4048 : fnvalFor(qn)) + "&fnver=0&fourk=1";
+                      "&qn=" + (qn || 64) + "&fnval=" + fnvalFor(qn) + "&fnver=0&fourk=1";
             getJson(url, function (d) {
                 if (epId && PGC.preview(d)) { onFail("会员专享"); return; }
                 if (!d.dash) { onFail("no dash streams"); return; }

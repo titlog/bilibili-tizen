@@ -115,7 +115,7 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
 - **直播弹幕**（PR #14，11-08 合入）：**默认开**，跟着设置里的「弹幕」档位走；第一帧之后连 WebSocket（匿名，`getConf` 取令牌，zlib 包用 `inflate.js` 解 ——
   不用 pako 之类放在 `vendor/` 的库：更新包只带 `SCRIPTS` 里的 `js/`，靠自动更新升上来的电视没有 `vendor/` 里新加的文件）。直播间里
   **左 / 右 打开「弹幕与画质」面板**（数量含「关」、透明度和字号两个滑块、直播画质；透明度、字号设置页也能改）。日志 `danmaku:` 只数条数、不写内容。→ `docs/功能-弹幕直播画质投屏.md`
-- 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 172 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
+- 无人值守：`--selftest` 派发和遥控器一样的按键走全流程（现在 178 步），最后一行 `SELFTEST 结束，全部通过 / N 步失败`。
   **能靠按键复现的 bug，就给它加一步。** 等网络的步骤返回 `WAIT` 轮询，不写死等待；每次放的视频是推荐流里随手拿的，
   一步失败先看是不是只对那一部片子成立。
 
@@ -166,7 +166,7 @@ zsh tools/release.sh            # 给陌生人的发布包 → dist/
   TV appkey 签名、按 aid 问，aid 由 `aidOf()` 从 bvid 算），答上了之后 30 分钟先问它。它对充电专属答 -404，**不当稿件没了**。
   强令牌要 aid 而 view 问不到时也用 `aidOf()`。→ `docs/平台坑.md`
 - **番剧的 `archive/related` 是空的**（code 0、0 条），播放页的推荐改问 `pgc/season/web/related/recommend`（`data.season`）。
-  普通稿件的 `view` 答 `redirect_url` 指向 `/bangumi/play/ep…` 或 `ss…` 的，是番剧的一集，转番剧路径，**不是稿件没了**。**带 cid 的卡片不为认番剧先问 view**：直接开播，开播后本来就要问的那次 view（`loadMetaForPlaying`）认出番剧再转（`pgc-verify` 卡着）。→ `docs/界面与交互.md`
+  普通稿件的 `view` 答 `redirect_url` 指向 `/bangumi/play/ep…` 或 `ss…` 的，是番剧的一集，转番剧路径，**不是稿件没了**。**带 cid 的卡片不为认番剧先问 view**：直接开播，开播后本来就要问的那次 view（`loadMetaForPlaying`）认出番剧再转，转的时候原来那路接着放、PGC 从播放头接上，season 问不到就按普通稿件放下去（`pgc-verify` 卡着）。→ `docs/界面与交互.md`
 - 哪台镜像、哪份文件、哪个编码族坏，都是**分钟级的天气**：坏文件 5 分钟过期，按视频的教训 6 小时过期，教训只当软偏好。
 - 流地址约两小时过期（`deadline`）：任何重建前先验，过期就重取 playurl；签名过期之后的网络错误按过期处理，不记坏主机。
 - 传输「排队」是和播放器竞争，不是链路上限；电视的 HTTP 栈本身慢（同链路开发机 12 MB/s，电视最好 5.8 MB/s）。
