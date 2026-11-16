@@ -117,6 +117,17 @@ var Resume = (function () {
 
     function id(bvid, cid, epId) { return epId ? "ep:" + epId : bvid + ":" + cid; }
 
+    /* A 番剧 episode keeps its progress under ep:<id> from its first PGC
+     * save on. The bvid:cid entry from before — an older version, or the
+     * ordinary start a 推荐 card makes before view() finds the 番剧 — is
+     * what that ordinary start reads, so left in place it reopened a finished
+     * episode at an old ten minutes, and the handoff kept the further of the
+     * two (PR #19 review). Once ep:<id> is written it goes. */
+    function retireLegacy(m, bvid, cid) {
+        var legacy = id(bvid, cid);
+        if (m.hasOwnProperty(legacy)) { delete m[legacy]; }
+    }
+
     /* When this person last emptied their history on this set (设置 → 清空观看
      * 记录, 2026-10-18). Per account, like the list it empties. */
     var CLEARED_KEY = "bili.historyClearedAt.v1";
@@ -170,6 +181,7 @@ var Resume = (function () {
                 at: new Date().getTime(),
                 card: card || prev.card    /* enough to redraw it in 我的 */
             };
+            if (card && card.epId) { retireLegacy(m, bvid, cid); }
             dirty = true;
         },
 
@@ -272,6 +284,7 @@ var Resume = (function () {
             e.pos = 0;
             e.done = true;
             e.at = new Date().getTime();
+            if (epId) { retireLegacy(m, bvid, cid); }
             dirty = true;
             flush();
         },

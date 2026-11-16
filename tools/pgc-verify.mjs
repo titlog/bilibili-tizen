@@ -209,6 +209,17 @@ appCtx.Resume = R;
 const merged = T.merge(R.recent(10), [{bvid: "BV1", cid: 2, progressMs: 95000, at: Date.now() + 1}]);
 assert.equal(merged.length, 2); assert.equal(merged[0].epId, 12); assert.equal(merged[0].seasonId, 9);
 assert.equal(merged[0].progressMs, 95000);
+/* An old bvid:cid entry for the episode is retired by the first ep:<id>
+ * save, and by its finish: the ordinary start of a 推荐 card reads it. */
+R.record("BV1", 3, 600000, 1200000, {bvid: "BV1", cid: 3});
+assert.equal(R.positionMs("BV1", 3), 600000);
+R.record("BV1", 3, 120000, 1200000, {bvid: "BV1", cid: 3, epId: 13, seasonId: 9});
+assert.equal(R.positionMs("BV1", 3), 0);
+assert.equal(R.positionMs("BV1", 3, 13), 120000);
+R.record("BV1", 3, 600000, 1200000, {bvid: "BV1", cid: 3});
+R.finished("BV1", 3, 13);
+assert.equal(R.positionMs("BV1", 3), 0);
+assert.equal(R.positionMs("BV1", 3, 13), 0);
 
 
 // All four production DASH call sites share the wrapper; prefetched UGC data is
