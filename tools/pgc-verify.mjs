@@ -224,4 +224,11 @@ assert.match(site("function downgrade(", "function videoTag("), /playDetailDash\
 assert.match(site("var webExp = function", "if (wantStrong)"), /playDetailDash\(sessExp\.detail, sessExp\.cid/);
 assert.match(site("var session3 = playing", "} else if (playing.urls"), /playDetailDash\(playing\.detail, playing\.cid/);
 
-console.log("  ✓ 搜索折段、选集与普通入口跳转；播放重取共用番剧端点");
+/* Ordinary cards that carry a cid start without a view() round trip (the
+ * reason that path exists); 番剧 episodes among them are found by the view()
+ * behind the video. Asking first cost every 推荐 card the round trip. */
+const openCard = site("function playVideo(", "var token = newView();");
+assert.match(openCard, /if \(v\.cid\) \{[\s\S]*play\(provisional, resumeCid\(provisional\)\);\s*return;/);
+assert.match(site("function loadMetaForPlaying(", "absorbMeta(session, full);"), /PGC\.redirect\(full && full\.redirect\)[\s\S]*playPgc\(/);
+
+console.log("  ✓ 搜索折段、选集与普通入口跳转；播放重取共用番剧端点；带 cid 的卡片不先问 view");

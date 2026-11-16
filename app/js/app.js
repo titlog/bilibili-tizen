@@ -4726,6 +4726,30 @@
             handoff = { bvid: v.bvid, cid: v.cid, positionMs: v.progressMs };
         }
 
+        if (v.pages) { play(v, resumeCid(v)); return; }
+
+        /* 推荐, 热门 and 排行 already carry the cid, which is all playback needs.
+         * Waiting on a view() round trip just to learn something we were handed
+         * put seconds of black screen between the button and the picture. Start
+         * immediately and fill in the description, parts and related list behind
+         * the video, since only the panel wants them. A 番剧 episode among them
+         * is found by that same view() (loadMetaForPlaying) and moved to PGC
+         * then; asking first would cost every ordinary card the round trip. */
+        if (v.cid) {
+            var provisional = {
+                bvid: v.bvid, aid: v.aid, cid: v.cid, title: v.title, pic: v.pic,
+                author: v.author, mid: v.mid || 0, face: v.face || "",
+                duration: v.duration, play: v.play,
+                desc: "", pages: []
+            };
+            /* Through resumeCid like every other entry — its "feed card, no
+             * part list" branch was written for exactly this card and was
+             * unreachable from here, so a 24-part upload last watched at P7
+             * reopened from 推荐 at P1 0:00. */
+            play(provisional, resumeCid(provisional));
+            return;
+        }
+
         var token = newView();
         showOpening(v);
         API.view(v.bvid, function (d, via) {
@@ -4733,7 +4757,7 @@
             var redirect = PGC.redirect(d.redirect);
             if (redirect) { playPgc(redirect.kind === "ep" ? redirect.id : 0, redirect.kind === "ss" ? redirect.id : 0, v); return; }
             /* Which endpoint answered: the gated pair or the app's. */
-            report("meta", videoTag(v) + " 打开卡片，" + via);
+            report("meta", videoTag(v) + " 打开没带 cid 的卡片，" + via);
             /* 10-30: two cards on an uploader's page, listed only once the set
              * was signed in (signed out, from here, the page lists two others
              * and wbi/view answers 62002 for both), came back code 0 with no
@@ -7945,6 +7969,15 @@
                  * `meta:` lines must mean no view() was needed, not that the
                  * plain path quietly worked — or quietly was never asked. */
                 report("meta", videoTag(d) + " " + via);
+                /* A card that carried its cid started without asking view();
+                 * if this upload is a 番剧 episode, carry on from here on the
+                 * PGC path (its own playurl, 试看 refused, 正片 in the panel). */
+                var pgcTo = !d.epId && PGC.redirect(full && full.redirect);
+                if (pgcTo) {
+                    report("player", videoTag(d) + " 是番剧（" + pgcTo.kind + pgcTo.id + "），改走番剧路径");
+                    playPgc(pgcTo.kind === "ep" ? pgcTo.id : 0, pgcTo.kind === "ss" ? pgcTo.id : 0, d);
+                    return;
+                }
                 absorbMeta(session, full);
             }, function (why) {
                 if (playing !== session) {
