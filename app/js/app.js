@@ -924,7 +924,7 @@
             if (pa !== s) { return; }
             s.busy = false;
             report("action", "like 失败 " + why);
-            trouble("点赞没成功：" + why);
+            actionRefused("点赞", why);
         });
     }
 
@@ -961,7 +961,7 @@
             if (pa !== s) { return; }
             s.busy = false;
             report("action", "coin 失败 " + why);
-            trouble("投币没成功：" + why);
+            actionRefused("投币", why);
         }, alsoLike);
     }
 
@@ -998,7 +998,7 @@
             if (pa !== s) { return; }
             s.busy = false;
             report("action", "favorite 失败 " + why);
-            trouble("收藏没成功：" + why);
+            actionRefused("收藏", why);
         });
     }
 
@@ -1047,6 +1047,19 @@
         });
     }
 
+    /* A write that failed. -352 is bilibili's risk control turning this one
+     * down — 11-16 a signed-in Tizen 3.0 set pressed 关注 twice and was shown
+     * 「关注没成功：code -352 -352」, uploaded as an incident each time. Said
+     * plainly and not uploaded; anything else is still a fault. */
+    function actionRefused(what, why) {
+        if (/code -352\b/.test(String(why))) {
+            report("action", "不算出事（B 站风控）：" + what + " " + why);
+            toast(what + "没成功：B 站这次拦下了，过一会儿再试，或者在手机上" + what);
+            return;
+        }
+        trouble(what + "没成功：" + why);
+    }
+
     function pressFollow(node, mid) {
         if (!API.videoActionReady()) { toast("这个账号是网页扫码登录的，提交不了，请用电视二维码重新登录"); return; }
         var key = followKey(mid);
@@ -1071,7 +1084,7 @@
         }, function (why) {
             followBusy = false;
             report("action", "关注失败 " + why);
-            trouble((want ? "关注" : "取消关注") + "没成功：" + why);
+            actionRefused(want ? "关注" : "取消关注", why);
         });
     }
 
@@ -2563,6 +2576,12 @@
         liveFailDecodeOnce = true;
         if (liveRoom) { liveRoom.nativeFor = ""; Player.stop(); startLiveRoom(""); }
     };
+    /* The next Shaka start reports 3016, without restarting now; `spent`: as if
+     * both steps down had gone on the way in (the 11-16 Tizen 4.0 set). */
+    window.__stLiveDecodeFailNext = function (spent) {
+        liveFailDecodeOnce = true;
+        if (spent && liveRoom) { liveRoom.mseSteps = 2; }
+    };
     window.__stLiveNoFmp4 = function (on) {
         liveNoFmp4 = !!on;
         if (on && liveRoom) { liveRoom.nativeFor = ""; Player.stop(); startLiveRoom(""); }
@@ -2571,7 +2590,7 @@
     window.__stLiveRoom = function () {
         return liveRoom && { room: liveRoom.nativeFor, fmt: liveRoom.nativeFmt, used: liveRoom.qnUsed,
                              below: liveRoom.tsBelow, gaveUp: liveRoom.tsGaveUp, token: liveRoom.token, moved: liveRoom.moved,
-                             mseSteps: liveRoom.mseSteps, mseTry: liveRoom.mseTry, native: liveNative,
+                             mseSteps: liveRoom.mseSteps, mseTry: liveRoom.mseTry, native: liveNative, mseOk: liveRoom.mseOk,
                              tsSilent: liveRoom.tsSilent, flvGaveUp: liveRoom.flvGaveUp, flvDead: liveFlvDead,
                              dm: liveRoom.dmConn ? liveRoom.dmConn.stats() : null };
     };
@@ -3418,6 +3437,8 @@
         Settings.set("liveQn", list.length && q === list[list.length - 1] ? 0 : q);
         room.qnAsk = q;
         room.tries = 0;
+        /* A new ask: its own steps down, and mseOk (onLiveEvent) to fall back to. */
+        room.mseSteps = 0;
         report("settings", "直播画质=" + liveQnName(q) + "（qn" + q + "，现在是 qn" + room.qnUsed + "），重开这个直播间");
         Player.stop();
         startLiveRoom("");
@@ -5069,7 +5090,7 @@
                      qnName: "", pausedAt: 0, timed: false, failing: false, okTimer: null,
                      nativeFmt: "", nativeFor: "", qnAsk: 0, qnUsed: 0, qnAccept: [], tsBelow: 0, tsGaveUp: false, steps: 0,
                      timedAt: 0, moved: false, clockPos: -1, clockMovedAt: 0, bufAt: 0, mseRefused: false, mseSteps: 0, mseTry: false,
-                     tsSilent: false, flvGaveUp: false };
+                     tsSilent: false, flvGaveUp: false, mseOk: 0, played: false };
         startLiveRoom("");
     }
 
@@ -5101,6 +5122,8 @@
             room.mseTry = false;
             room.tsSilent = false;
             room.flvGaveUp = false;
+            room.mseOk = 0;
+            room.played = false;
         }
         el("shell").className = "veiled";
         el("pause-glyph").className = "hidden";
@@ -5361,6 +5384,10 @@
                 if (dmPanel.open) { paintDmPanel(); }   /* the 画质 row names what is playing now */
                 showLiveUi();
                 if (Player.mode() === "live") {
+                    room.played = true;
+                    /* The best tier this room has played on MSE: where a 画质
+                     * the viewer picks and the decoder refuses goes back to. */
+                    if (room.qnUsed > room.mseOk) { room.mseOk = room.qnUsed; }
                     liveMseOk = true;
                     if (liveNative) {
                         liveNative = false;
@@ -5379,6 +5406,7 @@
             if (pos === room.clockPos) { return; }
             if (room.clockPos >= 0 && !room.moved) {
                 room.moved = true;
+                room.played = true;
                 report("live", "AVPlay 时间开始走了（" + room.nativeFmt + " " + room.qnName + "，到画面后 " +
                        (room.timedAt ? tNow - room.timedAt : 0) + "ms）");
             }
@@ -5406,12 +5434,20 @@
              * player, with the budget untouched and nothing new on the screen. */
             var decode = LIVE_DECODE_FAIL.test(String(data));
             if (Player.mode() === "live" && !room.mseRefused && (decode || LIVE_UNSUPPORTED.test(String(data)))) {
-                var down = decode && room.mseSteps < 2 ? lowerQn(room.qnAccept, room.qnUsed) : 0;
+                /* A tier this room has already played on MSE comes first: 11-16
+                 * a Tizen 4.0 set stepped 原画 → 蓝光 → 超清 on the way in,
+                 * spending both steps, and when the viewer picked 原画 again in
+                 * the panel one 3016 sent the room to AVPlay (「哪一档都解不了」
+                 * with 超清 playing seconds before) — an AVPlay that plays no
+                 * live stream on that set, so the room closed. Three times. */
+                var known = decode && room.mseOk && room.mseOk < room.qnUsed ? room.mseOk : 0;
+                var down = known || (decode && room.mseSteps < 2 ? lowerQn(room.qnAccept, room.qnUsed) : 0);
                 Player.stop();
                 if (down) {
-                    room.mseSteps++;
+                    if (!known) { room.mseSteps++; }
                     room.qnAsk = down;
-                    report("live", "MSE 解不了 " + room.qnName + "（qn" + room.qnUsed + "），这个直播间降到 qn" + down + " 再试");
+                    report("live", "MSE 解不了 " + room.qnName + "（qn" + room.qnUsed + "），这个直播间" +
+                           (known ? "回到刚才放得了的 qn" : "降到 qn") + down + " 再试");
                     startLiveRoom("");
                     return;
                 }
@@ -5437,7 +5473,16 @@
              * the stream, not the network: step the TS down a tier (no reconnect
              * spent), and when TS has no tier left, or fMP4 will not start,
              * remember it. */
-            if (Player.mode() === "avplay" && !room.moved && /NOT_SUPPORTED|秒没出画面|时间没走/.test(String(data))) {
+            /* `prepare failed`: AVPlay's prepare answering with an error
+             * (11-16, Tizen 4.0: 「prepare failed: undefined: Unknown error」 on
+             * every FLV and TS). Not matched, it read as a dropped connection:
+             * four reconnects on the same FLV and 「直播断了」 for a room that
+             * never showed a picture. Except CONNECTION_FAILED, which prepare
+             * also answers (this set, a host that did not answer): that one is
+             * the network, still a reconnect — one of those must not end FLV
+             * for the run. */
+            if (Player.mode() === "avplay" && !room.moved &&
+                    /NOT_SUPPORTED|秒没出画面|时间没走|prepare failed(?![\s\S]*CONNECTION_FAILED)/.test(String(data))) {
                 /* Prepared and never moving is this tier being too much, on
                  * either playlist: step down. Not starting at all, or refusing
                  * the format, is this player and fMP4 (the Tizen 3.0 set). */
@@ -5471,7 +5516,8 @@
             }
             if (++room.tries > 3) {
                 stopLive();
-                trouble("直播断了，重新连了三次也没接上");
+                /* 「断了」 only for a room that was on screen. */
+                trouble(room.played ? "直播断了，重新连了三次也没接上" : "这个直播间现在放不了");
                 return;
             }
             Player.stop();
@@ -8945,7 +8991,30 @@
             if (playing.route !== "progressive" && playing.progReady &&
                     !playing.progTried &&
                     playing.progReady.urls && playing.progReady.urls.length) {
+                /* Its urls expire like the manifest's. 11-15: a set woke after
+                 * eleven hours, the DASH refetch failed, and this played the
+                 * durl fetched before the sleep — a certain 403, told to the
+                 * viewer as 「可能是临时限流」. Asked again once; what that
+                 * answers is the reason the exit gives. */
+                if (dashIsStale(playing.progReady) && !playing.progRefetched) {
+                    playing.progRefetched = true;
+                    var sessFf = playing;
+                    report("player", "最后一手的渐进式地址也过期了，重取一次");
+                    API.playurlProgressive(playing.detail.bvid, playing.cid, qnCap(), function (r) {
+                        if (playing !== sessFf) { report("player", "渐进式重取回来时会话已经没了，丢弃"); return; }
+                        playing.progReady = r;
+                        finalFallback(data);
+                    }, function (whyP) {
+                        if (playing !== sessFf) { return; }
+                        report("player", "渐进式重取也失败（" + whyP + "）");
+                        playing.progTried = true;
+                        finalFallback("渐进式重取失败：" + whyP);
+                    });
+                    return;
+                }
                 playing.progTried = true;
+                /* What DASH died of, for the exit's words if this fails too. */
+                playing.dashWhy = String(data);
                 playing.failed = false;
                 /* DASH is what just died. Without this, the durl failing six
                  * seconds later reads as "progressive refused, try DASH" —
@@ -9014,7 +9083,13 @@
              * 10-23/24: two sets on no account, refused on most videos, told
              * to wait a few minutes. */
             if (refused && !Auth.accessKey()) { askLogin("视频流被拒绝（403）——先去「我的」扫码登录再试", "视频流 403"); }
-            else {
+            else if (/^拼不出播放清单/.test(playing.dashWhy || String(data))) {
+                /* DASH could not be put together at all and the durl was
+                 * refused: waiting does not change either (11-14/15, two sets
+                 * told 「过几分钟再试」). The shape line above says what was
+                 * missing. */
+                playTrouble("这个视频现在放不了：B 站给的播放地址不完整，换一个视频试试", "拼不出清单，渐进式 " + (refused ? "403" : data));
+            } else {
                 playTrouble(refused ? "视频流被拒绝（403）——可能是临时限流，过几分钟再试，或换一个视频" : "播放错误：" + data);
             }
             failOut();

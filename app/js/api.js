@@ -1748,8 +1748,13 @@ var API = (function () {
                 if (!d.durl || !d.durl.length) { onFail("no progressive stream"); return; }
                 /* AVPlay plays this one, so it gets the http:// twins. */
                 var urls = mirrors(d.durl[0].url, d.durl[0].backup_url, true);
+                /* The same stamp as the DASH response (dashIsStale reads both):
+                 * 11-15 a set woke after 11 hours, DASH could not be refetched,
+                 * and the last resort played this response's 11-hour-old url. */
+                var pm = /[?&]deadline=(\d+)/.exec(String(urls[0] || ""));
                 onOk({ url: urls[0], urls: urls,
-                       quality: d.quality, accept: d.accept_quality || [] });
+                       quality: d.quality, accept: d.accept_quality || [],
+                       deadline: pm ? parseInt(pm[1], 10) : 0, fetchedAt: new Date().getTime() });
             }, onFail);
         },
 
@@ -2106,7 +2111,8 @@ var API = (function () {
                         dash.video = video.filter(function (r) { return r.segments; });
                         dash.audio = audio.filter(function (r) { return r.segments; });
                         if (!dash.video.length || !dash.audio.length) {
-                            onFail("app 端点自读 sidx 后无可用流"); return;
+                            onFail("app 端点自读 sidx 后无可用流（视频 " + dash.video.length + "/" + video.length +
+                                   "、音频 " + dash.audio.length + "/" + audio.length + " 有索引）"); return;
                         }
                         dash.tierNote = dash.video.length + "/" + vAll + " 视频档" +
                             (staged ? "（其余 " + later.filter(function (r) { return !r.segments; }).length +

@@ -2066,6 +2066,58 @@ var SelfTest = (function () {
             post("直播间 " + st.room + " 降到 qn" + st.used + "，还是 MSE，出画面了");
             return null;
         }, 30000, "30 秒没降档出画面（看 live: 那几行）"],
+        /* 11-16 (Tizen 4.0): in at 原画, two steps down to 超清 on MSE, then
+         * the viewer picked 原画 in the panel; one 3016 sent the room to an
+         * AVPlay that played no live stream on that set, and it closed. Made
+         * to order: both steps marked spent, the next start reports 3016, the
+         * panel raises 画质 one tier. The room should come back to the tier it
+         * was playing, still on MSE. Needs a room with tiers on MSE: when this
+         * one is not (the vertical 原画-only room these steps often land in),
+         * the room before it, stepped down once first, and back afterwards. */
+        ["直播：降过档后在面板调高一档、解不了 → 回到刚才那档，还是 MSE", 300, function () {
+            var st = window.__stLiveRoom() || {}, p = probe.raise;
+            function leave(r) { if (p && p.switched) { liveSwitch(1); } return r; }
+            if (visible("shell")) { return "退回了网格（看 live: 那几行）"; }
+            if (!p) {
+                p = probe.raise = { phase: "raise", switched: false };
+                if (!(Player.mode() === "live" && st.mseSteps && st.mseOk && livePlaying())) {
+                    p.meta = document.getElementById("live-meta").textContent;
+                    if (!liveSwitch(-1)) { p = null; post("面板里没有前一个直播间，跳过"); return null; }
+                    p.switched = true;
+                    p.phase = "arrive";
+                }
+                return WAIT;
+            }
+            if (p.phase === "arrive") {
+                if (document.getElementById("live-meta").textContent === p.meta) { return WAIT; }
+                if (Player.mode() === "avplay") { post("前一个直播间也不在 MSE 上，跳过"); return leave(null); }
+                if (Player.mode() !== "live" || !livePlaying()) { return WAIT; }
+                p.token = st.token;
+                p.phase = "down";
+                window.__stLiveDecodeFailOnce();   /* its top tier reports 3016: one step down */
+                return WAIT;
+            }
+            if (p.phase === "down") {
+                if (Player.mode() === "avplay") { post("前一个直播间只有一档，跳过"); return leave(null); }
+                if (st.token <= p.token || !st.mseSteps || !st.mseOk || Player.mode() !== "live" || !livePlaying()) { return WAIT; }
+                p.phase = "raise";
+            }
+            if (p.phase === "raise") {
+                p.from = st.used;
+                p.token = st.token;
+                p.phase = "back";
+                window.__stLiveDecodeFailNext(true);
+                key(KEY.RIGHT);                                  /* 「弹幕与画质」 */
+                key(KEY.DOWN); key(KEY.DOWN); key(KEY.DOWN);     /* 画质 */
+                key(KEY.RIGHT);                                  /* one tier up */
+                return WAIT;
+            }
+            if (Player.mode() === "avplay") { return leave("调高的那档解不了，这个直播间改走了 AVPlay（应该回到 qn" + p.from + "）"); }
+            if (st.token < p.token + 2 || st.used !== p.from || Player.mode() !== "live" || !livePlaying()) { return WAIT; }
+            if (visible("live-dm")) { key(KEY.RETURN); }
+            post("直播间 " + st.room + " 调高之后解不了，回到 qn" + st.used + "，还是 MSE，出画面");
+            return leave(null);
+        }, 60000, "60 秒没回到刚才那档出画面（看 live: 那几行）"],
         ["直播：面板选回前一个直播间，还是 MSE，出画面", 300, function () {
             if (!probe.decodeBack) {
                 probe.decodeBack = document.getElementById("live-meta").textContent;

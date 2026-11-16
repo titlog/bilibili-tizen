@@ -29,6 +29,7 @@ node "$ROOT/tools/md5-verify.mjs" >/dev/null || { echo "  md5 is wrong; TV login
 node "$ROOT/tools/accounts-verify.mjs" || exit 1
 node "$ROOT/tools/history-refresh-verify.mjs" || exit 1
 node "$ROOT/tools/live-options-verify.mjs" || exit 1
+node "$ROOT/tools/live-errors-verify.mjs" || { echo "  what a live room or a refused write does with a failure regressed"; exit 1; }
 # An invalid manifest does not throw — the player refuses it and the viewer just
 # sees a spinner. One unescaped ampersand in a stream url is enough to cause it.
 node "$ROOT/tools/mpd-verify.mjs" >/dev/null || { echo "  the DASH manifest is malformed"; exit 1; }

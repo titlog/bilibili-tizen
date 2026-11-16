@@ -188,6 +188,29 @@ var Mpd = (function () {
         chosen: function () { return chosen; },
         topBandwidth: function () { return topBw; },
 
+        /* What a response that build() could not make a manifest of had in
+         * it, for the log. 「拼不出播放清单（缺少分段索引）」 used to cover no
+         * video, no family that plays, and no audio alike; 11-14/15 two sets
+         * failed that way and fell to a refused durl, and which side was
+         * missing could not be told (one is inferred to be audio). */
+        shape: function (dash, maxId) {
+            if (!dash) { return "没有 dash"; }
+            var v = dash.video || [], a = dash.audio || [], vSeg = 0, vCap = 0, aSeg = 0, fams = [], i;
+            for (i = 0; i < v.length; i++) {
+                if (v[i].segments) { vSeg++; }
+                if (v[i].segments && v[i].codecs && (!maxId || v[i].id <= maxId)) { vCap++; }
+                var f = family(v[i].codecs) || "?";
+                if (fams.indexOf(f) < 0) { fams.push(f); }
+            }
+            for (i = 0; i < a.length; i++) { if (a[i].segments) { aSeg++; } }
+            var extra = [];
+            if (dash.flac && dash.flac.audio) { extra.push("有 flac"); }
+            if (dash.dolby && dash.dolby.audio && dash.dolby.audio.length) { extra.push("杜比 " + dash.dolby.audio.length + " 条"); }
+            return "视频 " + v.length + " 条（有索引 " + vSeg + "，上限 " + (maxId || "无") + " 以内能用 " + vCap +
+                   "，族 " + (fams.join("/") || "无") + "）· 音频 " + a.length + " 条（有索引 " + aSeg + "）" +
+                   (extra.length ? "· " + extra.join(" · ") : "");
+        },
+
         /* The two files a fresh start of this response will open first: the
          * top video of the family build() would settle on, and the top audio —
          * what ABR picks under the default estimate. For the card-dwell

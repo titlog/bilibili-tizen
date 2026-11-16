@@ -220,5 +220,17 @@ Mpd.build(fourK, 120, "av01");
 eq("pinned av01 under a 4K cap stops at 1080P", Mpd.topBandwidth(), 756000);
 sandbox.MediaSource = undefined;
 
+/* What a response build() refuses had in it (the 「拼不出播放清单」 log line):
+ * no audio is told apart from no video. */
+const seg = { init: "0-9", index: "10-99" };
+const noAudio = { duration: 10, video: [{ id: 80, codecs: "avc1.640032", segments: seg }], audio: [] };
+eq("no audio: nothing built", Mpd.build(noAudio, 80), "");
+eq("no audio: the shape says so", Mpd.shape(noAudio, 80), "视频 1 条（有索引 1，上限 80 以内能用 1，族 avc1）· 音频 0 条（有索引 0）");
+const noIndex = { duration: 10, video: [{ id: 80, codecs: "hev1.1.6.L120.90" }], audio: [{ id: 30280, codecs: "mp4a.40.2" }],
+                  flac: { audio: { id: 30251 } }, dolby: { audio: [{ id: 30250 }] } };
+eq("no index anywhere: the shape says so", Mpd.shape(noIndex, 120),
+   "视频 1 条（有索引 0，上限 120 以内能用 0，族 hev1）· 音频 1 条（有索引 0）· 有 flac · 杜比 1 条");
+eq("no dash", Mpd.shape(null, 80), "没有 dash");
+
 if (failed) { console.log(`\n${failed} of ${checks} checks failed`); process.exit(1); }
 console.log(`✓ mpd: well-formed, escaped, laddered and capped — ${checks} checks`);

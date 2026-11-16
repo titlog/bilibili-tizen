@@ -2541,7 +2541,9 @@ var Player = (function () {
                        Mpd.build(dash, capId || Settings.qnCap(), "avc1");
         }
         if (!manifest) {
-            emit("error", "拼不出播放清单（缺少分段索引）");
+            log("拼不出播放清单：" + Mpd.shape(dash, capId || Settings.qnCap()) +
+                (prefer ? "，指定族 " + prefer : "") + (objectKeys(badFiles).length ? "，坏文件 " + objectKeys(badFiles).length : ""));
+            emit("error", "拼不出播放清单");
             return;
         }
         var usedFamily = Mpd.chosen();
