@@ -248,6 +248,8 @@ assert.match(appSource, /failOut\(\);\s*var deadToken = viewToken;[\s\S]{0,400}A
 assert.match(site("function cancelOpening(", "/* ---------------- 直播"), /if \(playing && el\("nextup"\)\.className\.indexOf\("hidden"\) >= 0\) \{[\s\S]*?return;\s*\}\s*el\("shell"\)\.className = "";/);
 /* The UGC → PGC handoff keeps an ep:<id> resume point further than the provisional clock. */
 assert.match(pgcStart, /var saved = Resume\.positionMs\(chosen\.bvid, chosen\.cid, chosen\.epId\);\s*if \(saved > at\) \{ at = saved; \}/);
+/* The pinned shows' buttons take the press, as playVideo() does for cards. */
+assert.match(site("function paintResults(", "var cards = results.querySelectorAll"), /pressAt = new Date\(\)\.getTime\(\);\s*rememberPosition\(\); backStack = \[\];\s*playPgc\(/);
 /* Search pagination finds a ring on a pinned show's control again. */
 assert.match(site("function paintResults(", "var cards = results.querySelectorAll"), /pgc-\(watch\|range\|episode\)/);
 assert.match(site("function paintResults(", "return results.querySelector"), /else if \(pgcFocus\) \{\s*Nav\.focus\(results\.querySelector\(pgcFocus\)/);

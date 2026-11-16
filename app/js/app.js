@@ -3019,6 +3019,10 @@
                         Nav.focus(results.querySelector('.pgc-episode[data-media="' + node.getAttribute("data-media") + '"]'));
                     } else {
                         var idx = node.getAttribute("data-episode");
+                        /* Not through playVideo(), which is where the press is
+                         * taken: without it 到画面 按下起 counted from an
+                         * earlier one (7455ms on a 964ms start, 11-16). */
+                        pressAt = new Date().getTime();
                         rememberPosition(); backStack = [];
                         playPgc(idx === null ? 0 : item.episodes[Number(idx)].epId, item.seasonId, item);
                     }
