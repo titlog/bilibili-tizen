@@ -848,8 +848,13 @@ var API = (function () {
                         break;
                     }
                 }
-                onOk(out);
+                onOk(out, PGC.search(d));
             }, onFail);
+        },
+
+        pgcSeason: function (id, isEpisode, onOk, onFail) {
+            getJson(BASE + "/pgc/view/web/season?" + (isEpisode ? "ep_id=" : "season_id=") +
+                    encodeURIComponent(id), function (d) { onOk(PGC.season(d)); }, onFail);
         },
 
         /* Doubles as the proof that the stored session actually reaches the
@@ -1701,19 +1706,15 @@ var API = (function () {
         /* 12345 → "1.2万", the way every count in this file is written. */
         countText: count,
 
-        /* Whether a 番剧 / 影视 episode would play here, asked only to say why it
-         * does not: this client has no PGC playback. `redirect` is view()'s
-         * …/bangumi/play/ep813154 (or ss…). onAnswer(null) means bilibili would
-         * serve it; otherwise its own reason, e.g. 「抱歉您所在地区不可观看！」
-         * — what this network was told for 风骚律师 on 2026-10-20. */
-        pgcAvailability: function (redirect, cid, onAnswer) {
-            var m = /\/bangumi\/play\/(ep|ss)(\d+)/.exec(String(redirect || ""));
-            if (!m) { onAnswer("不是番剧链接"); return; }
-            var url = BASE + "/pgc/player/web/playurl?" + (m[1] === "ep" ? "ep_id=" : "season_id=") + m[2] +
-                      (cid ? "&cid=" + cid : "") + "&qn=16&fnval=16&fnver=0&fourk=1";
-            getJson(url, function () { onAnswer(null); }, function (why) {
-                onAnswer(String(why).replace(/^code -?\d+\s*/, "") || String(why));
-            });
+        pgcRelated: function (seasonId, onOk, onFail) {
+            getJson(BASE + "/pgc/season/web/related/recommend?season_id=" +
+                    encodeURIComponent(seasonId), function (d) {
+                onOk((d.season || []).map(function (x) {
+                    return { seasonId: Number(x.season_id) || 0, title: stripEm(x.title),
+                             pic: thumb(x.cover), score: (x.rating || {}).score || 0,
+                             indexShow: (x.new_ep || {}).index_show || "", badge: x.badge || "" };
+                }));
+            }, onFail);
         },
 
         related: function (bvid, onOk, onFail) {
@@ -1737,7 +1738,7 @@ var API = (function () {
             }, onFail);
         },
 
-        playurlDash: function (bvid, cid, qn, onOk, onFail) {
+        playurlDash: function (bvid, cid, qn, onOk, onFail, epId) {
             if (playurlCut(onFail)) { return; }
             /* The 4K bit (128) joins the AV1 one when the quality setting reaches
              * 4K — see fnvalFor. */
@@ -1747,9 +1748,11 @@ var API = (function () {
              * discovered selecting from a list with zero av01 entries — the
              * web player's av01 default works because its fnval asks for it.
              * Only the AV1 bit is added; HDR/DoVi/8K stay unrequested. */
-            var url = BASE + "/x/player/playurl?bvid=" + bvid + "&cid=" + cid +
-                      "&qn=" + (qn || 64) + "&fnval=" + fnvalFor(qn) + "&fnver=0&fourk=1";
+            var url = BASE + (epId ? "/pgc/player/web/playurl?ep_id=" + encodeURIComponent(epId) :
+                              "/x/player/playurl?bvid=" + bvid) + "&cid=" + cid +
+                      "&qn=" + (qn || 64) + "&fnval=" + (epId ? 4048 : fnvalFor(qn)) + "&fnver=0&fourk=1";
             getJson(url, function (d) {
+                if (epId && PGC.preview(d)) { onFail("会员专享"); return; }
                 if (!d.dash) { onFail("no dash streams"); return; }
 
                 /* Signed in, bilibili often hands out a PCDN node as the primary

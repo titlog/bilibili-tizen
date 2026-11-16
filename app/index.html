@@ -155,8 +155,12 @@
          unless view() says there is one. -->
     <div class="opt-group hidden" id="opt-season-group">
         <div class="opt-label" id="opt-season-label">合集</div>
+        <!-- 番剧 正片 past 20 episodes: range tabs (1~20, 21~40…) over a row
+             of that range, as the official TV client does (2026-11-16). -->
+        <div class="opt-row hscroll pgc-tabs hidden" id="opt-season-tabs"></div>
         <div class="opt-row" id="opt-season"></div>
     </div>
+    <div class="opt-group hidden" id="opt-pgc-extra"></div>
     <div class="opt-group" id="opt-related-group">
         <div class="opt-label">相关推荐</div>
         <div id="opt-related"></div>

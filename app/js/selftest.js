@@ -2793,6 +2793,77 @@ var SelfTest = (function () {
         }]
     ];
 
+    /* The system IME supplies text; selection and playback use remote keys. */
+    steps.push(
+        ["搜索番剧", 500, function () {
+            if (!visible("shell")) { key(KEY.RETURN); }
+            Nav.focus(document.querySelector('#tabs .tab[data-screen="search"]'));
+            key(KEY.ENTER);
+            Nav.focus(document.querySelector('#screen [data-act="ime"]'));
+            key(KEY.ENTER);
+            var input = document.getElementById("ime");
+            input.value = "罗小黑战记学前篇";
+            var event = document.createEvent("Event"); event.initEvent("input", true, true); input.dispatchEvent(event);
+            var enter = document.createEvent("Event"); enter.initEvent("keydown", true, true); enter.keyCode = KEY.ENTER; input.dispatchEvent(enter);
+            return null;
+        }],
+        ["番剧置顶并选择免费集", 1000, function () {
+            var episodes = document.querySelectorAll("#results .pgc-episode");
+            if (!episodes.length) { return WAIT; }
+            for (var i = 0; i < episodes.length; i++) {
+                if (!/会员/.test(episodes[i].textContent)) { Nav.focus(episodes[i]); key(KEY.ENTER); return null; }
+            }
+            return "没有找到免费集";
+        }, 30000, "30 秒内没有番剧置顶选集"],
+        ["番剧开播后打开面板", 1000, function () {
+            var state = window.__stStrongState();
+            if (!state || !state.shown) { return WAIT; }
+            key(KEY.DOWN);
+            return visible("options") && /正片/.test(document.getElementById("opt-season-label").textContent)
+                ? null : "下键没有打开番剧正片面板";
+        }, 35000, "35 秒内番剧没有出画面"],
+        /* 2026-11-16: 正片 had the 合集's tiles, 48 episodes in twelve rows. */
+        ["番剧正片是一排，不是整页格子", 600, function () {
+            var row = document.getElementById("opt-season");
+            var chips = row.querySelectorAll(".opt");
+            if (!chips.length) { return "正片一集都没画出来"; }
+            var tops = {}, lines = 0;
+            for (var i = 0; i < chips.length; i++) {
+                var t = Math.round(chips[i].getBoundingClientRect().top);
+                if (!tops[t]) { tops[t] = 1; lines++; }
+            }
+            var tabs = document.getElementById("opt-season-tabs").querySelectorAll(".opt");
+            post("番剧正片：这一组 " + chips.length + " 个，" + lines + " 行，高 " + row.offsetHeight + "px，分组 " + tabs.length + " 个");
+            if (lines !== 1) { return "正片排成了 " + lines + " 行"; }
+            return chips.length <= 20 ? null : "一组里放了 " + chips.length + " 集（应该 20 集一组）";
+        }],
+        /* ← on a range's first episode / → on its last rolls into the
+         * neighbouring range, as the official TV client does. */
+        ["正片在一组的头尾按左右键换组", 800, function () {
+            var row = document.getElementById("opt-season");
+            var chips = row.querySelectorAll(".opt");
+            if (!document.getElementById("opt-season-tabs").querySelector(".opt")) {
+                post("正片不到 20 集，没有分组，跳过换组");
+                return null;
+            }
+            var first = Number(chips[0].getAttribute("data-i"));
+            var edge = first > 0 ? chips[0] : chips[chips.length - 1];
+            var dir = first > 0 ? -1 : 1;
+            var want = Number(edge.getAttribute("data-i")) + dir;
+            Nav.focus(edge);
+            key(dir > 0 ? KEY.RIGHT : KEY.LEFT);
+            var now = Nav.current();
+            var got = now && now.parentNode === row ? Number(now.getAttribute("data-i")) : -1;
+            post("换组：第 " + (Number(edge.getAttribute("data-i")) + 1) + " 集按" + (dir > 0 ? "右" : "左") + "，落到第 " + (got + 1) + " 集");
+            return got === want ? null : "按" + (dir > 0 ? "右" : "左") + "键没有换到相邻那组的第 " + (want + 1) + " 集";
+        }],
+        ["退出番剧面板和播放", 500, function () {
+            if (visible("options")) { key(KEY.RETURN); }
+            if (!visible("shell")) { key(KEY.RETURN); }
+            return null;
+        }]
+    );
+
     function run() {
         var i = 0, failures = 0;
         if (SELFTEST === "subtitles") { steps = controlSteps; window.__stNoHistory = true; }

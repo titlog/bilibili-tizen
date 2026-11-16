@@ -115,7 +115,7 @@ var Resume = (function () {
         writeTo(mapKey, m);
     }
 
-    function id(bvid, cid) { return bvid + ":" + cid; }
+    function id(bvid, cid, epId) { return epId ? "ep:" + epId : bvid + ":" + cid; }
 
     /* When this person last emptied their history on this set (设置 → 清空观看
      * 记录, 2026-10-18). Per account, like the list it empties. */
@@ -146,7 +146,7 @@ var Resume = (function () {
             if (!bvid || !positionMs) { return; }
             var pos = positionMs / 1000, dur = (durationMs || 0) / 1000;
             var m = load();
-            var key = id(bvid, cid);
+            var key = id(bvid, cid, card && card.epId);
 
             var prev = m[key] || {};
 
@@ -175,8 +175,8 @@ var Resume = (function () {
 
         flush: flush,
 
-        positionMs: function (bvid, cid) {
-            var e = load()[id(bvid, cid)];
+        positionMs: function (bvid, cid, epId) {
+            var m = load(), e = m[id(bvid, cid, epId)] || (epId && m[id(bvid, cid)]);
             return e ? e.pos * 1000 : 0;
         },
 
@@ -207,16 +207,20 @@ var Resume = (function () {
          * marker matches on the video and takes its furthest part. Keying on
          * bvid:cid meant the sliver silently never appeared on exactly the
          * screens where "where did I get to" matters most. */
-        fraction: function (bvid) {
+        fraction: function (bvid, epId) {
             /* The most recently touched part speaks for the video. "Any part
              * done → 1" dropped a 24-part series from 继续观看 the moment one
              * episode ended, with the next one half-watched; "max over parts"
              * has the mirror problem. Where the viewer got to is the part
              * they were last on. */
             var m = load(), latest = null;
+            if (epId) {
+                var pgc = m[id(bvid, 0, epId)];
+                return !pgc ? 0 : (pgc.done ? 1 : (pgc.dur ? Math.min(1, pgc.pos / pgc.dur) : 0));
+            }
             for (var k in m) {
                 if (!m.hasOwnProperty(k)) { continue; }
-                if (k.indexOf(bvid + ":") !== 0) { continue; }
+                if (k.indexOf(bvid + ":") !== 0 && !(m[k].card && m[k].card.bvid === bvid && m[k].card.epId)) { continue; }
                 var e = m[k];
                 /* `>=`: two parts written in the same millisecond (finish P3,
                  * start P4) keep insertion order, and the later one wins. */
@@ -246,8 +250,9 @@ var Resume = (function () {
             for (var i = 0; i < keys.length && out.length < (limit || 24); i++) {
                 var e = m[keys[i]];
                 if (!e.card) { continue; }
-                if (seen[e.card.bvid]) { continue; }
-                seen[e.card.bvid] = 1;
+                var cardKey = e.card.epId ? "ep:" + e.card.epId : e.card.bvid;
+                if (seen[cardKey]) { continue; }
+                seen[cardKey] = 1;
                 var copy = {};
                 for (var f in e.card) {
                     if (e.card.hasOwnProperty(f)) { copy[f] = e.card[f]; }
@@ -261,8 +266,8 @@ var Resume = (function () {
         /* Watched to the end: there is nothing left to resume, but it belongs in
          * the history more than anything else does. This used to delete the
          * entry, which quietly removed finished videos from 我的. */
-        finished: function (bvid, cid) {
-            var m = load(), e = m[id(bvid, cid)];
+        finished: function (bvid, cid, epId) {
+            var m = load(), e = m[id(bvid, cid, epId)];
             if (!e) { return; }
             e.pos = 0;
             e.done = true;
