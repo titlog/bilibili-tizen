@@ -1035,7 +1035,16 @@ var SelfTest = (function () {
          * by way of a reload instead of restoring where it came from. */
         ["再开一个视频，为了走到 UP 主页", 600, function () {
             if (!visible("shell")) { return "不在浏览界面"; }
-            if (!document.querySelector("#screen .card.focused")) { return "没有选中的卡片"; }
+            var f = document.querySelector("#screen .card.focused");
+            if (!f) { return "没有选中的卡片"; }
+            /* Not from 继续观看: after the 番剧 steps its first card is a 番剧
+             * episode, which has no UP 主 chip (2026-11-16, four steps failed
+             * on a run that followed one). The 推荐 grid is ordinary uploads. */
+            if (f.parentNode && f.parentNode.parentNode && f.parentNode.parentNode.id === "resume-row") {
+                key(KEY.DOWN);
+                f = document.querySelector("#screen .card.focused");
+                if (!f || !f.parentNode || f.parentNode.id !== "feed-grid") { return "从继续观看下不到推荐网格"; }
+            }
             key(KEY.ENTER);
             return null;
         }],
@@ -2822,8 +2831,9 @@ var SelfTest = (function () {
             return visible("options") && /正片/.test(document.getElementById("opt-season-label").textContent)
                 ? null : "下键没有打开番剧正片面板";
         }, 35000, "35 秒内番剧没有出画面"],
-        /* 2026-11-16: 正片 had the 合集's tiles, 48 episodes in twelve rows. */
-        ["番剧正片是一排，不是整页格子", 600, function () {
+        /* 2026-11-16: 正片 had the 合集's tiles, 48 episodes in twelve rows.
+         * Now 20 to a range, five to a row: four rows at most. */
+        ["番剧正片 20 集一组，最多四行", 600, function () {
             var row = document.getElementById("opt-season");
             var chips = row.querySelectorAll(".opt");
             if (!chips.length) { return "正片一集都没画出来"; }
@@ -2834,8 +2844,8 @@ var SelfTest = (function () {
             }
             var tabs = document.getElementById("opt-season-tabs").querySelectorAll(".opt");
             post("番剧正片：这一组 " + chips.length + " 个，" + lines + " 行，高 " + row.offsetHeight + "px，分组 " + tabs.length + " 个");
-            if (lines !== 1) { return "正片排成了 " + lines + " 行"; }
-            return chips.length <= 20 ? null : "一组里放了 " + chips.length + " 集（应该 20 集一组）";
+            if (chips.length > 20) { return "一组里放了 " + chips.length + " 集（应该 20 集一组）"; }
+            return lines <= 4 ? null : "这一组排成了 " + lines + " 行";
         }],
         /* ← on a range's first episode / → on its last rolls into the
          * neighbouring range, as the official TV client does. */

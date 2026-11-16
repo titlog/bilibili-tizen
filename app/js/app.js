@@ -6240,11 +6240,12 @@
 
     /* 番剧 正片 in the panel, as the official TV client lays it out: past 20
      * episodes, a row of range tabs
-     * 「1~20」「21~40」… over one row holding that range; ← on a range's first
-     * episode / → on its last rolls into the next range. Before this, 48
-     * episodes were the 合集's 436px tiles, twelve rows, and then one sideways
-     * row of all of them — walked one press at a time (the viewer, same day).
-     * Short chips: number, the episode's own name, 会员/预告. */
+     * 「1~20」「21~40」… over that range as a grid, five to a row (four rows at
+     * most); ← on a range's first episode / → on its last rolls into the next
+     * range. Before this, 48 episodes were the 合集's 436px tiles, twelve rows;
+     * then one sideways row of all of them, walked one press at a time; once
+     * grouped by 20, back to a grid (the viewer, same day). Chips: number, the
+     * episode's own name, 会员/预告. */
     var PGC_GROUP = 20;
     var pgcShown = null;   /* { s, g, groups } while the panel shows a 番剧's 正片 */
     function paintPgcEpisodes(s, at) {
@@ -6256,7 +6257,6 @@
         setTimeout(function () {
             if (playing !== shown || !optionsOpen) { return; }
             Nav.reveal(document.querySelector("#opt-season-tabs .opt.current"));
-            Nav.reveal(document.querySelector("#opt-season .opt.current"));
         }, 0);
     }
     function showPgcGroup(s, g, focusAt) {
@@ -6294,9 +6294,8 @@
                     '<span class="opt-name">' + esc(ep.longTitle || "") + "</span>" +
                     (ep.badge ? '<span class="opt-dur">' + esc(ep.badge) + '</span>' : '') + "</div>";
         }
-        row.className = "opt-row hscroll pgc-eps";
+        row.className = "opt-row pgc-eps";
         row.innerHTML = html;
-        row.scrollLeft = 0;
         var chips = row.querySelectorAll(".opt");
         for (i = 0; i < chips.length; i++) {
             (function (node) {

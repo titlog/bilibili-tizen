@@ -779,11 +779,11 @@ body.density-5 .library-item { width: 344px; }
 /* Past 50 the 合集 — and since the same evening 分P — is a row of ranges
    instead (openEpisodeList). */
 #opt-season .opt.opt-range, #opt-parts .opt.opt-range { width: auto; }
-/* 番剧 正片 (app.js showPgcGroup): range tabs over one row of short chips
-   sized to their text, the episode's name cut at 300px. */
+/* 番剧 正片 (app.js showPgcGroup): range tabs over the range as a grid, five
+   to a row: 5 × 344 + 4 × 16 = 1784, inside the 合集's 1792. */
 #opt-season-tabs { margin-bottom: 12px; }
 #opt-season-tabs .opt { font-size: 22px; padding: 6px 18px; }
-#opt-season.pgc-eps .opt { width: auto; max-width: 300px; font-size: 24px; padding: 8px 20px; }
+#opt-season.pgc-eps .opt { width: 344px; max-width: none; font-size: 24px; padding: 10px 20px; }
 #opt-season.pgc-eps .opt-name:empty { display: none; }
 /* The range's episodes, in the comments' pane: number, the whole title (two
    lines at most), length; the playing one in pink. */
