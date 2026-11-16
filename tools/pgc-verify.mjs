@@ -261,7 +261,13 @@ assert.match(site("function playVideo(", "function playPgc("), /if \(redirect\) 
 assert.match(pgcStart, /继续按普通稿件放"\);\s*keep\(\); return;/);
 
 /* PR #19 review. -404: the token is taken after failOut() repainted the grid. */
-assert.match(appSource, /failOut\(\);\s*var deadToken = viewToken;[\s\S]{0,400}API\.view\(deadBvid/);
+assert.match(appSource, /failOut\(\);[\s\S]{0,600}var deadToken = viewToken[\s\S]{0,1200}API\.view\(deadBvid/);
+/* A late -404 answer checks the playback too, not only the view. */
+assert.match(appSource, /var deadToken = viewToken, deadPlaying = playing;\s*function stillDead\(\) \{ return stillViewing\(deadToken\) && playing === deadPlaying; \}/);
+assert.equal((appSource.match(/if \(!stillDead\(\)\) \{/g) || []).length, 2);
+/* play()'s redirect keeps a 画质 change's position and pause state. */
+assert.match(site("function play(detail, cid, keepAtMs, keepPaused)", "closeOptions();"), /detail, null,\s*keepAtMs !== undefined \? \{ atMs: keepAtMs, paused: !!keepPaused \} : null\);/);
+assert.match(site("function playPgc(", "function pgcEpisodeDetail("), /if \(hold && card && Number\(chosen\.cid\) === Number\(card\.cid\)\) \{\s*play\(pgcEpisodeDetail\(season, chosen\), chosen\.cid, hold\.atMs, hold\.paused\);/);
 /* Cancelling an opening over a video still playing keeps the browse screen veiled. */
 assert.match(site("function cancelOpening(", "/* ---------------- 直播"), /if \(playing && el\("nextup"\)\.className\.indexOf\("hidden"\) >= 0\) \{[\s\S]*?return;\s*\}\s*el\("shell"\)\.className = "";/);
 /* The UGC → PGC handoff keeps an ep:<id> resume point further than the provisional clock. */

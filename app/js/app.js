@@ -4830,7 +4830,9 @@
      * for good). The episode is the one playing, found by its cid — an ss…
      * redirect names no episode, and the season-level pick (most recent,
      * else the first) moved episode 2 to episode 1. */
-    function playPgc(epId, seasonId, card, keep) {
+    /* `hold`: { atMs, paused } to start the card's own episode at, as a 画质
+     * change asks of play(). */
+    function playPgc(epId, seasonId, card, keep, hold) {
         var token = keep ? 0 : newView(), session = playing;
         function current() { return keep ? playing === session : stillViewing(token); }
         if (!keep) { showOpening(card || {}); }
@@ -4897,6 +4899,10 @@
                 if (saved > at) { at = saved; }
                 report("player", "换到番剧路径，从 " + fmt(at) + (Player.userPaused() ? " 暂停着" : "") + " 接着放");
                 play(pgcEpisodeDetail(season, chosen), chosen.cid, at, Player.userPaused());
+                return;
+            }
+            if (hold && card && Number(chosen.cid) === Number(card.cid)) {
+                play(pgcEpisodeDetail(season, chosen), chosen.cid, hold.atMs, hold.paused);
                 return;
             }
             play(pgcEpisodeDetail(season, chosen), chosen.cid);
@@ -7294,7 +7300,14 @@
 
     function play(detail, cid, keepAtMs, keepPaused) {
         var pgcRedirect = detail && !detail.epId && PGC.redirect(detail.redirect);
-        if (pgcRedirect) { playPgc(pgcRedirect.kind === "ep" ? pgcRedirect.id : 0, pgcRedirect.kind === "ss" ? pgcRedirect.id : 0, detail); return; }
+        /* A 画质 change on a detail that view() marked as 番剧 (the switch
+         * fell back to the ordinary path) comes here too: the position and
+         * pause state go with it (PR #19 review). */
+        if (pgcRedirect) {
+            playPgc(pgcRedirect.kind === "ep" ? pgcRedirect.id : 0, pgcRedirect.kind === "ss" ? pgcRedirect.id : 0, detail, null,
+                    keepAtMs !== undefined ? { atMs: keepAtMs, paused: !!keepPaused } : null);
+            return;
+        }
         if (!detail || detail.bvid !== videoQn.bvid) { setVideoQn("", 0); }
         if (detail && detail.bvid) { playedSinceGrid[detail.bvid] = 1; }
         /* Every per-video piece of player state is cleared here. Leaving any of
@@ -7653,14 +7666,22 @@
                  * — every answer was dropped, no toast, no markDead (PR #19
                  * review). */
                 failOut();
-                var deadToken = viewToken;
+                /* And the playback: a card that carries its cid starts with
+                 * play() and no new view, so another video picked before this
+                 * answer kept the token valid, and a redirect here stopped it
+                 * for the old one (PR #19 review). */
+                var deadToken = viewToken, deadPlaying = playing;
+                function stillDead() { return stillViewing(deadToken) && playing === deadPlaying; }
                 /* The toast waits for view(), which tells the three apart —
                  * one round trip after a playback that has already failed.
                  * 10-20: 「【风骚律师】全系列上线B站！」 is a 稿件 that stands
                  * for 番剧 episode ep813154, and was told 「已经被删除或下架」
                  * and sent back to the grid, which read as a crash. */
                 API.view(deadBvid, function (full) {
-                    if (!stillViewing(deadToken)) { return; }
+                    if (!stillDead()) {
+                        report("player", "-404 之后 view 回来时已经在看别的，丢弃");
+                        return;
+                    }
                     var redirected = full && PGC.redirect(full.redirect);
                     if (redirected) {
                         playPgc(redirected.kind === "ep" ? redirected.id : 0, redirected.kind === "ss" ? redirected.id : 0, full);
@@ -7670,7 +7691,10 @@
                     report("player", "playurl 说 -404 但稿件还在 —— 是这一 P 的 cid" +
                            "（" + cid + "）过期了，继续观看不动它");
                 }, function (vWhy) {
-                    if (!stillViewing(deadToken)) { return; }
+                    if (!stillDead()) {
+                        report("player", "-404 之后 view 失败回来时已经在看别的，丢弃（" + vWhy + "）");
+                        return;
+                    }
                     toast("这个视频已经被删除或下架了");
                     /* 62002 「稿件不可见」 is the other shape of gone: 2026-09-28
                      * BV1pPY66BEJX played at 21:24 and answered playurl -404 +
