@@ -4823,7 +4823,12 @@
      * this 番剧 (loadMetaForPlaying). It plays on while the season is asked
      * — no loading screen, whose cancelOpening() would put the browse screen
      * back over a video still playing — and the PGC start picks up where it
-     * had got to. If the season cannot be had, it simply plays on. */
+     * had got to. If the season cannot be had, it simply plays on, and
+     * keep() hands the view() answer that found the 番剧 back to the
+     * ordinary panel (PR #19 review: dropped, the parts said 「加载中」
+     * for good). The episode is the one playing, found by its cid — an ss…
+     * redirect names no episode, and the season-level pick (most recent,
+     * else the first) moved episode 2 to episode 1. */
     function playPgc(epId, seasonId, card, keep) {
         var token = keep ? 0 : newView(), session = playing;
         function current() { return keep ? playing === session : stillViewing(token); }
@@ -4837,7 +4842,15 @@
             for (i = 0; i < season.sections.length; i++) {
                 episodes = episodes.concat(season.sections[i].episodes);
             }
-            if (!epId) {
+            if (keep) {
+                for (i = 0; i < episodes.length; i++) {
+                    if (Number(episodes[i].cid) === Number(session.cid)) { chosen = episodes[i]; break; }
+                }
+                if (!chosen) {
+                    report("player", "番剧里没有正在放的这一 P（cid=" + session.cid + "），继续按普通稿件放");
+                    keep(); return;
+                }
+            } else if (!epId) {
                 var recent = Resume.recent(300);
                 for (i = 0; i < recent.length && !chosen; i++) {
                     for (j = 0; j < season.episodes.length; j++) {
@@ -4855,11 +4868,11 @@
                 }
             }
             if (!chosen || !chosen.bvid || !chosen.cid) {
-                if (keep) { report("player", "番剧集数信息不完整，继续按普通稿件放"); return; }
+                if (keep) { report("player", "番剧集数信息不完整，继续按普通稿件放"); keep(); return; }
                 cancelOpening(); trouble("番剧集数信息不完整"); return;
             }
             opening = false;
-            if (keep && Number(chosen.cid) === Number(playing.cid)) {
+            if (keep) {
                 var at = Player.hasPosition() ? Player.position() : lastKnownPosition;
                 /* The ordinary start read bvid:cid only, so an ep:<id> record
                  * from an earlier 番剧 play started it at zero: the further of
@@ -4873,7 +4886,7 @@
             play(pgcEpisodeDetail(season, chosen), chosen.cid);
         }, function (why) {
             if (!current()) { return; }
-            if (keep) { report("player", "番剧信息没拿到，继续按普通稿件放：" + why); return; }
+            if (keep) { report("player", "番剧信息没拿到，继续按普通稿件放：" + why); keep(); return; }
             cancelOpening(); pgcFailure(why, "番剧信息加载失败：");
         });
     }
@@ -8033,7 +8046,8 @@
                 var pgcTo = !d.epId && PGC.redirect(full && full.redirect);
                 if (pgcTo) {
                     report("player", videoTag(d) + " 是番剧（" + pgcTo.kind + pgcTo.id + "），改走番剧路径");
-                    playPgc(pgcTo.kind === "ep" ? pgcTo.id : 0, pgcTo.kind === "ss" ? pgcTo.id : 0, d, true);
+                    playPgc(pgcTo.kind === "ep" ? pgcTo.id : 0, pgcTo.kind === "ss" ? pgcTo.id : 0, d,
+                            function () { absorbMeta(session, full); });
                     return;
                 }
                 absorbMeta(session, full);

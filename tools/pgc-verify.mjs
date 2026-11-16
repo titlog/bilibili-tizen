@@ -234,13 +234,16 @@ assert.match(site("var session3 = playing", "} else if (playing.urls"), /playDet
  * behind the video. Asking first cost every 推荐 card the round trip. */
 const openCard = site("function playVideo(", "var token = newView();");
 assert.match(openCard, /if \(v\.cid\) \{[\s\S]*play\(provisional, resumeCid\(provisional\)\);\s*return;/);
-assert.match(site("function loadMetaForPlaying(", "absorbMeta(session, full);"), /PGC\.redirect\(full && full\.redirect\)[\s\S]*playPgc\([^;]*, d, true\);/);
+assert.match(site("function loadMetaForPlaying(", "session.metaState = \"failed\";"), /PGC\.redirect\(full && full\.redirect\)[\s\S]*playPgc\([^;]*, d,\s*function \(\) \{ absorbMeta\(session, full\); \}\);/);
 /* Switched while playing: no loading screen to cancel over a video still
  * going, the PGC start carries the position, a failed season plays on. */
 const pgcStart = site("function playPgc(", "function pgcEpisodeDetail(");
 assert.match(pgcStart, /if \(!keep\) \{ showOpening\(/);
 assert.match(pgcStart, /play\(pgcEpisodeDetail\(season, chosen\), chosen\.cid, at, Player\.userPaused\(\)\)/);
-assert.match(pgcStart, /if \(keep\) \{ report\("player", "番剧信息没拿到，继续按普通稿件放：" \+ why\); return; \}/);
+assert.match(pgcStart, /if \(keep\) \{ report\("player", "番剧信息没拿到，继续按普通稿件放：" \+ why\); keep\(\); return; \}/);
+/* A keep handoff stays on the episode playing (its cid), whatever the redirect named. */
+assert.match(pgcStart, /if \(keep\) \{\s*for \(i = 0; i < episodes\.length; i\+\+\) \{\s*if \(Number\(episodes\[i\]\.cid\) === Number\(session\.cid\)\)/);
+assert.match(pgcStart, /继续按普通稿件放"\);\s*keep\(\); return;/);
 
 /* PR #19 review. -404: the token is taken after failOut() repainted the grid. */
 assert.match(appSource, /failOut\(\);\s*var deadToken = viewToken;[\s\S]{0,400}API\.view\(deadBvid/);
