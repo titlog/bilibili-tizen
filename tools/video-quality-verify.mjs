@@ -34,6 +34,7 @@ const sandbox = {
   parseInt, parseFloat, isFinite, setTimeout, clearTimeout,
   localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } },
   document: { getElementById: () => null, addEventListener: () => {}, body: {} },
+  HoldSpeed: { create: () => ({ key: () => false, begin() {}, cancel() {}, interrupt() {} }) }, /* hold-speed-verify drives the real one */
   Nav: { onKey: () => {}, onBack: () => {} },
   Player: { on: () => {} },
   Accounts: { activeId: () => "person-1" },

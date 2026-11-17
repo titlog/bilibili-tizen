@@ -40,6 +40,7 @@ const sandbox = {
   parseInt, parseFloat, isFinite, setTimeout: () => 1, clearTimeout: () => {},
   document: { getElementById: (id) => nodes[id], addEventListener() {}, body: {}, querySelector: () => null },
   localStorage: { getItem: () => null, setItem() {} },
+  HoldSpeed: { create: () => ({ key: () => false, begin() {}, cancel() {}, interrupt() {} }) }, /* hold-speed-verify drives the real one */ 
   Nav: { onKey() {}, onBack() {}, KEY: {} },
   Player: { on() {}, mode: () => mode, stop() {}, timings: () => "" },
   Settings: { get: (k, d) => d, set() {} },

@@ -51,6 +51,7 @@ const sandbox = {
     Auth: { isLoggedIn: () => true },
     Accounts: { activeId: () => "person-1" },
     API: { history: (ok) => { requestCount++; respond = ok; } },
+    HoldSpeed: { create: () => ({ key: () => false, begin() {}, cancel() {}, interrupt() {} }) }, /* hold-speed-verify drives the real one */ 
     Nav: {
         current: () => focused, focus: (node) => { focused = node; },
         reset: () => {}, onKey: () => {}, onBack: () => {},
