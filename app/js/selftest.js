@@ -28,13 +28,18 @@ var SelfTest = (function () {
     function key(code) {
         var types = ["keydown", "keyup"];
         for (var i = 0; i < types.length; i++) {
-            var e = document.createEvent("Event");
-            e.initEvent(types[i], true, true);
-            e.keyCode = code;
-            /* preventDefault is called by the handler; a synthetic Event tolerates it. */
-            document.dispatchEvent(e);
+            keyEvent(types[i], code);
         }
     }
+
+    function keyEvent(type, code) {
+        var e = document.createEvent("Event");
+        e.initEvent(type, true, true);
+        e.keyCode = code;
+        document.dispatchEvent(e);
+    }
+
+    function holdEnter(down) { keyEvent(down ? "keydown" : "keyup", KEY.ENTER); }
 
     var KEY = { UP: 38, DOWN: 40, LEFT: 37, RIGHT: 39, ENTER: 13, RETURN: 10009 };
 
@@ -712,6 +717,31 @@ var SelfTest = (function () {
             return "等了 15 秒，位置 " + document.getElementById("player-pos").textContent +
                    "，拖动前在 " + window.__stRbFrom + "s（播放器 " + (Player.mode() || "没起来") + "）";
         }],
+        ["长按确认进入临时 2 倍速", 0, function () {
+            if (!probe.holdSpeed) {
+                if (Player.mode() !== "mse") { post("临时倍速：非 MSE，跳过"); return null; }
+                if (visible("player-loading") || !Player.canHoldRate()) { return WAIT; }
+                probe.holdSpeed = { rate: Player.rate(), position: Player.position() };
+                holdEnter(true);
+                return WAIT;
+            }
+            /* "waiting": held while buffering — the boost has not started yet. */
+            if (!visible("hold-speed") || document.getElementById("hold-speed").className === "waiting") { return WAIT; }
+            if (Player.userPaused() || Player.rate() !== probe.holdSpeed.rate || Player.effectiveRate() !== 2) {
+                holdEnter(false); return "长按改变了暂停状态或用户倍速";
+            }
+            return Player.position() > probe.holdSpeed.position ? null : WAIT;
+        }, 10000, function () { holdEnter(false); return "没有进入临时倍速并推进媒体时间"; }],
+        ["松开确认恢复用户倍速", 0, function () {
+            if (!probe.holdSpeed) { return null; }
+            if (!probe.holdSpeed.released) {
+                holdEnter(false); probe.holdSpeed.released = true;
+                return WAIT;
+            }
+            if (visible("hold-speed")) { return WAIT; }
+            return !Player.userPaused() && Player.effectiveRate() === probe.holdSpeed.rate
+                ? null : "松手没有恢复原速度，或误触发了暂停";
+        }, 5000, "临时倍速指示未收起"],
         ["确认键暂停", 600, function () {
             key(KEY.ENTER);
             return null;
@@ -742,6 +772,60 @@ var SelfTest = (function () {
         ["跳到片尾，让视频自己播完", 800, function () {
             if (typeof window.__stNearEnd !== "function") { return "没有 __stNearEnd 这个入口"; }
             return window.__stNearEnd() ? null : "拿不到时长，跳不过去";
+        }],
+        /* OK held across the end (11-17): the next one is looked up in two
+         * round trips while the keys still belong to the player, and a release
+         * in that window used to pause. Released from the element's own `ended`
+         * listener — after player.js's, so app.js has just begun the lookup. */
+        ["片尾按着确认跨过播完，松手不暂停", 0, function () {
+            var h = probe.endHold;
+            if (!h) {
+                if (visible("nextup")) { post("片尾按住：还没按就播完了，跳过"); return null; }
+                if (Player.mode() !== "mse") { post("片尾按住：非 MSE，跳过"); return null; }
+                if (visible("player-loading") || !Player.canHoldRate()) { return WAIT; }
+                var v = document.getElementById("html5-video");
+                var ind = document.getElementById("hold-speed");
+                h = probe.endHold = { held: true, seen: false };
+                /* Proof the keydown became a hold: the indicator showed (2x
+                 * or waiting). Watched, not polled — the boost can be shorter
+                 * than one 500 ms poll. Without it the step tested nothing. */
+                var mo = new window.MutationObserver(function () {
+                    if (ind.className === "" || ind.className === "waiting") { h.seen = true; }
+                });
+                mo.observe(ind, { attributes: true, attributeFilter: ["class"] });
+                var onEnded = function () {
+                    h.off();
+                    if (!h.held) { return; }
+                    h.held = false;
+                    holdEnter(false);
+                    h.paused = Player.userPaused();
+                    h.glyph = document.getElementById("pause-glyph").className !== "hidden";
+                };
+                h.off = function () { v.removeEventListener("ended", onEnded); mo.disconnect(); };
+                v.addEventListener("ended", onEnded);
+                holdEnter(true);
+                /* Not taken as a hold (something else on screen): the keydown
+                 * paused it on the spot, and a paused video never ends. */
+                if (Player.userPaused()) {
+                    h.off(); h.held = false; holdEnter(false); key(KEY.ENTER);
+                    post("片尾按住：这一下确认被当成了暂停（屏幕上不是单纯的播放），恢复播放，跳过");
+                    return null;
+                }
+                return WAIT;
+            }
+            if (h.held) {
+                if (!visible("nextup")) { return WAIT; }
+                h.off(); h.held = false; holdEnter(false);
+                post("片尾按住：没有 ended 事件（看门狗当播完了），跳过");
+                return null;
+            }
+            if (h.paused || h.glyph) { return "按着确认跨过播完，松手把视频暂停了"; }
+            if (!h.seen) { post("片尾按住：这一下确认没有变成长按（没出过「2 倍速」），什么都没测到，跳过"); }
+            return null;
+        }, 20000, function () {
+            var h = probe.endHold;
+            if (h && h.held) { h.off(); h.held = false; holdEnter(false); }
+            return "按着确认等了 20 秒还没播完";
         }],
         /* Polled rather than waited for. How long the end takes to arrive is
          * the CDN's business: 2026-10-18 the last four seconds of a three-hour
