@@ -226,5 +226,38 @@ assert.equal(nothing.why, "没给电视放得了的流");
 assert.equal(nothing.shape, "一路流都没有");
 nothing = liveFails({ code: 0, data: { live_status: 1, playurl_info: null } });
 assert.equal(nothing.shape, "没有 playurl_info");
+/* 11-24, a room a set opened: live, no address at all, special type 1 (付费). */
+nothing = liveFails({ code: 0, data: { live_status: 1, all_special_types: [1, 203, 204],
+                                       playurl_info: { conf_json: "{}", playurl: null } } });
+assert.equal(nothing.why, "付费直播间");
+assert.match(nothing.shape, /all_special_types=\[1,203,204\]/);
+/* The same empty answer without the mark is still 「没给电视放得了的流」. */
+nothing = liveFails({ code: 0, data: { live_status: 1, all_special_types: [203], playurl_info: { playurl: null } } });
+assert.equal(nothing.why, "没给电视放得了的流");
+/* Codecs this engine cannot decode are not picked (11-18…11-24: rooms whose
+ * best tier is AV1, on sets with av01=false). The shape measured from here on a popular room. */
+function codecRoom() {
+  const c = (name, qn, accept) => ({ codec_name: name, current_qn: qn, base_url: `/live/${name}.m3u8?`, accept_qn: accept,
+                                     url_info: [{ host: "https://d1--ov-gotcha207.bilivideo.com", extra: "" }] });
+  return { code: 0, data: { live_status: 1, playurl_info: { playurl: {
+    g_qn_desc: [{ qn: 10000, desc: "原画" }, { qn: 400, desc: "蓝光" }, { qn: 250, desc: "超清" }],
+    stream: [{ protocol_name: "http_hls", format: [{ format_name: "fmp4",
+      codec: [c("avc", 250, [10000, 400, 250]), c("hevc", 250, [10000, 400, 250]), c("av1", 400, [10000, 400])] }] }] } } } };
+}
+sandbox.MediaSource = { isTypeSupported: (t) => !/av01/.test(t) };
+respond(codecRoom());
+live = result((ok, fail) => API.livePlay(5, ok, fail))[0];
+take();
+assert.equal(live.codec, "avc");
+assert.equal(live.qn, 250);
+assert.match(live.shape, /这台电视解不了 av1/);
+/* Only AV1, on a set that cannot: nothing to play, and the line says why. */
+const onlyAv1 = codecRoom();
+const fmp4 = onlyAv1.data.playurl_info.playurl.stream[0].format[0];
+fmp4.codec = fmp4.codec.filter((c) => c.codec_name === "av1");
+nothing = liveFails(onlyAv1);
+assert.equal(nothing.why, "没给电视放得了的流");
+assert.match(nothing.shape, /这台电视解不了 av1/);
+sandbox.MediaSource = undefined;
 assert.equal(replies.length, 0);
 console.log("✓ compat API: library, comments, auth boundaries, video writes and live streams");

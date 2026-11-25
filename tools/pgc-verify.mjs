@@ -75,9 +75,23 @@ assert.match(requested, /[?&]access_key=fixture-key/);
 delete ctx.Auth;
 response({ is_preview: 0, accept_quality: [80], dash: { video: [], audio: [] } }, true);
 API.playurlDash("BV1", 1, 127, (dash) => assert.equal(dash.acceptQuality[0], 80), assert.fail, 1);
+/* An episode's manifest has no strong token to trade up to, and says so: the
+ * player walked its 403s straight to 「交给 app 端点强令牌」, app.js does not
+ * mint one for an episode, and it went out with every lower tier untried
+ * (11-21, 11-25). An upload's manifest is not marked. */
+let marked;
+API.playurlDash("BV1", 1, 127, (dash) => { marked = dash.noStrong; }, assert.fail, 1);
+assert.equal(marked, true);
 /* Without an ep_id it is the ordinary endpoint, as before. */
-API.playurlDash("BV1", 1, 80, () => {}, () => {});
+API.playurlDash("BV1", 1, 80, (dash) => { marked = dash.noStrong; }, () => {});
 assert.match(requested, /\/x\/player\/playurl\?bvid=BV1&cid=1/);
+assert.notEqual(marked, true);
+/* …and the player declines both strong-token routes for a marked manifest. */
+const playerSource = fs.readFileSync(new URL("../app/js/player.js", import.meta.url), "utf8");
+const offer = /function offerStrongToken\(known403\) \{([\s\S]*?)\n    \}/.exec(playerSource);
+assert.ok(offer && /lastDash\.dash\.noStrong\) \{ return false; \}/.test(offer[1]), "offerStrongToken must decline a noStrong manifest");
+const swap = /function canSwapToken\(\) \{([\s\S]*?)\n    \}/.exec(playerSource);
+assert.ok(swap && /!lastDash\.dash\.noStrong/.test(swap[1]), "canSwapToken must decline a noStrong manifest");
 
 response({ season: [{ season_id: 42, title: "电影", rating: { score: 9 }, new_ep: { index_show: "全1话" } }] });
 API.pgcRelated(1733, (items) => { assert.equal(items[0].seasonId, 42); }, assert.fail);

@@ -353,6 +353,22 @@ await t("不补传：接收端拒收的（400、413）、后来传上过的、�
   const sentSince = television({ storage: later });
   sentSince.advance(5 * 60000);
   assert.equal(sentSince.sent.length, 0);
+  /* Off the network: the upload could not connect, and neither could
+   * anything the incident was about. Not with another failure in the same
+   * reason, and not when it was the receiver that failed. */
+  for (const line of ["没传上：连不上，走 http（https 连不上）（加载失败：HTTP 0）",
+                      "没传上：超时，走 http（https 超时）（补传：加载失败：HTTP 0 / 加载失败：timeout）",
+                      "没传上：连不上，走 http（https 连不上）（播放失败：拿不到播放地址（dash HTTP 0 / durl network error））"]) {
+    const tv = television({ storage: missedRing(line) });
+    tv.advance(5 * 60000);
+    assert.equal(tv.sent.length, 0, line);
+  }
+  for (const line of ["没传上：连不上，走 http（https 连不上）（加载失败：HTTP 0 / js 错误：x）",
+                      "没传上：HTTP 404 not found，走 https（加载失败：HTTP 0）"]) {
+    const tv = television({ storage: missedRing(line) });
+    tv.advance(tv.Diag._test.RETRY_AFTER + 1000);
+    assert.equal(tv.sent.length, 1, line);
+  }
   const off = television({ storage: missedRing("没传上：连不上，走 http（https 连不上）（播放错误）"), settings: { diag: false } });
   off.advance(5 * 60000);
   assert.equal(off.sent.length, 0);

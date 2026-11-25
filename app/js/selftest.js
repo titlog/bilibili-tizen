@@ -2920,6 +2920,26 @@ var SelfTest = (function () {
             post("换组：第 " + (Number(edge.getAttribute("data-i")) + 1) + " 集按" + (dir > 0 ? "右" : "左") + "，落到第 " + (got + 1) + " 集");
             return got === want ? null : "按" + (dir > 0 ? "右" : "左") + "键没有换到相邻那组的第 " + (want + 1) + " 集";
         }],
+        /* 11-21 and 11-25, two sets: one 403 on an episode handed it to the
+         * strong token — which an episode does not have — and it went out in
+         * two seconds, every lower tier untried. Now it walks hosts, files
+         * and tiers; one refused segment must not end it. */
+        ["番剧播放中造一次 403", 300, function () {
+            if (visible("options")) { key(KEY.RETURN); }
+            var st = window.__stStrongState();
+            if (!st || !st.epId) { return "这时放的不是番剧"; }
+            sw.pgcAt = swPos();
+            Player.test.fake403();
+            return null;
+        }],
+        ["番剧被拒一次之后接着放，不退出", 1000, function () {
+            if (visible("shell")) { return "番剧被拒一次就退出了"; }
+            if (Player.test.swapInfo().fakeLeft || visible("player-loading")) { return WAIT; }
+            return swPos() - sw.pgcAt >= 8000 ? null : WAIT;
+        }, 40000, function () {
+            return Player.test.swapInfo().fakeLeft ? "改坏签名的请求一直没发出去（缓冲早就满了？）"
+                 : "40 秒了没接着放（位置 " + Math.round(swPos() / 1000) + "s，造 403 时 " + Math.round((sw.pgcAt || 0) / 1000) + "s）";
+        }],
         ["退出番剧面板和播放", 500, function () {
             if (visible("options")) { key(KEY.RETURN); }
             if (!visible("shell")) { key(KEY.RETURN); }

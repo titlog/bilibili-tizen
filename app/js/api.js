@@ -410,6 +410,30 @@ var API = (function () {
      * area list says user_cover / area_v2_name / online, the following list
      * room_cover / area_name_v2 / text_small. 人气 (`online`) was replaced on the
      * site by 「N人看过」 (`watched_show`), which is what is shown when given. */
+    /* Whether this engine can decode a live room's codec, by bilibili's name
+     * for it. 11-18…11-24, three sets (Tizen 4.0 ×2, 5.0; the engine line says
+     * av01=false) were handed rooms whose best tier is AV1 — measured anonymous
+     * 11-25 on a popular room: fMP4 avc@250, hevc@250, av1@400, whatever qn or
+     * codec is asked for — and the highest qn won: Shaka 4032, AVPlay no
+     * picture, 「这个直播间现在放不了」 while H.264 超清 sat in the same answer.
+     * The set is asked, as mpd.js asks it for video; an engine with nothing to
+     * ask (node) takes everything. Names it does not know pass. */
+    var liveCodecCache = {};
+    function liveDecodable(name) {
+        var probe = name === "av1" ? ["av01.0.08M.08"]
+                  : name === "hevc" ? ["hev1.1.6.L120.90", "hvc1.1.6.L120.90"] : null;
+        if (!probe || typeof MediaSource === "undefined" || !MediaSource || !MediaSource.isTypeSupported) { return true; }
+        if (liveCodecCache[name] === undefined) {
+            liveCodecCache[name] = false;
+            for (var i = 0; i < probe.length; i++) {
+                try {
+                    if (MediaSource.isTypeSupported('video/mp4; codecs="' + probe[i] + '"')) { liveCodecCache[name] = true; }
+                } catch (e) {}
+            }
+        }
+        return liveCodecCache[name];
+    }
+
     function liveItem(x, followed) {
         var w = x.watched_show || {};
         return {
@@ -714,6 +738,7 @@ var API = (function () {
             var url = LIVE + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" + encodeURIComponent(roomId) +
                       "&protocol=0,1&format=0,1,2&codec=0,1&qn=" + (qn || 10000) + "&platform=web&ptype=8&dolby=5&panorama=1";
             var signedIn = typeof Auth !== "undefined" && Auth.isLoggedIn();
+            var undecodable = [];
             function bestOf(pu, formatName) {
                 var best = null;
                 (pu.stream || []).forEach(function (s) {
@@ -722,6 +747,10 @@ var API = (function () {
                         if (f.format_name !== formatName) { return; }
                         (f.codec || []).forEach(function (c) {
                             var qn = Number(c.current_qn) || 0;
+                            if (!liveDecodable(c.codec_name)) {
+                                if (undecodable.indexOf(c.codec_name) < 0) { undecodable.push(c.codec_name); }
+                                return;
+                            }
                             if (!best || qn > best.qn || (qn === best.qn && c.codec_name === "avc")) {
                                 best = { qn: qn, codec: c.codec_name, base: c.base_url,
                                          hosts: c.url_info || [], accept: c.accept_qn || [] };
@@ -761,7 +790,18 @@ var API = (function () {
                 if (!best || !best.hosts.length) { best = null; }
                 if (!ts || !ts.hosts.length) { ts = null; }
                 if (!flv || !flv.hosts.length) { flv = null; }
-                var shape = d.playurl_info ? shapeOf(pu) : "没有 playurl_info";
+                var shape = (d.playurl_info ? shapeOf(pu) : "没有 playurl_info") +
+                            (undecodable.length ? "（这台电视解不了 " + undecodable.join("、") + "，不挑）" : "");
+                /* No address at all, on a room marked special type 1 — read as
+                 * 付费直播 (not measured: the room-info endpoint answers this
+                 * machine -352). 11-24, a room a set opened: live, playurl null,
+                 * all_special_types [1,203,204], signed in and not; asked again
+                 * from here, the same. Nothing on this side can play it, so it
+                 * is said and not uploaded; any other empty answer still is. */
+                if (!pu.stream && d.playurl_info && (d.all_special_types || []).indexOf(1) >= 0) {
+                    onFail("付费直播间", shape + "，all_special_types=" + JSON.stringify(d.all_special_types));
+                    return;
+                }
                 if (!best && !ts && !flv) { onFail("没给电视放得了的流", shape); return; }
                 var urls = urlsOf(best);
                 best = best || none;
@@ -1774,6 +1814,20 @@ var API = (function () {
             getJson(url, function (d) {
                 if (epId && PGC.preview(d)) { onFail("会员专享"); return; }
                 if (!d.dash) { onFail("no dash streams"); return; }
+                /* A 番剧 manifest has no strong token to trade up to (no app
+                 * endpoint for PGC has been verified), and the player must know:
+                 * it handed its 403s to app.js 「交给 app 端点强令牌」, app.js
+                 * (rightly) does not mint one for an episode, and the episode
+                 * went out at once with every lower tier untried — 11-21 and 11-25,
+                 * two sets, 4K hev1 refused, 「视频流被拒绝」 in two seconds. */
+                if (epId) { d.dash.noStrong = true; }
+                /* No audio at all is a silent upload, not a broken answer:
+                 * 11-20, a ten-second upload, four video tracks
+                 * and `audio: null` from the web and app endpoints alike (and
+                 * from here, asked again) — 「拼不出播放清单」 and out. mpd.js
+                 * builds it video-only. Audio that is listed and unusable is
+                 * still a manifest that cannot be built. */
+                d.dash.silent = !(d.dash.audio && d.dash.audio.length);
 
                 /* Signed in, bilibili often hands out a PCDN node as the primary
                  * host, and those answer 403 to a plain range request. Every
@@ -2110,7 +2164,9 @@ var API = (function () {
                             "（其中 " + reused + " 份沿用 web 清单的索引，没读）";
                         dash.video = video.filter(function (r) { return r.segments; });
                         dash.audio = audio.filter(function (r) { return r.segments; });
-                        if (!dash.video.length || !dash.audio.length) {
+                        /* A silent upload lists no audio here either (11-20): video-only, as on the web path. */
+                        dash.silent = !aAll;
+                        if (!dash.video.length || (!dash.audio.length && aAll)) {
                             onFail("app 端点自读 sidx 后无可用流（视频 " + dash.video.length + "/" + video.length +
                                    "、音频 " + dash.audio.length + "/" + audio.length + " 有索引）"); return;
                         }

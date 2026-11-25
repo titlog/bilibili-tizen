@@ -261,7 +261,11 @@ var Mpd = (function () {
                 return r.segments;
             }).sort(function (a, b) { return (a.bandwidth || 0) - (b.bandwidth || 0); });
 
-            if (!videos.length || !audios.length) { return ""; }
+            /* `silent`: bilibili listed no audio at all (api.js) — a video-only
+             * manifest. Audio listed but without a usable index stays a
+             * manifest that cannot be built. */
+            var silent = !!dash.silent && !(dash.audio || []).length;
+            if (!videos.length || (!audios.length && !silent)) { return ""; }
             topBw = videos[0].bandwidth || 0;
 
             var vBody = "";
@@ -289,10 +293,12 @@ var Mpd = (function () {
                 ' segmentAlignment="true" startWithSAP="1">\n' +
                 vBody +
                 "    </AdaptationSet>\n" +
-                '    <AdaptationSet contentType="audio" mimeType="audio/mp4"' +
-                ' segmentAlignment="true" startWithSAP="1" lang="und">\n' +
-                aBody +
-                "    </AdaptationSet>\n" +
+                (audios.length
+                    ? '    <AdaptationSet contentType="audio" mimeType="audio/mp4"' +
+                      ' segmentAlignment="true" startWithSAP="1" lang="und">\n' +
+                      aBody +
+                      "    </AdaptationSet>\n"
+                    : "") +
                 "  </Period>\n" +
                 "</MPD>\n";
         }

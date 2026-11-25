@@ -2162,13 +2162,17 @@
         });
     }
 
-    function loadFeed(kind, restore, retries, forceHistory) {
+    /* Asked again while the set has no connection (see failedPage). */
+    var FEED_NET_WAITS = [2000, 3000, 5000, 8000], FEED_NET_BUDGET = 25000;
+
+    function loadFeed(kind, restore, retries, forceHistory, net) {
+        var asked = new Date().getTime();
         state.screen = kind;
         markTab();
         if (restore) { backMark("顶栏"); }
         if (kind === "rcmd") { refreshHistoryIfStale(forceHistory); }
         var req = ++feedRequest;
-        newView();
+        var feedView = newView();
 
         var cached = feedCache[kind];
         if (restore && cached) {
@@ -2198,7 +2202,7 @@
             return;
         }
 
-        setScreen('<div class="empty">加载中…</div>');
+        setScreen('<div class="empty">' + (net ? "网络不顺，正在自动重试…" : "加载中…") + '</div>');
         if ((kind === "dynamic" || kind === "toview") && !Auth.isLoggedIn()) {
             setScreen('<div class="empty">' +
                 (kind === "dynamic" ? "动态" : "稍后再看") +
@@ -2247,11 +2251,38 @@
                 }, 3000);
                 return;
             }
+            /* No connection at all — the request failed at once, not after the
+             * twenty-second timeout. The one wake retry was not enough: 11-17…
+             * 11-25, six sets reached the error page this way, waking or
+             * just switched on; one woke, its viewer
+             * pressed 推荐 five times in six seconds and got the error page
+             * five times, and the upload that followed eight seconds later
+             * connected. Asked again for up to 25 s, saying so; then the
+             * error page, in words a viewer can act on. */
+            var cut = /^(HTTP 0|network error)$/.test(String(why));
+            var nowMs = new Date().getTime(), net0 = net || { t0: asked, n: 0 };
+            if (cut && nowMs - asked < 5000 && net0.n < FEED_NET_WAITS.length && nowMs - net0.t0 < FEED_NET_BUDGET) {
+                var wait = FEED_NET_WAITS[net0.n];
+                report("feed", kind + " 连不上（" + why + "），" + (wait / 1000) + " 秒后自动重来（第 " + (net0.n + 1) + " 次）");
+                setScreen('<div class="empty">网络不顺，正在自动重试…</div>');
+                setTimeout(function () {
+                    /* Only onto the screen it was asked for: the viewer may have gone to
+                     * 搜索, 我的 or a video meanwhile, none of which moves feedRequest. */
+                    if (req !== feedRequest || !stillViewing(feedView) || state.screen !== kind || playing) {
+                        report("feed", kind + " 不再自动重来：已经离开这一页");
+                        return;
+                    }
+                    loadFeed(kind, false, 0, false, { t0: net0.t0, n: net0.n + 1 });
+                }, wait);
+                return;
+            }
             /* The upload's reason carries only the words on the screen; which
              * tab said them is here (10-22: five 「code -352」 from a set in HK,
              * and nothing to say which feed). */
-            report("feed", kind + " 加载失败（" + why + "），给了重试按钮");
-            showError(loginNeeded(why) || ("加载失败：" + why), function () { loadFeed(kind); }, !!loginNeeded(why));
+            report("feed", kind + " 加载失败（" + why + "），给了重试按钮" +
+                   (net ? "（连不上，自动重来了 " + net.n + " 次，前后 " + Math.round((nowMs - net.t0) / 1000) + " 秒）" : ""));
+            showError(loginNeeded(why) || (cut ? "连不上 B 站，检查一下电视的网络（" + why + "）" : "加载失败：" + why),
+                      function () { loadFeed(kind); }, !!loginNeeded(why));
         };
         if (bootSlot) {
             /* Asked while the picker was up; a failure there is asked again
@@ -4786,6 +4817,11 @@
 
         var token = newView();
         showOpening(v);
+        /* A card with an aid and no bvid asked view for 「bvid=undefined」 and
+         * got 「-400 请求错误」 — the likeliest reading of 11-19's bare
+         * 「打开失败：code -400」 (Tizen 3.0), which left no line naming the
+         * card. The bvid is computed from the aid, as the app 排行 does. */
+        if (!v.bvid && v.aid) { v.bvid = API.bvidOf(v.aid) || v.bvid; }
         API.view(v.bvid, function (d, via) {
             if (!stillViewing(token)) { return; }
             var redirect = PGC.redirect(d.redirect);
@@ -4823,6 +4859,8 @@
                 toast("这个视频看不了：可能已经被删除，或者在你所在的地区不能看");
                 return;
             }
+            report("player", (v.bvid || "没有 bvid") + "（aid " + (v.aid || "无") + "）" +
+                   Diag.priv(String(v.title || "").slice(0, 20)) + " 打开失败：" + why);
             troubleOrLogin(why, "打开失败：" + why);
         });
     }
@@ -5320,6 +5358,9 @@
             /* A room that has ended is not a failure (10-24: a set woke after
              * thirteen hours in a room, reconnected, and sent the log in). */
             if (/^没在直播/.test(String(whyNot))) { toast("这个直播间现在没在直播"); return; }
+            /* bilibili gave no address at all, on a room marked as paid (api.js
+             * says how that is read): an answer, not a fault. */
+            if (whyNot === "付费直播间") { toast("这个直播间 B 站没给播放地址，可能是付费直播"); return; }
             trouble("这个直播间现在放不了：" + whyNot);
         }, room.qnAsk);
     }
@@ -6809,6 +6850,10 @@
 
     function bindPlaybackControls() {
         el("panel-subtitles").onselect = function () {
+            /* The panel outlives the video: 自动连播 off, the video ends, the
+             * chooser's 下键 opens the panel with `playing` already null — and
+             * 字幕 there threw (11-17, 1.5.2). Nothing to choose for. */
+            if (!playing) { return; }
             closeActMore(true);
             playbackChoice = "subtitles";
             if (playing.subtitleState === "failed") {
@@ -7045,6 +7090,11 @@
             if (token !== nextToken) { return; }
             var finished = playing;
             playing = null;
+            /* The panel was closed when the video ended, but the keys stayed
+             * with the player for these two round trips, and a 下键 in them
+             * opened it again — over the chooser, for a video no longer
+             * playing (11-17: its 字幕 button then threw on `playing`). */
+            closeOptions();
             if (!next) {
                 /* Nothing to continue with: back to where the viewer was. */
                 playing = finished;
@@ -8043,9 +8093,38 @@
             report("player", "dash 兜底：playurl 失败（" + w2 + "）" +
                    (playing !== session ? "，而且会话已经没了" : ""));
             if (playing !== session) { return; }
-            playTrouble("播放失败：" + w2);
-            failOut();
+            learnCharge(session, function () {
+                if (playing !== session) { report("player", "问完是不是充电专属，已经在看别的，不报"); return; }
+                playTrouble("播放失败：" + w2);
+                failOut();
+            });
         });
+    }
+
+    /* Whether a failing video is 充电专属, when nothing has said so yet. On no
+     * account the app endpoint is never asked (no access_key), so its 87007
+     * never comes: 11-20 (Tizen 6.0, signed out) one went up as
+     * 「播放失败：no dash streams」 with 「播放失败：no dash streams」 on the
+     * screen. The web playurl gives such a video no DASH and a durl the CDN
+     * refuses (asked from here 11-25: is_upower_exclusive true, durl only).
+     * One view() on the way out, unless the detail already came from view();
+     * three seconds at most, then the exit goes on as it would have. */
+    function learnCharge(session, done) {
+        var d = session.detail;
+        if (chargeOnly() || session.metaState === "done" || !d || !d.bvid) { done(); return; }
+        var settled = false;
+        function once() { if (!settled) { settled = true; done(); } }
+        setTimeout(function () {
+            if (!settled) { report("player", "问 view 是不是充电专属，3 秒没回，不等了"); }
+            once();
+        }, 3000);
+        API.view(d.bvid, function (full) {
+            if (full && full.upowerOnly && !settled) {
+                session.upowerOnly = true;
+                report("player", videoTag(d) + " 放不了，view 说是充电专属");
+            }
+            once();
+        }, function () { once(); });
     }
 
     /* bvid plus a slice of title — the shape every playback line carries, so a
@@ -8689,10 +8768,24 @@
                     var repExp = Player.pickDashVideo(dashExp);
                     playDash(dashExp, (repExp && repExp.id) || qnCap());
                 };
+                /* The manifest expires while the set sleeps, so this runs the
+                 * moment it wakes — before its network has: 11-24 (Tizen
+                 * 10), eight hours suspended mid-video, the refetch answered
+                 * HTTP 0 eleven seconds in, the durl refetch too, and out it
+                 * went with an upload. A request that did not connect is
+                 * asked again, three seconds apart, three times. */
+                var netExp = 0;
                 var webExp = function () {
                     playDetailDash(sessExp.detail, sessExp.cid, qnCap(),
                         startExp, function (whyExp) {
                             if (playing !== sessExp) { report("player", "过期重取回来时会话已经没了，丢弃"); return; }
+                            if (/^(HTTP 0|network error)$/.test(String(whyExp)) && netExp < 3) {
+                                netExp++;
+                                report("player", "过期重取 playurl 没连上（" + whyExp + "），3 秒后再要（第 " + netExp + " 次）");
+                                el("loading-status").textContent = "网络不顺，正在自动重试…";
+                                setTimeout(function () { if (playing === sessExp) { webExp(); } }, 3000);
+                                return;
+                            }
                             report("player", "过期重取 playurl 失败（" + whyExp + "）");
                             finalFallback("清单过期且重取失败 " + whyExp);
                         });

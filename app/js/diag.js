@@ -310,12 +310,31 @@ var Diag = (function () {
      * same lines would be refused again. A retry that fails writes its own
      * 没传上, so the start after tries again; the daily cap still holds. */
     var MISSED = /diag: 没传上：(.*?)，走 https?(?:（[^（）]*）)?（([\s\S]*)）$/;
+    /* Nor when this set was simply off the network. An upload that could not
+     * connect at all, for an incident that was nothing but requests that
+     * could not connect, says one thing: the television had no network. A
+     * third of the uploads 11-17…11-25 were that — 「补传：加载失败：HTTP 0」
+     * a day later, the same morning's 「没传上：连不上」 sitting above it in the
+     * ring — and each one cost a read to find there was nothing in it. An
+     * incident where bilibili alone was unreachable still goes up at once
+     * (the upload connects); so does anything else in the same reason. */
+    function offlineOnly(why, reason) {
+        if (!/^(?:连不上|超时)$/.test(why)) { return false; }
+        var parts = String(reason).replace(/^补传：/, "").split(" / ");
+        for (var i = 0; i < parts.length; i++) {
+            if (!/HTTP 0\b|network error|timeout/.test(parts[i])) { return false; }
+        }
+        return true;
+    }
     function missed() {
         load();
         for (var i = ring.length - 1; i >= 0; i--) {
             if (/ diag: 传了 \d+ 行/.test(ring[i])) { return null; }
             var m = MISSED.exec(ring[i]);
-            if (m) { return /^HTTP 4(?:00|13)\b/.test(m[1]) ? null : { why: m[1], reason: m[2].replace(/^补传：/, "") }; }
+            if (m) {
+                if (/^HTTP 4(?:00|13)\b/.test(m[1]) || offlineOnly(m[1], m[2])) { return null; }
+                return { why: m[1], reason: m[2].replace(/^补传：/, "") };
+            }
         }
         return null;
     }

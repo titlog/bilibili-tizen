@@ -232,5 +232,17 @@ eq("no index anywhere: the shape says so", Mpd.shape(noIndex, 120),
    "视频 1 条（有索引 0，上限 120 以内能用 0，族 hev1）· 音频 1 条（有索引 0）· 有 flac · 杜比 1 条");
 eq("no dash", Mpd.shape(null, 80), "没有 dash");
 
+/* A silent upload (api.js marks `silent` when bilibili lists no audio at
+ * all, 11-20): a video-only manifest, still well-formed. Audio
+ * that is listed but has no index is not that. */
+const silentXml = Mpd.build({ duration: 10, silent: true, video: [{ id: 80, codecs: "avc1.640032", segments: seg, urls: [AMPY] }], audio: [] }, 80);
+ok("silent: a manifest is built", silentXml.length > 0);
+ok("silent: well-formed", XMLValidator.validate(silentXml) === true);
+const silentSets = [].concat(new XMLParser(PARSE).parse(silentXml).MPD.Period.AdaptationSet);
+eq("silent: video only", silentSets.map((s) => s["@contentType"]).join(","), "video");
+eq("silent but audio listed without an index: nothing built",
+   Mpd.build({ duration: 10, silent: true, video: [{ id: 80, codecs: "avc1.640032", segments: seg }],
+               audio: [{ id: 30280, codecs: "mp4a.40.2" }] }, 80), "");
+
 if (failed) { console.log(`\n${failed} of ${checks} checks failed`); process.exit(1); }
 console.log(`✓ mpd: well-formed, escaped, laddered and capped — ${checks} checks`);

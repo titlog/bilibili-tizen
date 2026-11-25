@@ -1733,6 +1733,9 @@ var Player = (function () {
         /* `lastDash.dash.strong` — the flag lives on the playurl payload; the
          * old `lastDash.strong` read an undefined property and never fired. */
         if (lastDash && lastDash.dash && lastDash.dash.strong) { return false; }
+        /* A 番剧 manifest has nothing to trade up to (api.js says why): its
+         * 403s walk hosts, files and tiers the way a strong manifest's do. */
+        if (lastDash && lastDash.dash && lastDash.dash.noStrong) { return false; }
         if (!known403 && !saw403) { return false; }
         strongEmitted = true;
         /* Once per *manifest object*, and remembered on the object: when the
@@ -1900,7 +1903,7 @@ var Player = (function () {
     function canSwapToken() {
         return mode === "mse" && !!shakaPlayer && !loadPending && haveTime &&
                !!lastDash && !!lastDash.dash && !lastDash.dash.strong &&
-               !lastDash.dash.strongTried && !strongEmitted;
+               !lastDash.dash.noStrong && !lastDash.dash.strongTried && !strongEmitted;
     }
 
     /* Whether app.js could mint a strong token for this session at all — what
@@ -2560,7 +2563,8 @@ var Player = (function () {
             bufBehind = 10;
         }
         log("编码 " + usedFamily + (prefer ? "（指定）" : "") +
-            (capId ? "，画质压到 qn" + capId : ""));
+            (capId ? "，画质压到 qn" + capId : "") +
+            (dash.silent && !(dash.audio || []).length ? "，B 站没给音轨（无声的稿件），清单只有视频" : ""));
         lastDash = { dash: dash, startMs: startMs, family: usedFamily,
                      capId: capId || 0 };
         /* The swap map rewrites the web manifest it was made for. A build from
