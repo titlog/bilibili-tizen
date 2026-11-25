@@ -102,5 +102,35 @@ API.playurlProgressive("BV1", 1, 64, (prog) => {
                  "http://" + AKAM.slice(8), "http://" + COSOV.slice(8)]);
 }, (why) => { eq("progressive normalisation succeeds", why, "(no failure)"); });
 
+/* player.js's side of the same rule: once every host of a file has refused,
+ * the one that refused longest ago leads (11-25 on the reference set, a 番剧
+ * whose lesson named akam led with cosov, cosov refused every file, and akam
+ * was never asked again). The three functions, cut out of the real file. */
+const playerSrc = fs.readFileSync(fileURLToPath(new URL("../app/js/player.js", import.meta.url)), "utf8");
+const cut = (name) => {
+  const m = new RegExp("    function " + name + "\\([^)]*\\) \\{[\\s\\S]*?\\n    \\}\\n").exec(playerSrc) ||
+            new RegExp("    function " + name + "\\([^)]*\\) \\{.*\\}\\n").exec(playerSrc);
+  if (!m) { throw new Error("player.js: no function " + name); }
+  return m[0];
+};
+const lines = [];
+const hosts = vm.createContext({ badHosts: {}, log: (s) => lines.push(s), String });
+vm.runInContext(cut("hostOf") + cut("badSince") + cut("preferGoodHosts"), hosts);
+const A = "https://upos-hz-mirrorakam.akamaized.net/f.m4s", C = "https://upos-sz-mirrorcosov.bilivideo.com/f.m4s";
+const rep = () => ({ video: [{ urls: [A, C], baseUrl: A }], audio: [{ urls: [A, C], baseUrl: A }] });
+let d = rep();
+hosts.badHosts = { "upos-hz-mirrorakam.akamaized.net": true };
+hosts.preferGoodHosts(d);
+eq("one host bad: the good one leads", d.video[0].urls[0], C);
+hosts.badHosts["upos-sz-mirrorcosov.bilivideo.com"] = 5000;
+hosts.preferGoodHosts(d);
+eq("every host bad: the lesson's (oldest) leads again", d.video[0].urls[0], A);
+eq("…in every representation", d.audio[0].baseUrl, A);
+eq("…and says so", lines.length, 1);
+hosts.badHosts["upos-hz-mirrorakam.akamaized.net"] = 6000;
+hosts.preferGoodHosts(d);
+eq("refused again: the other leads next", d.video[0].urls[0], C);
+eq("never dropped", d.video[0].urls.length, 2);
+
 if (failed) { console.log(`\n${failed} of ${checks} checks failed`); process.exit(1); }
 console.log(`✓ mirrors: ordered, never dropped — ${checks} checks`);

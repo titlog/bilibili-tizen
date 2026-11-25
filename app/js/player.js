@@ -1835,11 +1835,17 @@ var Player = (function () {
         saw403 = true;
         var h = hostOf(err.data[0]);
         if (h && !badHosts[h]) {
-            badHosts[h] = true;
+            /* When, so that once every host has refused, the one that refused
+             * longest ago can lead again (preferGoodHosts). A lesson's hosts are
+             * `true`: older than anything this session learned. */
+            badHosts[h] = new Date().getTime();
             log("镜像 " + h + " 返回 " + status + "，这个视频内不再排在前面");
             stashLesson(null);
             return true;
         }
+        /* Refused again: the newest refusal, so the next rung leads elsewhere.
+         * Not news, so no immediate rebuild — that stays bounded by hosts. */
+        if (h) { badHosts[h] = new Date().getTime(); }
         return false;
     }
 
@@ -2161,22 +2167,40 @@ var Player = (function () {
      * never lead with a host already known to refuse — including the in-place
      * restart, which reuses a session object earlier rotations may have left
      * pointing at exactly the wrong mirror. */
+    /* Once every host of a file has refused, the one that refused longest ago
+     * leads — 「镜像只排序、不丢弃」. Left in its order, the lead was the host
+     * that had just refused, and a rebuild 「换镜像」 changed nothing: 11-25 on
+     * this set, a 番剧 whose lesson named akam (the selftest's forged 403) led
+     * with cosov, cosov refused that episode's every file, and every tier was
+     * asked of cosov alone while akam — serving it ten minutes earlier — was
+     * never asked again. */
+    function badSince(h) { var b = badHosts[h]; return b === true ? 0 : b; }
+
     function preferGoodHosts(dash) {
-        var kinds = ["video", "audio"];
+        var kinds = ["video", "audio"], back = "";
         for (var k = 0; k < kinds.length; k++) {
             var list = (dash && dash[kinds[k]]) || [];
             for (var i = 0; i < list.length; i++) {
                 var urls = list[i].urls;
                 if (!urls || urls.length < 2 || !badHosts[hostOf(urls[0])]) { continue; }
+                var pick = -1, oldest = 0;
                 for (var j = 1; j < urls.length; j++) {
-                    if (!badHosts[hostOf(urls[j])]) {
-                        urls.unshift(urls.splice(j, 1)[0]);
-                        list[i].baseUrl = urls[0];
-                        break;
+                    if (!badHosts[hostOf(urls[j])]) { pick = j; break; }
+                }
+                if (pick < 0) {
+                    oldest = 0;
+                    for (j = 1; j < urls.length; j++) {
+                        if (badSince(hostOf(urls[j])) < badSince(hostOf(urls[oldest]))) { oldest = j; }
                     }
+                    if (oldest > 0) { pick = oldest; back = hostOf(urls[oldest]); }
+                }
+                if (pick > 0) {
+                    urls.unshift(urls.splice(pick, 1)[0]);
+                    list[i].baseUrl = urls[0];
                 }
             }
         }
+        if (back) { log("每台主机都拒过，回到最早拒绝的 " + back + " 出发"); }
     }
 
     /* A cut connection does not always announce itself as one. The failure
