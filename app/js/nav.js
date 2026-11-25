@@ -11,6 +11,42 @@ var Nav = (function () {
     var current = null;
     var handlers = {};
     var enterHold = null;
+    var enterDown = false, enterDownAt = 0;
+    /* Remote auto-repeat comes every ~50–500 ms; a gap longer than this is a
+     * new press whose keyup we never saw (an IME or overlay took it). */
+    var REPEAT_GAP_MS = 1000;
+    /* REPEAT_GAP_MS and "a held OK sends keydowns with no keyup between" are
+     * not measured on a real remote yet: say once a run what this one does. */
+    var held = { at: 0, last: 0, first: 0, gaps: [], upAt: 0, flag: false, notedHold: false, notedUp: false };
+    function noteEnterDown(t, repeat, flagged) {
+        if (repeat) {
+            if (!held.first) { held.first = t - held.at; } else { held.gaps.push(t - held.last); }
+            if (flagged) { held.flag = true; }
+        } else {
+            if (held.upAt && t - held.upAt < 200 && !held.notedUp && handlers.note) {
+                held.notedUp = true;
+                handlers.note("确认键：抬起后 " + (t - held.upAt) + "ms 又按下（连按两下，还是这个遥控器的连发带抬起？）");
+            }
+            held.at = t; held.first = 0; held.gaps = []; held.flag = false;
+        }
+        held.last = t;
+    }
+    /* Any hold of at least LONG_ENTER_MS counts, repeats or not: "this remote
+     * sends none" (the S85F's) must read differently from "nobody held OK". */
+    function noteEnterUp(t) {
+        held.upAt = t;
+        var dur = t - held.at;
+        if (held.notedHold || !handlers.note || !held.at || (!held.first && dur < LONG_ENTER_MS)) { return; }
+        held.notedHold = true;
+        if (!held.first) {
+            handlers.note("确认键按住 " + dur + "ms：没有连发（只有一次按下、一次抬起）");
+            return;
+        }
+        var g = held.gaps, max = 0;
+        for (var i = 0; i < g.length; i++) { if (g[i] > max) { max = g[i]; } }
+        handlers.note("确认键按住 " + dur + "ms：首个连发 " + held.first + "ms，之后 " + g.length +
+                      " 次、最长间隔 " + max + "ms，e.repeat " + (held.flag ? "有" : "没有"));
+    }
     var LONG_ENTER_MS = 650;
 
     var KEY = {
@@ -193,11 +229,14 @@ var Nav = (function () {
 
     document.addEventListener("keydown", function (e) {
         var k = e.keyCode;
+        var t = new Date().getTime();
+        var repeat = k === KEY.ENTER && (!!e.repeat || (enterDown && t - enterDownAt < REPEAT_GAP_MS));
+        if (k === KEY.ENTER) { noteEnterDown(t, repeat, !!e.repeat); enterDown = true; enterDownAt = t; }
         if (enterHold && k !== KEY.ENTER) {
             clearTimeout(enterHold.timer);
             enterHold = null;
         }
-        if (handlers.key && handlers.key(k) === true) { return; }
+        if (handlers.key && handlers.key(k, repeat) === true) { return; }
 
         /* Cards keep short Enter for playback. Only a card with onlongselect
          * defers that action until release, so a hold can open its menu without
@@ -238,6 +277,10 @@ var Nav = (function () {
     });
 
     document.addEventListener("keyup", function (e) {
+        /* Only a release of a press we saw: a keyup whose keydown went to the
+         * TV's own overlay would be timed from an older press. */
+        if (e.keyCode === KEY.ENTER) { if (enterDown) { noteEnterUp(new Date().getTime()); } enterDown = false; }
+        if (handlers.keyup && handlers.keyup(e.keyCode) === true) { e.preventDefault(); return; }
         if (e.keyCode !== KEY.ENTER || !enterHold) { return; }
         var hold = enterHold;
         enterHold = null;
@@ -252,11 +295,17 @@ var Nav = (function () {
     });
 
     window.addEventListener("blur", function () {
+        enterDown = false; held.at = 0;
         if (enterHold) { clearTimeout(enterHold.timer); enterHold = null; }
+    });
+    /* Suspended mid-press: that keyup never comes, so the next OK is a new press. */
+    document.addEventListener("visibilitychange", function () {
+        if (document.hidden) { enterDown = false; held.at = 0; }
     });
 
     return {
         KEY: KEY,
+        LONG_ENTER_MS: LONG_ENTER_MS,
         focus: setFocus,
         current: function () { return current; },
         /* Called after a screen swaps its DOM, to land focus somewhere sane. */
@@ -274,6 +323,7 @@ var Nav = (function () {
         onFocus: function (fn) { handlers.focus = fn; },
         onNote: function (fn) { handlers.note = fn; },
         onKey: function (fn) { handlers.key = fn; },
+        onKeyUp: function (fn) { handlers.keyup = fn; },
         registerKeys: function () {
             try {
                 var want = ["MediaPlayPause", "MediaPlay", "MediaPause",

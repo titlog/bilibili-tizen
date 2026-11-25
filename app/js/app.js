@@ -16,6 +16,20 @@
 
     function el(id) { return document.getElementById(id); }
 
+    /* Hold OK in playback (hold-speed.js). Made first so every function below
+     * can use it; the options are only read once a key arrives. */
+    var holdSpeed = HoldSpeed.create({
+        eligible: holdSpeedEligible,
+        canToggle: holdSpeedScreen,
+        toggle: function () { setPaused(!Player.userPaused()); },
+        /* "on": 2x is playing; "wait": held, waiting for buffering to end. */
+        changed: function (state) {
+            el("hold-speed").className = state === "on" ? "" : state === "wait" ? "waiting" : "hidden";
+            if (dm) { dm.rate(Player.effectiveRate()); }
+        },
+        log: function (line) { report("player", line); }
+    });
+
     /* There is no console on a retail set and dlog is closed, so anything that
      * throws is posted to tools/collect.mjs instead. Silent when unset. */
     /* The collector lives on whichever machine last ran deploy.sh, so in the
@@ -3374,7 +3388,7 @@
         Danmaku.load(session.cid, function (list) {
             if (playing !== session) { return; }
             dm.set(list);
-            dm.rate(Player.rate());
+            dm.rate(Player.effectiveRate());
             showDanmaku(true);
             report("danmaku", list.length + " 条（" + DM_NAMES[danmakuLevel()] + "），" + (new Date().getTime() - t0) + "ms");
         }, function (why) {
@@ -4776,6 +4790,7 @@
     var pressAt = 0;
 
     function playVideo(v, fromPanel) {
+        holdSpeed.cancel("new video");
         pressAt = new Date().getTime();
         if (!fromPanel) { rememberPosition(); backStack = []; }
         if (v.live) { openLive(v); return; }
@@ -7070,6 +7085,9 @@
     var autoplaysSinceKey = 0;
 
     function beginAutoNext() {
+        /* The keys stay the player's while the next one is looked up (two
+         * round trips): an OK still held across the end must not pause then. */
+        holdSpeed.cancel("ended");
         /* The panel belongs to the video that just ended; leaving it up meant
          * the countdown ran underneath it and the next video started with a
          * stale quality list on screen. */
@@ -7389,6 +7407,7 @@
     var handoff = null;
 
     function play(detail, cid, keepAtMs, keepPaused) {
+        holdSpeed.cancel("new video");
         if (!detail || detail.bvid !== videoQn.bvid) { setVideoQn("", 0); }
         if (detail && detail.bvid) { playedSinceGrid[detail.bvid] = 1; }
         /* Every per-video piece of player state is cleared here. Leaving any of
@@ -8427,6 +8446,7 @@
 
     var backMark = function () {};   /* the running backTimer's mark, for the steps inside showScreen */
     function stopPlayback(then) {
+        holdSpeed.cancel("stop");
         var bt = backTimer("返回到网格");
         backMark = bt.mark;
         el("player-loading").className = "hidden";
@@ -8516,6 +8536,7 @@
     })();
 
     Player.on(function (kind, data) {
+        if (kind === "holdcancel") { holdSpeed.interrupt(data); return; }
         if (liveRoom) {
             if (kind === "log") { report("live", data); }
             else { onLiveEvent(kind, data); }
@@ -9191,8 +9212,21 @@
 
     /* ---------------- keys ---------------- */
 
-    Nav.onKey(function (k) {
+    /* Hold OK while a video plays: temporary 2x, release restores (hold-speed.js).
+     * Only plain playback on MSE; everything else keeps OK as it was. */
+    function holdSpeedScreen() {
+        return !!playing && !opening && !liveRoom && !scrub && !optionsOpen &&
+            !barPick && !actionView && !episodeView && !commentsView && !pendingNext;
+    }
+    function holdSpeedEligible() {
+        return holdSpeedScreen() &&
+            el("player-loading").className.indexOf("hidden") >= 0 && Player.canHoldRate();
+    }
+
+
+    Nav.onKey(function (k, repeat) {
         autoplaysSinceKey = 0;
+        if (holdSpeed.key(k, repeat)) { return true; }
         if (opening) {
             if (k === Nav.KEY.RETURN) { cancelOpening(); return true; }
             return k !== Nav.KEY.EXIT;
@@ -9253,6 +9287,10 @@
         /* While playing, the remote drives the player rather than the focus. */
         switch (k) {
             case Nav.KEY.ENTER:
+                /* A held OK repeats; only its first keydown acts (AVPlay too). */
+                if (repeat) { return true; }
+                if (holdSpeedEligible()) { holdSpeed.begin(); return true; }
+                /* falls through */
             case Nav.KEY.PLAY_PAUSE:
                 if (scrub) { commitScrub(); return true; }
                 /* Toggle against what the viewer asked for, not against the

@@ -142,6 +142,7 @@ const nodes = { results, shell: { className: "" }, "loading-title": {}, "loading
   nextup: { className: "hidden" } };
 const appCtx = vm.createContext({ window: {}, document: { getElementById: (id) => nodes[id], addEventListener() {}, body: {} },
   Date, Math, JSON, String, Number, Array, Object, RegExp, parseInt, parseFloat, isFinite, setTimeout, clearTimeout,
+  HoldSpeed: { create: () => ({ key: () => false, begin() {}, cancel() {}, interrupt() {} }) }, /* hold-speed-verify drives the real one */ 
   Nav: { onKey() {}, onBack() {}, current: () => null, focus: (n) => { focused = n; } },
   Player: { on() {} }, Settings: { get: () => 3 }, PGC, EpisodeNav,
   API: { view: (bvid, ok) => ok({ redirect: "https://www.bilibili.com/bangumi/play/ep32374" }, "fixture") },

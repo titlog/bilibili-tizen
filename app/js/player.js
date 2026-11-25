@@ -49,7 +49,10 @@ var Player = (function () {
 
     function el(id) { return document.getElementById(id); }
 
-    function emit(kind, data) { onEvent(kind, data); }
+    function emit(kind, data) {
+        if (kind === "error" || kind === "ended" || kind === "status" || kind === "tokenSwap") { cancelHoldRate(kind); }
+        onEvent(kind, data);
+    }
 
     function log(msg) { onEvent("log", msg); }
 
@@ -598,14 +601,48 @@ var Player = (function () {
      * 1.5x should not need setting on every episode. Not across restarts —
      * a speed nobody remembers choosing is a fault from the sofa. */
     var playRate = 1;
+    var heldRate = 0; /* hold-OK override for this video; never the viewer's choice */
+    var rateStale = false; /* released while paused: Shaka still runs the boost */
+
+    function releaseHoldRate() {
+        if (!heldRate) { return; }
+        var before = heldRate;
+        heldRate = 0;
+        if (before === playRate) { return; }
+        /* trickPlay resumes a paused/ended element, and teardown must never
+         * restart a finished video: the element's next `playing` re-applies
+         * the chosen rate, however it resumes (a new load starts Shaka at 1
+         * and applies the chosen rate itself). */
+        var v = el("html5-video");
+        if (mode === "mse" && (v.paused || v.ended)) { rateStale = true; return; }
+        applyRate();
+    }
+
+    function cancelHoldRate(reason) {
+        releaseHoldRate();
+        onEvent("holdcancel", reason); /* also cancels an OK still short of the threshold */
+    }
+
+    /* The viewer's choice as this route plays it: 1.5x on AVPlay is 1x. */
+    function chosenRate() {
+        return (mode === "avplay" && playRate !== Math.round(playRate)) ? 1 : playRate;
+    }
+
+    function canHoldRate() {
+        var v = el("html5-video");
+        return mode === "mse" && !userPaused && !loadPending && !swapPending &&
+            !v.paused && !v.ended && !!shakaPlayer && !shakaPlayer.isBuffering();
+    }
     /* Through Shaka, not the element: its PlayRateController drops the rate to
      * 0 while buffering and restores its own idea of it afterwards, so a
      * playbackRate written behind its back reverts at the first stall. */
     function applyRate() {
+        rateStale = false;
+        var rate = heldRate || playRate;
         if (mode === "mse" && shakaPlayer) {
             try {
-                if (playRate === 1) { shakaPlayer.cancelTrickPlay(); }
-                else { shakaPlayer.trickPlay(playRate, false); }
+                if (rate === 1) { shakaPlayer.cancelTrickPlay(); }
+                else { shakaPlayer.trickPlay(rate, false); }
                 return true;
             } catch (e) { log("倍速设不上（" + e.message + "）"); return false; }
         }
@@ -769,6 +806,9 @@ var Player = (function () {
         });
         v.addEventListener("playing", function () {
             if (mode !== "mse") { return; }
+            /* Resumed without resume() (the platform, after a hide): the boost
+             * released while paused must not come back with it. */
+            if (rateStale) { applyRate(); }
             stopStallWatch();
             mark("playing");
             emit("playing", { duration: duration });
@@ -871,6 +911,8 @@ var Player = (function () {
 
     /* late: called as Player.stop (the viewer leaving), not as the start of a new session. */
     function reset(late) {
+        cancelHoldRate("reset");
+        rateStale = false;
         mseGeneration++;
         avGeneration++;
         loadPending = false;
@@ -2400,6 +2442,7 @@ var Player = (function () {
     }
 
     function playDashWithShaka(dash, startMs, isRetry, prefer, capId) {
+        cancelHoldRate("rebuild");
         /* Not loaded yet: wait for it, then start — unless this start was
          * superseded while waiting. Every stop and every new start passes
          * reset(), which moves mseGeneration; a start queued behind the
@@ -3110,6 +3153,7 @@ var Player = (function () {
         },
 
         pause: function () {
+            cancelHoldRate("pause");
             userPaused = true;
             if (mode === "avplay") { try { webapis.avplay.pause(); } catch (e) {} }
             else if (mode === "mse" || mode === "live") { el("html5-video").pause(); }
@@ -3128,11 +3172,24 @@ var Player = (function () {
         userPaused: function () { return userPaused; },
         /* The speeds this route can do: AVPlay only whole numbers. */
         rates: function () { return mode === "avplay" ? [1, 2] : [0.75, 1, 1.25, 1.5, 2]; },
-        /* What is actually playing: a 1.5x chosen on DASH is 1x on AVPlay. */
-        rate: function () {
-            return (mode === "avplay" && playRate !== Math.round(playRate)) ? 1 : playRate;
+        /* The viewer's choice, for the panel: the hold-OK boost is not in it.
+         * A 1.5x chosen on DASH is still 1x on AVPlay. */
+        rate: chosenRate,
+        /* What is playing right now, boost included — for the danmaku clock. */
+        effectiveRate: function () { return heldRate || chosenRate(); },
+        canHoldRate: canHoldRate,
+        holdRate: function (r) {
+            if (r !== 2 || !canHoldRate()) { return false; }
+            var before = heldRate || playRate;
+            heldRate = r;
+            if (before === r || applyRate()) { return true; }
+            heldRate = 0;
+            applyRate();
+            return false;
         },
+        releaseHoldRate: releaseHoldRate,
         setRate: function (r) {
+            cancelHoldRate("speed choice");
             var before = playRate;
             playRate = r;
             if (!applyRate()) { playRate = before; return false; }

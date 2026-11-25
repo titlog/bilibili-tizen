@@ -67,6 +67,7 @@ const KEY = { LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ENTER: 13, RETURN: 10009, E
 const sandbox = {
     window: {}, document, localStorage, console, Date, Math, JSON, String, Number, Array, Object, RegExp,
     parseInt, parseFloat, isFinite, setTimeout: () => 1, clearTimeout: () => {},
+    HoldSpeed: { create: () => ({ key: () => false, begin() {}, cancel() {}, interrupt() {} }) }, /* hold-speed-verify drives the real one */ 
     Nav: { KEY, current: () => focus, focus: (node) => { focus = node; }, reset: () => {}, onKey: () => {}, onBack: () => {} },
     Player: { on: () => {}, userPaused: () => false },
     Auth: { cancelLogin: () => {}, isLoggedIn: () => false },

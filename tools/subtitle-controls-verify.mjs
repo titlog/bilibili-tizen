@@ -22,6 +22,7 @@ const context = vm.createContext({console,Promise,Blob,URL,ArrayBuffer,Uint8Arra
   setInterval:()=>++timerId,clearInterval(){}, MediaSource:{isTypeSupported:()=>true},
   Diag:{plain:x=>x,record(){},log(){},note(){},priv:x=>x,incident(){}}, navigator:{userAgent:'test'},
   Auth:{isLoggedIn:()=>false,accessKey:()=>''},
+  HoldSpeed: { create: () => ({ key: () => false, begin() {}, cancel() {}, interrupt() {} }) }, /* hold-speed-verify drives the real one */ 
   Nav:{onBack(){},onKey:f=>{context.__keyHandler=f;},current:()=>focus,focus:n=>{focus=n;},KEY:{RETURN:10009,UP:38,PLAY_PAUSE:10252,PLAY:415,PAUSE:19}},
   API:{subtitle:(url,ok,fail)=>pendingSubtitles.push({url,ok,fail})},
 });
