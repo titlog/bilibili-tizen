@@ -13,7 +13,7 @@
   "dependencies": {
     "fast-xml-parser": "^5.10.1",
     "jsqr": "^1.4.0",
-    "node-forge": "^1.4.0",
+    "node-forge": "1.4.3",
     "qrcode": "^1.5.4"
   }
 }
