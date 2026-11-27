@@ -34,6 +34,7 @@ what you half-watched on the phone is under the cursor when the TV comes on.
 |---|---|
 | **Verified** | Samsung 2023 65" **CU7090**, firmware Tizen 9.0 (Chromium 120). Every measurement in this project comes from this one set |
 | **Community-tested** | Samsung 2020 55" **Q90T**, Tizen 5.5 (Chromium 69), tested by the author of [PR #2](https://github.com/titlog/bilibili-tizen/pull/2) on their branch; the old-engine compatibility comes from there |
+| **Community-tested** | Samsung 2020 55" **Q60T**, Tizen 5.5 (Chromium 69). Runs smoothly ([#21](https://github.com/titlog/bilibili-tizen/issues/21)) |
 | **Community-tested** | Samsung 2018 49" **UA49NU7100**, Tizen 4.0 (Chromium 56). 1.4.0 installed from source works ([#4](https://github.com/titlog/bilibili-tizen/issues/4)) |
 | **Community-tested** | Samsung 2018 75" **Q8C**, Tizen 3.0 (Chromium 47). Videos play from 1.3.4, live streams from 1.3.6 ([#5](https://github.com/titlog/bilibili-tizen/issues/5)) |
 | **In use** | Samsung sets from 2020 onwards (Tizen 5.5+): the diagnostic logs show sets on Tizen 5.5, 6.0, 6.5, 8.0, 9.0 and 10.0 playing normally |

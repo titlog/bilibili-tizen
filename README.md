@@ -33,6 +33,7 @@
 |---|---|
 | **实测可用** | 三星 2023 年款 65 吋 **CU7090**，固件 Tizen 9.0（Chromium 120）。这个项目的所有测量都来自这一台 |
 | **社区实测** | 三星 2020 年款 55 吋 **Q90T**，Tizen 5.5（Chromium 69）。[PR #2](https://github.com/titlog/bilibili-tizen/pull/2) 的作者在他的分支上测的，老引擎的兼容就来自那里 |
+| **社区实测** | 三星 2020 年款 55 吋 **Q60T**，Tizen 5.5（Chromium 69）。运行流畅（[#21](https://github.com/titlog/bilibili-tizen/issues/21)） |
 | **社区实测** | 三星 2018 年款 49 吋 **UA49NU7100**，Tizen 4.0（Chromium 56）。从源码装的 1.4.0 正常用（[#4](https://github.com/titlog/bilibili-tizen/issues/4)） |
 | **社区实测** | 三星 2018 年款 75 吋 **Q8C**，Tizen 3.0（Chromium 47）。点播 1.3.4 起、直播 1.3.6 起能放（[#5](https://github.com/titlog/bilibili-tizen/issues/5)） |
 | **用户在用** | 2020 年以后的三星电视（Tizen 5.5 及以上）：诊断日志里 Tizen 5.5、6.0、6.5、8.0、9.0、10.0 都有电视在正常放 |
